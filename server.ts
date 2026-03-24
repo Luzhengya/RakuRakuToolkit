@@ -64,15 +64,14 @@ async function startServer() {
       for (const worksheet of sheetsToConvert) {
         markdown += `## Sheet: ${worksheet.name}\n\n`;
         
-        // --- 1. Extract Table Data ---
-        const rows: string[][] = [];
-        worksheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+        // --- 1. Extract and Process Data Blocks ---
+        let allRows: string[][] = [];
+        let maxColsInSheet = 0;
+
+        worksheet.eachRow({ includeEmpty: true }, (row) => {
           const rowData: string[] = [];
-          row.eachCell({ includeEmpty: true }, (cell) => {
-            if (!cell) {
-              rowData.push("");
-              return;
-            }
+          for (let i = 1; i <= row.cellCount; i++) {
+            const cell = row.getCell(i);
             let val = "";
             try {
               const cellValue = cell.value;
@@ -93,26 +92,70 @@ async function startServer() {
             } catch (e) {
               val = cell.text || "";
             }
-            val = val.replace(/\|/g, "\\|");
+            val = val.replace(/\|/g, "\\|").trim();
             rowData.push(val);
-          });
-          rows.push(rowData);
+          }
+          allRows.push(rowData);
+          if (rowData.length > maxColsInSheet) maxColsInSheet = rowData.length;
         });
 
-        if (rows.length > 0) {
-          const maxCols = Math.max(...rows.map(r => r.length));
-          const formatRow = (r: string[]) => {
-            const padded = [...r];
-            while (padded.length < maxCols) padded.push("");
-            return `| ${padded.join(" | ")} |`;
-          };
-          const header = rows[0];
-          markdown += `${formatRow(header)}\n`;
-          markdown += `| ${Array(maxCols).fill("---").join(" | ")} |\n`;
-          for (let i = 1; i < rows.length; i++) {
-            markdown += `${formatRow(rows[i])}\n`;
+        // Split into blocks based on empty rows
+        const blocks: string[][][] = [];
+        let currentBlock: string[][] = [];
+
+        for (const row of allRows) {
+          const isEmpty = row.every(cell => cell === "");
+          if (isEmpty) {
+            if (currentBlock.length > 0) {
+              blocks.push(currentBlock);
+              currentBlock = [];
+            }
+          } else {
+            currentBlock.push(row);
           }
-          markdown += "\n";
+        }
+        if (currentBlock.length > 0) blocks.push(currentBlock);
+
+        // Process each block
+        for (const block of blocks) {
+          // Trim empty columns within this specific block
+          const blockMaxCols = Math.max(...block.map(r => r.length));
+          const activeColIndices: number[] = [];
+          for (let j = 0; j < blockMaxCols; j++) {
+            const isColActive = block.some(row => row[j] && row[j] !== "");
+            if (isColActive) activeColIndices.push(j);
+          }
+
+          const finalBlockRows = block.map(row => activeColIndices.map(idx => row[idx] || ""));
+          const numRows = finalBlockRows.length;
+          const numCols = activeColIndices.length;
+
+          if (numRows === 0 || numCols === 0) continue;
+
+          // Heuristic: Determine if it's a table
+          // 1. More than 1 column AND more than 1 row -> Table
+          // 2. Otherwise -> Text
+          const isTable = numCols > 1 && numRows > 1;
+
+          if (isTable) {
+            const formatRow = (r: string[]) => `| ${r.join(" | ")} |`;
+            const header = finalBlockRows[0];
+            markdown += `${formatRow(header)}\n`;
+            markdown += `| ${Array(numCols).fill("---").join(" | ")} |\n`;
+            for (let i = 1; i < finalBlockRows.length; i++) {
+              markdown += `${formatRow(finalBlockRows[i])}\n`;
+            }
+            markdown += "\n";
+          } else {
+            // Output as plain text or list
+            for (const row of finalBlockRows) {
+              const line = row.filter(c => c !== "").join(" ");
+              if (line) {
+                markdown += `${line}  \n`; // Double space for line break in MD
+              }
+            }
+            markdown += "\n";
+          }
         }
 
         // --- 2. Extract Images ---
