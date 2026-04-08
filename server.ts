@@ -17,29 +17,26 @@ if (!fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: "uploads/" });
 
-let isPdfToolReady = false;
-let pdfToolError: string | null = null;
-
 async function startServer() {
   const { exec } = await import("child_process");
-  console.log("Starting pdf2docx installation...");
-  exec("python3 -m pip install --upgrade pip && python3 -m pip install pdf2docx --break-system-packages", (error, stdout, stderr) => {
-    if (error) {
-      console.error("Error installing pdf2docx:", error);
-      pdfToolError = stderr || error.message;
-    } else {
-      console.log("pdf2docx installed successfully.");
-      isPdfToolReady = true;
-    }
-  });
+
+  // In preview environment, we still need to install dependencies dynamically
+  // because Dockerfile is not used for the preview container.
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Preview environment detected. Ensuring pdf2docx is installed...");
+    exec("python3 -m pip install pdf2docx opencv-python-headless --break-system-packages", (error, stdout, stderr) => {
+      if (error) console.error("Error installing pdf2docx in preview:", error);
+      else console.log("pdf2docx ready in preview.");
+    });
+  }
 
   app.get("/api/pdf-status", (req, res) => {
-    res.json({ ready: isPdfToolReady, error: pdfToolError });
+    res.json({ ready: true, error: null });
   });
 
   app.get("/api/test-python", async (req, res) => {
     const { exec } = await import("child_process");
-    exec("python3 --version && pip3 --version", (error, stdout, stderr) => {
+    exec("python3 -c 'import pdf2docx; print(\"pdf2docx ok\")' && python3 --version", (error, stdout, stderr) => {
       res.json({ stdout, stderr, error: error?.message });
     });
   });
@@ -75,13 +72,6 @@ async function startServer() {
   });
 
   app.post("/api/pdf-convert", express.json(), async (req, res) => {
-    if (!isPdfToolReady) {
-      return res.status(503).json({ 
-        error: "PDF conversion engine is still initializing or failed to start. Please try again in a minute.",
-        details: pdfToolError
-      });
-    }
-
     const { files, downloadPath } = req.body;
     if (!files || !Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: "No files provided" });

@@ -1,4 +1,4 @@
-import { useState, useRef, ChangeEvent, useEffect } from 'react';
+import { useState, useRef, ChangeEvent } from 'react';
 import { 
   Upload, 
   FileText, 
@@ -6,8 +6,7 @@ import {
   CheckCircle, 
   AlertCircle, 
   Loader2, 
-  ArrowLeft,
-  Info
+  ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -18,24 +17,7 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const [engineStatus, setEngineStatus] = useState<{ ready: boolean; error: string | null }>({ ready: false, error: null });
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Check engine status on mount
-  useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const res = await fetch('/api/pdf-status');
-        const data = await res.json();
-        setEngineStatus(data);
-      } catch (e) {
-        console.error("Failed to check PDF engine status", e);
-      }
-    };
-    checkStatus();
-    const interval = setInterval(checkStatus, 5000);
-    return () => clearInterval(interval);
-  }, []);
 
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []).slice(0, 10) as File[];
@@ -116,20 +98,6 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
         <div className="mb-8">
           <h2 className="text-2xl font-bold text-neutral-900 mb-2">PDF to Word</h2>
           <p className="text-neutral-500">上传 PDF 文件并将其转换为可编辑的 Word 文档</p>
-          
-          {!engineStatus.ready && !engineStatus.error && (
-            <div className="mt-4 p-3 bg-blue-50 border border-blue-100 rounded-lg flex items-center gap-3 text-blue-600 text-sm">
-              <Loader2 size={16} className="animate-spin" />
-              <span>正在初始化 PDF 转换引擎 (约需 30-60 秒)...</span>
-            </div>
-          )}
-          
-          {engineStatus.error && (
-            <div className="mt-4 p-3 bg-amber-50 border border-amber-100 rounded-lg flex items-center gap-3 text-amber-600 text-sm">
-              <AlertCircle size={16} />
-              <span>引擎初始化失败，转换功能可能受限。</span>
-            </div>
-          )}
         </div>
 
         <div className="space-y-6">
@@ -182,7 +150,7 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
 
                 <button
                   onClick={handleConvert}
-                  disabled={loading || !engineStatus.ready}
+                  disabled={loading}
                   className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 group"
                 >
                   {loading ? (
