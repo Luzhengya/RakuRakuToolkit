@@ -17,52 +17,150 @@ if (!fs.existsSync(uploadDir)) {
 
 const upload = multer({ dest: "uploads/" });
 
+let isPdfToolReady = false;
+let pdfToolError: string | null = null;
+
 async function startServer() {
+  const { exec } = await import("child_process");
+  console.log("Starting pdf2docx installation...");
+  exec("python3 -m pip install --upgrade pip && python3 -m pip install pdf2docx --break-system-packages", (error, stdout, stderr) => {
+    if (error) {
+      console.error("Error installing pdf2docx:", error);
+      pdfToolError = stderr || error.message;
+    } else {
+      console.log("pdf2docx installed successfully.");
+      isPdfToolReady = true;
+    }
+  });
+
+  app.get("/api/pdf-status", (req, res) => {
+    res.json({ ready: isPdfToolReady, error: pdfToolError });
+  });
+
+  app.get("/api/test-python", async (req, res) => {
+    const { exec } = await import("child_process");
+    exec("python3 --version && pip3 --version", (error, stdout, stderr) => {
+      res.json({ stdout, stderr, error: error?.message });
+    });
+  });
+
   // API routes
-  app.post("/api/upload", upload.single("file"), async (req, res) => {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
+  app.post("/api/upload", upload.array("files", 10), async (req, res) => {
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded" });
     }
 
     try {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(req.file.path);
-      const sheetNames = workbook.worksheets.map((ws) => ws.name);
+      const results = await Promise.all(files.map(async (file) => {
+        // Fix filename encoding (common issue with multer and non-ASCII filenames)
+        const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+        
+        if (originalName.endsWith('.xlsx') || originalName.endsWith('.xls')) {
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.readFile(file.path);
+          const sheetNames = workbook.worksheets.map((ws) => ws.name);
+          return { filename: file.filename, originalName, type: 'excel', sheetNames };
+        } else if (originalName.endsWith('.pdf')) {
+          return { filename: file.filename, originalName, type: 'pdf' };
+        }
+        return { filename: file.filename, originalName, type: 'unknown', error: 'Unsupported file type' };
+      }));
       
-      // Keep the file for conversion later, or delete it if we only wanted names
-      // For simplicity, we'll return the names and the filename
-      res.json({ filename: req.file.filename, sheetNames });
+      res.json({ files: results });
     } catch (error) {
-      console.error("Error reading excel:", error);
-      res.status(500).json({ error: "Failed to read Excel file" });
+      console.error("Error reading files:", error);
+      res.status(500).json({ error: "Failed to read files" });
+    }
+  });
+
+  app.post("/api/pdf-convert", express.json(), async (req, res) => {
+    if (!isPdfToolReady) {
+      return res.status(503).json({ 
+        error: "PDF conversion engine is still initializing or failed to start. Please try again in a minute.",
+        details: pdfToolError
+      });
+    }
+
+    const { files, downloadPath } = req.body;
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
+    }
+
+    const { exec } = await import("child_process");
+    const util = await import("util");
+    const execPromise = util.promisify(exec);
+
+    try {
+      const zip = new JSZip();
+      const resultsFolder = downloadPath ? zip.folder(downloadPath) : zip;
+
+      for (const fileInfo of files) {
+        const { filename, originalName } = fileInfo;
+        const filePath = path.join(process.cwd(), "uploads", filename);
+        const outputDocxPath = path.join(process.cwd(), "uploads", `${filename}.docx`);
+        
+        if (!fs.existsSync(filePath)) continue;
+
+        try {
+          // Call Python script
+          await execPromise(`python3 convert_pdf.py "${filePath}" "${outputDocxPath}"`);
+          
+          if (fs.existsSync(outputDocxPath)) {
+            const buffer = fs.readFileSync(outputDocxPath);
+            const outputName = originalName ? originalName.replace(/\.pdf$/i, '.docx') : `${filename}.docx`;
+            resultsFolder?.file(outputName, buffer);
+            
+            // Cleanup docx
+            fs.unlinkSync(outputDocxPath);
+          }
+        } catch (pyError) {
+          console.error(`Python conversion error for ${originalName}:`, pyError);
+        }
+
+        // Cleanup original pdf
+        fs.unlinkSync(filePath);
+      }
+
+      const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+      
+      res.set("Content-Type", "application/zip");
+      res.set("Content-Disposition", `attachment; filename="converted_pdfs.zip"`);
+      res.send(zipBuffer);
+    } catch (error) {
+      console.error("Error converting PDFs:", error);
+      res.status(500).json({ error: "Failed to convert PDF files" });
     }
   });
 
   app.post("/api/convert", express.json(), async (req, res) => {
-    const { filename, sheetName } = req.body;
-    if (!filename) {
-      return res.status(400).json({ error: "Missing filename" });
-    }
-
-    const filePath = path.join("uploads", filename);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: "File not found" });
+    const { files, sheetName, downloadPath } = req.body;
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: "No files provided" });
     }
 
     try {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(filePath);
+      const mainZip = new JSZip();
+      const resultsFolder = downloadPath ? mainZip.folder(downloadPath) : mainZip;
 
-      const zip = new JSZip();
-      const imagesFolder = zip.folder("images");
-      
-      let markdown = "";
-      const sheetsToConvert = sheetName === "全部" 
-        ? workbook.worksheets 
-        : [workbook.getWorksheet(sheetName)].filter(Boolean) as ExcelJS.Worksheet[];
+      for (const fileInfo of files) {
+        const { filename, originalName } = fileInfo;
+        const filePath = path.join("uploads", filename);
+        if (!fs.existsSync(filePath)) continue;
 
-      for (const worksheet of sheetsToConvert) {
-        markdown += `## Sheet: ${worksheet.name}\n\n`;
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(filePath);
+
+        const zip = new JSZip();
+        const imagesFolder = zip.folder("images");
+        
+        let markdown = "";
+        const sheetsToConvert = sheetName === "全部" 
+          ? workbook.worksheets 
+          : [workbook.getWorksheet(sheetName)].filter(Boolean) as ExcelJS.Worksheet[];
+
+        for (const worksheet of sheetsToConvert) {
+          markdown += `## Sheet: ${worksheet.name}\n\n`;
         
         // --- 1. Extract and Process Data Blocks ---
         let allRows: string[][] = [];
@@ -208,15 +306,20 @@ async function startServer() {
         }
       }
 
-      zip.file("output.md", markdown);
-      const content = await zip.generateAsync({ type: "nodebuffer" });
+        zip.file("output.md", markdown);
+        const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+        const zipName = originalName ? originalName.replace(/\.(xlsx|xls)$/i, '.zip') : `${filename}.zip`;
+        resultsFolder?.file(zipName, zipBuffer);
+
+        // Cleanup
+        fs.unlinkSync(filePath);
+      }
+
+      const mainZipBuffer = await mainZip.generateAsync({ type: "nodebuffer" });
 
       res.set("Content-Type", "application/zip");
-      res.set("Content-Disposition", `attachment; filename="conversion_result.zip"`);
-      res.send(content);
-
-      // Cleanup
-      fs.unlinkSync(filePath);
+      res.set("Content-Disposition", `attachment; filename="excel_conversions.zip"`);
+      res.send(mainZipBuffer);
     } catch (error) {
       console.error("Error converting excel:", error);
       res.status(500).json({ error: "Failed to convert Excel file" });

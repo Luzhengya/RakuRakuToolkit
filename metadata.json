@@ -1,5 +1,5 @@
 {
-  "name": "Excel to Markdown Converter",
+  "name": "ToolSetLimo",
   "description": "A tool to convert Excel files to Markdown, supporting multiple sheets, images, and shape text extraction.",
   "requestFramePermissions": []
 }
