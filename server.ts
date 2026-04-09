@@ -32,9 +32,15 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// 50MB per file (Vercel has stricter memory limits than local)
+// Disk storage: used only for /api/upload (Excel sheet detection)
 const upload = multer({
   dest: uploadDir,
+  limits: { fileSize: 50 * 1024 * 1024 },
+});
+
+// Memory storage: used for PDF convert/merge — avoids cross-invocation /tmp issues on Vercel
+const memUpload = multer({
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
 });
 
@@ -166,35 +172,30 @@ app.post("/api/upload", upload.array("files", 10), async (req, res) => {
 });
 
 // PDF → Word (Adobe PDF Services API)
-app.post("/api/pdf-convert", express.json(), async (req, res) => {
-  const { files, downloadPath } = req.body;
-  if (!files || !Array.isArray(files) || files.length === 0) {
+// Accepts multipart/form-data so client re-sends file bytes — no cross-invocation disk dependency
+app.post("/api/pdf-convert", memUpload.array("files", 10), async (req, res) => {
+  const multerFiles = req.files as Express.Multer.File[];
+  if (!multerFiles || multerFiles.length === 0) {
     return res.status(400).json({ error: "No files provided" });
   }
   if (!process.env.ADOBE_CLIENT_ID || !process.env.ADOBE_CLIENT_SECRET) {
     return res.status(503).json({ error: "Adobe PDF Services API credentials not configured" });
   }
 
+  const downloadPath = (req.body.downloadPath as string) || "";
+
   try {
     const zip = new JSZip();
     const resultsFolder = downloadPath ? zip.folder(downloadPath) : zip;
 
-    for (const fileInfo of files) {
-      const { filename, originalName } = fileInfo;
-      const filePath = path.join(uploadDir, filename);
-      if (!fs.existsSync(filePath)) continue;
-
+    for (const file of multerFiles) {
+      const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
       try {
-        const pdfBuffer = fs.readFileSync(filePath);
-        const docxBuffer = await convertPdfToWordBuffer(pdfBuffer);
-        const outputName = originalName
-          ? originalName.replace(/\.pdf$/i, ".docx")
-          : `${filename}.docx`;
+        const docxBuffer = await convertPdfToWordBuffer(file.buffer);
+        const outputName = originalName.replace(/\.pdf$/i, ".docx");
         resultsFolder?.file(outputName, docxBuffer);
       } catch (e) {
         console.error(`Adobe conversion error for ${originalName}:`, e);
-      } finally {
-        safeUnlink(filePath);
       }
     }
 
@@ -209,40 +210,25 @@ app.post("/api/pdf-convert", express.json(), async (req, res) => {
 });
 
 // PDF merge (pdf-lib, pure JS)
-app.post("/api/pdf-merge", express.json(), async (req, res) => {
-  const { files, outputName } = req.body;
-  if (!files || !Array.isArray(files) || files.length < 2) {
+// Accepts multipart/form-data with files in the correct order — no cross-invocation disk dependency
+app.post("/api/pdf-merge", memUpload.array("files", 20), async (req, res) => {
+  const multerFiles = req.files as Express.Multer.File[];
+  if (!multerFiles || multerFiles.length < 2) {
     return res.status(400).json({ error: "At least 2 files are required for merging" });
   }
 
-  const buffers: Buffer[] = [];
-  const filePaths: string[] = [];
+  const outputName = (req.body.outputName as string) || "merged.pdf";
 
   try {
-    for (const fileInfo of files) {
-      const filePath = path.join(uploadDir, fileInfo.filename);
-      if (fs.existsSync(filePath)) {
-        buffers.push(fs.readFileSync(filePath));
-        filePaths.push(filePath);
-      } else {
-        console.warn(`Merge: file not found: ${fileInfo.originalName}`);
-      }
-    }
-
-    if (buffers.length < 2) {
-      return res.status(400).json({ error: "Not enough valid files found on server" });
-    }
-
+    const buffers = multerFiles.map((f) => f.buffer);
     const mergedBuffer = await mergePDFBuffers(buffers);
-    const filename = (outputName || "merged.pdf").replace(/[^\w\u4e00-\u9fff\-_.]/g, "_");
+    const filename = outputName.replace(/[^\w\u4e00-\u9fff\-_.]/g, "_");
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
     res.send(mergedBuffer);
   } catch (error) {
     console.error("PDF merge error:", error);
     res.status(500).json({ error: "Failed to merge PDF files" });
-  } finally {
-    for (const p of filePaths) safeUnlink(p);
   }
 });
 

@@ -33,16 +33,20 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
   } = useFileUpload({ accept: ['.pdf'], maxFiles: 10 });
 
   const handleConvert = async () => {
-    if (uploadedFiles.length === 0) return;
+    if (files.length === 0) return;
 
     setLoading(true);
     setError(null);
 
     try {
+      // Re-send original File objects so the server doesn't depend on /tmp state
+      const formData = new FormData();
+      files.forEach(f => formData.append('files', f));
+      if (downloadPath) formData.append('downloadPath', downloadPath);
+
       const response = await fetch('/api/pdf-convert', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: uploadedFiles, downloadPath }),
+        body: formData,
       });
 
       if (!response.ok) throw new Error('Failed to convert files');

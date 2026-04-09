@@ -18,6 +18,7 @@ import type { UploadedFile } from '../types';
 
 export default function PdfMerge({ onBack }: { onBack: () => void }) {
   const {
+    files,
     uploadedFiles,
     loading: uploading,
     error: uploadError,
@@ -106,10 +107,20 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       const name = outputName.trim() || 'merged.pdf';
       const finalName = name.endsWith('.pdf') ? name : `${name}.pdf`;
 
+      // Re-send original File objects in the user-selected order.
+      // orderedFiles[i].filename maps to uploadedFiles[j].filename → files[j]
+      const formData = new FormData();
+      for (const fileInfo of orderedFiles) {
+        const idx = uploadedFiles.findIndex(uf => uf.filename === fileInfo.filename);
+        if (idx !== -1 && files[idx]) {
+          formData.append('files', files[idx]);
+        }
+      }
+      formData.append('outputName', finalName);
+
       const response = await fetch('/api/pdf-merge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: orderedFiles, outputName: finalName }),
+        body: formData,
       });
 
       if (!response.ok) {
