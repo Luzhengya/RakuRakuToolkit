@@ -38,16 +38,21 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
   );
 
   const handleConvert = async () => {
-    if (uploadedFiles.length === 0) return;
+    if (files.length === 0) return;
 
     setLoading(true);
     setError(null);
 
     try {
+      // Re-send original File objects so the server doesn't depend on /tmp state
+      const formData = new FormData();
+      files.forEach(f => formData.append('files', f));
+      formData.append('sheetName', selectedSheet);
+      if (downloadPath) formData.append('downloadPath', downloadPath);
+
       const response = await fetch('/api/convert', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: uploadedFiles, sheetName: selectedSheet, downloadPath }),
+        body: formData,
       });
 
       if (!response.ok) throw new Error('Failed to convert files');
