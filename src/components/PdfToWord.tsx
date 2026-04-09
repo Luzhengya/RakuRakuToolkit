@@ -127,12 +127,12 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
                 className="space-y-4"
               >
                 <div className="flex flex-col gap-2">
-                  <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">ZIP 内子文件夹路径（可选）</label>
+                  <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">下载路径（可自定义）</label>
                   <input
                     type="text"
                     value={downloadPath}
                     onChange={(e) => setDownloadPath(e.target.value)}
-                    placeholder="例如: 2024项目/转换结果（留空则放在 ZIP 根目录）"
+                    placeholder="默认download目录下"
                     className="w-full p-3 bg-white border border-neutral-200 rounded-lg shadow-sm focus:ring-2 focus:ring-neutral-900 outline-none transition-all"
                   />
                 </div>
