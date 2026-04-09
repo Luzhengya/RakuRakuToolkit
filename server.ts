@@ -1,10 +1,9 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import express from "express";
 import multer from "multer";
 import ExcelJS from "exceljs";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import JSZip from "jszip";
 import { PDFDocument } from "pdf-lib";
 import {
@@ -17,6 +16,9 @@ import {
   ExportPDFResult,
 } from "@adobe/pdfservices-node-sdk";
 import { PassThrough } from "stream";
+
+// Loads .env locally; silently no-ops on Vercel (env vars injected at runtime)
+dotenv.config();
 
 const app = express();
 const PORT = 3000;
@@ -414,6 +416,7 @@ app.post("/api/convert", express.json(), async (req, res) => {
 // ── Static / SPA serving ──────────────────────────────────────────────
 
 async function startDevServer() {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     server: { middlewareMode: true },
     appType: "spa",
