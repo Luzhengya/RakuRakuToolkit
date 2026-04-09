@@ -1,6 +1,7 @@
 import { 
   FileSpreadsheet, 
   FileText as FilePdf, 
+  Layers,
   Loader2, 
   ExternalLink, 
   ChevronRight 
@@ -24,6 +25,14 @@ export default function Home({ onSelectTool }: { onSelectTool: (id: string) => v
       category: '文档类',
       icon: <FilePdf className="text-red-600" size={24} />,
       onClick: () => onSelectTool('pdf-to-word')
+    },
+    {
+      id: 'pdf-merge',
+      title: 'PDF合并',
+      description: '上传多个PDF文件，拖拽调整合并顺序，一键合并成单个PDF文件下载。',
+      category: '文档类',
+      icon: <Layers className="text-indigo-600" size={24} />,
+      onClick: () => onSelectTool('pdf-merge')
     },
   ];
 

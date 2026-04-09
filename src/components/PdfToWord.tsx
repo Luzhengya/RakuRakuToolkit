@@ -1,53 +1,36 @@
-import { useState, useRef, ChangeEvent } from 'react';
-import { 
-  Upload, 
-  FileText, 
-  Download, 
-  CheckCircle, 
-  AlertCircle, 
-  Loader2, 
+import { useState } from 'react';
+import {
+  Upload,
+  FileText,
+  Download,
+  CheckCircle,
+  AlertCircle,
+  Loader2,
   ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useFileUpload } from '../hooks/useFileUpload';
 
 export default function PdfToWord({ onBack }: { onBack: () => void }) {
-  const [files, setFiles] = useState<File[]>([]);
-  const [uploadedFiles, setUploadedFiles] = useState<any[]>([]);
   const [downloadPath, setDownloadPath] = useState<string>('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || []).slice(0, 10) as File[];
-    if (selectedFiles.length === 0) return;
-
-    setFiles(selectedFiles);
-    setLoading(true);
-    setError(null);
-    setSuccess(false);
-
-    const formData = new FormData();
-    selectedFiles.forEach(f => formData.append('files', f));
-
-    try {
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) throw new Error('Failed to upload files');
-
-      const data = await response.json();
-      setUploadedFiles(data.files);
-    } catch (err) {
-      setError('Error uploading files. Please try again.');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const {
+    files,
+    uploadedFiles,
+    loading,
+    error,
+    success,
+    isDragging,
+    fileInputRef,
+    handleFiles,
+    handleDragOver,
+    handleDragLeave,
+    handleDrop,
+    setLoading,
+    setError,
+    setSuccess,
+    reset,
+  } = useFileUpload({ accept: ['.pdf'], maxFiles: 10 });
 
   const handleConvert = async () => {
     if (uploadedFiles.length === 0) return;
@@ -59,10 +42,7 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
       const response = await fetch('/api/pdf-convert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          files: uploadedFiles,
-          downloadPath 
-        }),
+        body: JSON.stringify({ files: uploadedFiles, downloadPath }),
       });
 
       if (!response.ok) throw new Error('Failed to convert files');
@@ -74,10 +54,12 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
       a.download = 'converted_pdfs.zip';
       document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
       setSuccess(true);
+      reset();
     } catch (err) {
-      setError('Error converting files. Please try again.');
+      setError('文件转换失败，请重试');
       console.error(err);
     } finally {
       setLoading(false);
@@ -86,7 +68,7 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="max-w-2xl mx-auto">
-      <button 
+      <button
         onClick={onBack}
         className="flex items-center gap-2 text-neutral-500 hover:text-neutral-900 transition-colors mb-6 group"
       >
@@ -101,49 +83,52 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
         </div>
 
         <div className="space-y-6">
-          <div 
+          <div
             onClick={() => fileInputRef.current?.click()}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
             className={`
               relative group cursor-pointer border-2 border-dashed rounded-xl p-10 transition-all duration-300
-              ${files.length > 0 ? 'border-red-400 bg-red-50' : 'border-neutral-200 hover:border-neutral-300 bg-neutral-50'}
+              ${isDragging ? 'border-red-500 bg-red-50 scale-[1.01]' : files.length > 0 ? 'border-red-400 bg-red-50' : 'border-neutral-200 hover:border-neutral-300 bg-neutral-50'}
             `}
           >
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              onChange={handleFileChange} 
-              className="hidden" 
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={e => handleFiles(e.target.files)}
+              className="hidden"
               accept=".pdf"
               multiple
             />
             <div className="flex flex-col items-center gap-4">
-              <div className={`p-4 rounded-full ${files.length > 0 ? 'bg-red-100 text-red-600' : 'bg-white shadow-sm text-neutral-400'} group-hover:scale-110 transition-transform`}>
+              <div className={`p-4 rounded-full ${files.length > 0 || isDragging ? 'bg-red-100 text-red-600' : 'bg-white shadow-sm text-neutral-400'} group-hover:scale-110 transition-transform`}>
                 {files.length > 0 ? <CheckCircle size={32} /> : <Upload size={32} />}
               </div>
               <div className="text-center">
                 <p className="font-semibold text-neutral-700">
-                  {files.length > 0 ? `已选择 ${files.length} 个文件` : '点击或拖拽上传 PDF 文件'}
+                  {isDragging ? '松开鼠标以上传文件' : files.length > 0 ? `已选择 ${files.length} 个文件` : '点击或拖拽上传 PDF 文件'}
                 </p>
-                <p className="text-xs text-neutral-400 mt-1">支持 .pdf 格式，最多10个</p>
+                <p className="text-xs text-neutral-400 mt-1">支持 .pdf 格式，最多 10 个，单文件最大 100MB</p>
               </div>
             </div>
           </div>
 
           <AnimatePresence>
             {uploadedFiles.length > 0 && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 className="space-y-4"
               >
                 <div className="flex flex-col gap-2">
-                  <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">下载路径 (可选)</label>
-                  <input 
+                  <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">ZIP 内子文件夹路径（可选）</label>
+                  <input
                     type="text"
                     value={downloadPath}
                     onChange={(e) => setDownloadPath(e.target.value)}
-                    placeholder="例如: 2024项目/转换结果 (默认为根目录)"
+                    placeholder="例如: 2024项目/转换结果（留空则放在 ZIP 根目录）"
                     className="w-full p-3 bg-white border border-neutral-200 rounded-lg shadow-sm focus:ring-2 focus:ring-neutral-900 outline-none transition-all"
                   />
                 </div>
@@ -167,8 +152,8 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
           </AnimatePresence>
 
           {error && (
-            <motion.div 
-              initial={{ opacity: 0 }} 
+            <motion.div
+              initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="p-4 bg-red-50 border border-red-100 rounded-lg flex items-center gap-3 text-red-600"
             >
@@ -178,13 +163,13 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
           )}
 
           {success && (
-            <motion.div 
-              initial={{ opacity: 0 }} 
+            <motion.div
+              initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="p-4 bg-green-50 border border-green-100 rounded-lg flex items-center gap-3 text-green-600"
             >
               <Download size={20} />
-              <p className="text-sm font-medium">转换成功！正在开始下载 Word 文档包。</p>
+              <p className="text-sm font-medium">转换成功！Word 文档已开始下载。</p>
             </motion.div>
           )}
         </div>

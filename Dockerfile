@@ -29,5 +29,5 @@ RUN npm run build
 # 暴露端口
 EXPOSE 3000
 
-# 启动命令
-CMD ["npm", "run", "dev"]
+# 生产环境启动（使用 tsx 直接运行 server.ts，NODE_ENV 为 production 时 Vite dev server 不会启动）
+CMD ["npx", "tsx", "server.ts"]

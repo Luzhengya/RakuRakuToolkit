@@ -11,8 +11,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import Home from './components/Home';
 import ExcelToMarkdown from './components/ExcelToMarkdown';
 import PdfToWord from './components/PdfToWord';
+import PdfMerge from './components/PdfMerge';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge';
 
 export default function App() {
   const [view, setView] = useState<View>('home');
@@ -58,7 +59,7 @@ export default function App() {
             >
               <ExcelToMarkdown onBack={() => setView('home')} />
             </motion.div>
-          ) : (
+          ) : view === 'pdf-to-word' ? (
             <motion.div
               key="pdf-to-word"
               initial={{ opacity: 0, x: 20 }}
@@ -66,6 +67,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <PdfToWord onBack={() => setView('home')} />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="pdf-merge"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <PdfMerge onBack={() => setView('home')} />
             </motion.div>
           )}
         </AnimatePresence>
