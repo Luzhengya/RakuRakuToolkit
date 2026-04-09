@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type DragEvent } from 'react';
 import {
   Upload,
   Download,
@@ -65,7 +65,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
   };
 
   // ── Drag-to-reorder handlers (file list items) ─────────────────────
-  const onItemDragStart = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+  const onItemDragStart = (e: DragEvent<HTMLDivElement>, index: number) => {
     e.stopPropagation();
     setDragIndex(index);
     e.dataTransfer.effectAllowed = 'move';
@@ -77,7 +77,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
     setTimeout(() => document.body.removeChild(ghost), 0);
   };
 
-  const onItemDragOver = (e: React.DragEvent<HTMLDivElement>, index: number) => {
+  const onItemDragOver = (e: DragEvent<HTMLDivElement>, index: number) => {
     e.preventDefault();
     e.stopPropagation();
     setDragOverIndex(index);
@@ -89,7 +89,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
     setDragIndex(index);
   };
 
-  const onItemDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+  const onItemDragEnd = (e: DragEvent<HTMLDivElement>) => {
     e.stopPropagation();
     setDragIndex(null);
     setDragOverIndex(null);

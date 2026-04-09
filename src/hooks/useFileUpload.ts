@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, DragEvent } from 'react';
+import { useState, useRef, useCallback, DragEvent, type RefObject } from 'react';
 import type { UploadedFile } from '../types';
 
 interface UseFileUploadOptions {
@@ -13,7 +13,7 @@ interface UseFileUploadReturn {
   error: string | null;
   success: boolean;
   isDragging: boolean;
-  fileInputRef: React.RefObject<HTMLInputElement>;
+  fileInputRef: RefObject<HTMLInputElement>;
   handleFiles: (fileList: FileList | null) => Promise<void>;
   handleDragOver: (e: DragEvent<HTMLDivElement>) => void;
   handleDragLeave: (e: DragEvent<HTMLDivElement>) => void;
