@@ -8,8 +8,34 @@
 import app from "./api/index.js";
 import path from "path";
 import fs from "fs";
+import type { Server } from "http";
 
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT) || 5173;
+const HOST = process.env.HOST;
+
+function listenWithHelpfulError(applyListen: () => Server, label: string) {
+  const server = applyListen();
+  server.on("error", (err: any) => {
+    if (err?.code === "EADDRINUSE") {
+      console.error(`[${label}] Port ${PORT} is already in use. Try setting PORT=3001 and run again.`);
+      process.exit(1);
+    }
+    if (err?.code === "EACCES") {
+      console.error(
+        `[${label}] Permission denied for ${HOST ?? "default-host"}:${PORT}. Try changing PORT or setting HOST=127.0.0.1.`
+      );
+      process.exit(1);
+    }
+    console.error(`[${label}] Server start failed:`, err);
+    process.exit(1);
+  });
+  return server;
+}
+
+function startListening(onReady: () => void, label: string): Server {
+  if (HOST) return listenWithHelpfulError(() => app.listen(PORT, HOST, onReady), label);
+  return listenWithHelpfulError(() => app.listen(PORT, onReady), label);
+}
 
 async function startDevServer() {
   const { createServer: createViteServer } = await import("vite");
@@ -19,9 +45,12 @@ async function startDevServer() {
   });
   app.use(vite.middlewares);
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Dev server running on http://localhost:${PORT}`);
-  });
+  startListening(
+    () => {
+      console.log(`Dev server running on http://localhost:${PORT}`);
+    },
+    "dev"
+  );
 }
 
 async function startProdServer() {
@@ -46,9 +75,12 @@ async function startProdServer() {
     }, 30 * 60 * 1000);
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  startListening(
+    () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    },
+    "prod"
+  );
 }
 
 if (process.env.NODE_ENV !== "production") {

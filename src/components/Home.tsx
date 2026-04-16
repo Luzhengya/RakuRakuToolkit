@@ -2,6 +2,7 @@ import {
   FileSpreadsheet, 
   FileText as FilePdf, 
   Layers,
+  LayoutGrid,
   Loader2, 
   ExternalLink, 
   ChevronRight 
@@ -33,6 +34,14 @@ export default function Home({ onSelectTool }: { onSelectTool: (id: string) => v
       category: '文档类',
       icon: <Layers className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('pdf-merge')
+    },
+    {
+      id: 'test-center',
+      title: '测试中心',
+      description: '进入测试中心管理画面，按区域管理测试模块。',
+      category: '管理类',
+      icon: <LayoutGrid className="text-sky-600" size={24} />,
+      onClick: () => onSelectTool('test-center')
     },
   ];
 

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{PDF_DOCUMENT_TITLE}}</title>
+  <style>
+    :root {
+      --color-primary: #1f4e8c;
+      --color-border: #d5dde8;
+      --color-bg: #eef2f6;
+      --color-doc: #ffffff;
+      --color-muted: #64748b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Noto Sans JP", "Yu Gothic", sans-serif; background: var(--color-bg); padding: 24px; color: #1f2937; }
+    .document { max-width: 1100px; margin: 0 auto; background: var(--color-doc); border: 1px solid var(--color-border); padding: 40px 44px; }
+    /* 表紙：タイトル3行は縦横中央、会社名は右上 */
+    .cover-page {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 60vh;
+      margin: -40px -44px 0;
+      padding: 24px 44px 40px;
+      border-bottom: 1px solid var(--color-border);
+      background: var(--color-doc);
+    }
+    .cover-header {
+      flex-shrink: 0;
+      align-self: flex-end;
+      text-align: right;
+      font-size: 14px;
+      color: #334155;
+    }
+    .cover-title-inner {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 24px 0 32px;
+    }
+    .title-main { font-size: 34px; font-weight: 700; }
+    .title-sub { font-size: 22px; margin-top: 6px; }
+    .version { color: var(--color-muted); margin-top: 6px; }
+    h1 { font-size: 24px; border-left: 4px solid var(--color-primary); padding-left: 12px; margin-top: 34px; }
+    h2 { font-size: 20px; border-bottom: 1px solid var(--color-border); padding-bottom: 8px; margin-top: 26px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid var(--color-border); padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #f5f8fc; }
+    ul.check-list { list-style: none; padding-left: 0; }
+    ul.check-list li { margin: 8px 0; padding-left: 22px; position: relative; }
+    ul.check-list li::before { content: "■"; position: absolute; left: 0; color: var(--color-primary); font-size: 10px; top: 3px; }
+    .info-box { background: #f8fafc; padding: 12px 14px; border: 1px solid var(--color-border); border-left: 4px solid var(--color-primary); margin-top: 12px; }
+    .work-block { border: 1px solid var(--color-border); margin-top: 14px; }
+    .work-title { background: #eaf1fb; padding: 10px 12px; font-weight: 600; color: var(--color-primary); border-bottom: 1px solid var(--color-border); }
+    .work-table { margin: 0; }
+    /* 画面プレビュー用フッター（本文末尾） */
+    /* 目次（印刷時は表紙の次の1ページ） */
+    .toc-page {
+      margin: 0 -44px;
+      padding: 32px 44px 40px;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .toc-title {
+      font-size: 24px;
+      font-weight: 700;
+      text-align: center;
+      margin: 0 0 28px;
+      padding: 0;
+      border: none;
+      border-bottom: none;
+    }
+    .toc-list {
+      list-style: none;
+      padding: 0;
+      margin: 0 auto;
+      max-width: 640px;
+    }
+    .toc-list li {
+      margin: 0;
+      padding: 12px 4px 12px 8px;
+      border-bottom: 1px dotted var(--color-border);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .toc-list li:last-child { border-bottom: none; }
+    .toc-list a {
+      color: var(--color-primary);
+      text-decoration: none;
+    }
+    .toc-list a:hover { text-decoration: underline; }
+
+    .doc-main { position: relative; }
+    .doc-footer {
+      margin-top: 36px;
+      border-top: 1px solid var(--color-border);
+      padding-top: 12px;
+      text-align: right;
+      font-size: 12px;
+      color: var(--color-muted);
+    }
+    /* PDF出力時にセクションが途中で分割されることを極力防ぐ */
+    @media print {
+      @page { size: A4; margin: 12mm; }
+      body { background: #fff; padding: 0; }
+      .document { max-width: none; margin: 0; border: 0; padding: 0; }
+
+      .cover-page {
+        margin: 0;
+        padding: 0;
+        border-bottom: none;
+        min-height: 273mm;
+        page-break-after: always;
+        break-after: page;
+      }
+      .cover-title-inner { padding-bottom: 0; }
+
+      .toc-page {
+        margin: 0;
+        padding: 16mm 0 12mm;
+        border-bottom: none;
+        page-break-after: always;
+        break-after: page;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .toc-title { margin-bottom: 10mm; }
+
+      .doc-main {
+        padding-top: 0;
+        padding-bottom: 14mm;
+      }
+      .doc-footer {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        margin-top: 0;
+        border-top: none;
+        padding-top: 0;
+        width: auto;
+        max-width: 100%;
+      }
+
+      h1, h2, .info-box, .work-block, ul.check-list, ul.check-list li,
+      table, thead, tbody, tfoot, tr, th, td {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+
+      h1, h2 {
+        break-after: avoid-page;
+        page-break-after: avoid;
+      }
+
+      thead { display: table-header-group; }
+      tfoot { display: table-footer-group; }
+    }
+  </style>
+</head>
+<body>
+  <div class="document">
+    <section class="cover-page" aria-label="表紙">
+      <header class="cover-header">リスクモンスター株式会社</header>
+      <div class="cover-title-inner">
+        <div class="title-main">海南テストセンター計画書</div>
+        <div class="title-sub">{{AREA_RELEASE_NAME}} <span id="release-month">{{MM}}</span>月リリース</div>
+        <div class="version">Ver. 1.0</div>
+      </div>
+    </section>
+
+    <nav class="toc-page" aria-label="目次">
+      <h2 class="toc-title">目次</h2>
+      <ol class="toc-list">
+        <li><a href="#sec-changelog">更新履歴</a></li>
+        <li><a href="#sec-intro">はじめに</a></li>
+        <li><a href="#sec-effort">工数見積</a></li>
+        <li><a href="#sec-input">テストインプット</a></li>
+        <li><a href="#deliverables">テスト成果物</a></li>
+        <li><a href="#communication">コミュニケーション</a></li>
+      </ol>
+    </nav>
+
+    <div class="doc-main">
+    <h2 id="sec-changelog">更新履歴</h2>
+    <table>
+      <thead><tr><th>作成日時</th><th>作成者</th><th>更新内容</th></tr></thead>
+      <tbody><tr><td>{{Today}}</td><td>RM賈含</td><td>テスト計画作成</td></tr></tbody>
+    </table>
+
+    <h1 id="sec-intro">はじめに</h1>
+    <h2>海南テストセンターでのテストの概要</h2>
+    <p>本ドキュメントは、海南テストセンターで実施される「{{AREA_RELEASE_NAME}} {{MM}}月リリース」に関するテストの初期計画を定義するものです。</p>
+
+    <h2>テストの対象</h2>
+    <ul class="check-list" id="test-object-list">
+      {{PROJECT_LIST}}
+    </ul>
+
+    <h2>テスト環境</h2>
+    <div class="info-box" contenteditable="true">
+      {{TEST_ENVIRONMENT_BLOCK}}
+    </div>
+
+    <h2>テストスケジュール計画</h2>
+    <div class="info-box">
+      ［済］{{TC開始予定日}}～{{TC設計書完了予定日}} 設計書作成<br>
+      ［待］{{TC設計書完了予定日+1}}～{{TC設計書完了予定日+2}} キックオフミーティング<br>
+      ［待］{{TC設計書完了予定日+1}}～{{TC実施完了予定日}} テスト実施<br>
+      ［待］{{TC実施完了予定日+1}}～{{TC実施完了予定日+2}} テスト結果報告
+    </div>
+
+    <h1 id="sec-effort">工数見積</h1>
+    <p><strong>開発工数合計：{{開発工数総計}}人日　工数見積合計：{{見積工数総計}}人日</strong></p>
+    {{WORK_BLOCKS}}
+
+    <h1 id="sec-input">テストインプット</h1>
+    <table>
+      <thead><tr><th>名称</th><th>用途、内容等</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>変更案件管理表 および個別案件仕様書 設計書</td>
+          <td>https://project.riskmonster.com/svn/TestCenter/{{SVN_PATH_SEGMENT}}/{{YYYY}}/{{MM}}</td>
+        </tr>
+        <tr><td>実施案件確認</td><td>週次オフショア会議での案件情報 / レビュー会議（日本実施）</td></tr>
+        <tr><td>参考</td><td>CMDB</td></tr>
+        <tr><td>使用アカウント</td><td>（適宜設定）</td></tr>
+        <tr><td>連携内容</td><td>テスト観点 / 機能動作一覧</td></tr>
+      </tbody>
+    </table>
+ <!-- テスト成果物 -->
+ <h1 id="deliverables">テスト成果物</h1>
+ <table>
+     <thead><tr><th>名称</th><th>作成者</th><th>用途、内容等</th></tr></thead>
+     <tbody>
+         <tr><td>テスト計画書</td><td>賈</td><td>本ドキュメント（日本語）</td></tr>
+         <tr><td>テスト設計書</td><td>賈、孫</td><td>テスト観点、対象、技法、手順などを定義</td></tr>
+         <tr><td>テスト仕様書</td><td>孫</td><td>テストケース。テスト管理TOOLに記載</td></tr>
+         <tr><td>テスト結果報告</td><td>孫</td><td>テスト管理TOOLに追記</td></tr>
+         <tr><td>バグ報告書</td><td>孫</td><td>管理TOOLに記載して報告</td></tr>
+         <tr><td>テスト報告まとめ</td><td>孫</td><td>メールにて進捗、完了報告</td></tr>
+         <tr><td>納品</td><td>孫</td><td>SVN</td></tr>
+     </tbody>
+ </table>
+ 
+ <!-- コミュニケーション -->
+ <h1 id="communication">コミュニケーション</h1>
+ <h3>テスト管理ツール</h3>
+ <p>テストケース管理、バグ管理にはオープンソースの「禅道 (ZenTao)」を使用します。クライアントにはツールからエクスポートした結果を報告します。<br>
+ 日本語版公式サイト: <a href="https://www.zentao.jp/" target="_blank">https://www.zentao.jp/</a></p>
+ 
+ <h3>報告</h3>
+ <p>各種成果物（計画書、設計書、テスト仕様書、不具合報告まとめ）は、適宜アプリ課のレビューを受けます。テスト実施期間中は、テストセンターから日次で日本側に進捗を報告します。</p>
+ 
+ <h3>指示、連絡</h3>
+ <p>コミュニケーションツールとして、TEAMS（ゲストユーザー）、メール、IPメッセンジャー（海南社内ネットワークのみ）等を使用します。</p>
+ 
+ <h3>納品、ドキュメント管理</h3>
+ <p>バージョン管理および納品には、Subversion (SVN) を使用します。</p>
+
+    <footer class="doc-footer">リスクモンスター株式会社 海南テストセンター</footer>
+    </div>
+  </div>
+</body>
+</html>

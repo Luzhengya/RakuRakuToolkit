@@ -9,6 +9,7 @@ import express from "express";
 import multer from "multer";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
+import { Client } from "@notionhq/client";
 import { PDFDocument } from "pdf-lib";
 import {
   ServicePrincipalCredentials,
@@ -25,6 +26,8 @@ import { PassThrough } from "stream";
 dotenv.config();
 
 const app = express();
+const notion = process.env.NOTION_API_KEY ? new Client({ auth: process.env.NOTION_API_KEY }) : null;
+app.use(express.json());
 
 // All file processing uses in-memory storage — avoids any cross-invocation /tmp dependency
 const upload = multer({
@@ -76,11 +79,341 @@ async function convertPdfToWordBuffer(pdfBuffer: Buffer): Promise<Buffer> {
   return streamToBuffer(streamAsset.readStream);
 }
 
+type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit";
+
+type ProgressItem = {
+  id: string;
+  month: string;
+  projectName: string;
+  status: string;
+  estimateTotal: string;
+  actualTotal: string;
+  developmentEffort: string;
+  tcStartDate: string;
+  tcDesignCompleteDate: string;
+  tcExecutionCompleteDate: string;
+  testTotalCount: string;
+  bugCount: string;
+  testBlockedCount: string;
+  pendingConfirmCount: string;
+  system: string;
+  childProjectIds: string[];
+};
+
+type ResultUpdateItem = {
+  id: string;
+  testTotalCount: string;
+  bugCount: string;
+  testBlockedCount: string;
+  pendingConfirmCount: string;
+};
+
+function richTextToPlainText(richText: any[] = []): string {
+  return richText.map((item) => item?.plain_text ?? "").join("").trim();
+}
+
+function propertyToPlainText(property: any): string {
+  if (!property || typeof property !== "object") return "";
+
+  switch (property.type) {
+    case "title":
+      return richTextToPlainText(property.title);
+    case "rich_text":
+      return richTextToPlainText(property.rich_text);
+    case "number":
+      return property.number == null ? "" : String(property.number);
+    case "select":
+      return property.select?.name ?? "";
+    case "multi_select":
+      return Array.isArray(property.multi_select)
+        ? property.multi_select.map((item: any) => item?.name).filter(Boolean).join(", ")
+        : "";
+    case "status":
+      return property.status?.name ?? "";
+    case "formula":
+      if (!property.formula) return "";
+      if (property.formula.type === "string") return property.formula.string ?? "";
+      if (property.formula.type === "number") {
+        return property.formula.number == null ? "" : String(property.formula.number);
+      }
+      if (property.formula.type === "boolean") return String(!!property.formula.boolean);
+      if (property.formula.type === "date") return property.formula.date?.start ?? "";
+      return "";
+    case "date":
+      return property.date?.start ?? "";
+    case "people":
+      return Array.isArray(property.people)
+        ? property.people.map((person: any) => person?.name ?? person?.id).filter(Boolean).join(", ")
+        : "";
+    default:
+      return "";
+  }
+}
+
+function parseProgressItem(page: any): ProgressItem {
+  const properties = page?.properties ?? {};
+  const childProjectIds = extractChildProjectIds(properties);
+  return {
+    id: page?.id ?? "",
+    month: propertyToPlainText(properties["月次"]),
+    projectName: propertyToPlainText(properties["案件名"]),
+    status: propertyToPlainText(properties["状態"]),
+    estimateTotal: propertyToPlainText(properties["見積総"]),
+    actualTotal: propertyToPlainText(properties["実績総"]),
+    developmentEffort: propertyToPlainText(properties["開発工数"]),
+    tcStartDate: propertyToPlainText(properties["TC開始予定日"]),
+    tcDesignCompleteDate: propertyToPlainText(properties["TC設計書完了予定日"]),
+    tcExecutionCompleteDate: propertyToPlainText(properties["TC実施完了予定日"]),
+    testTotalCount: propertyToPlainText(properties["Test総件数"]),
+    bugCount: propertyToPlainText(properties["BUG数"]),
+    testBlockedCount: propertyToPlainText(properties["Test不可"]),
+    pendingConfirmCount: propertyToPlainText(properties["確認中件数"]),
+    system: propertyToPlainText(properties["System"]),
+    childProjectIds,
+  };
+}
+
+function extractRelationIds(property: any): string[] {
+  if (!property || property.type !== "relation" || !Array.isArray(property.relation)) return [];
+  return property.relation
+    .map((relation: any) => relation?.id)
+    .filter((id: string | undefined): id is string => !!id);
+}
+
+function extractChildProjectIds(properties: Record<string, any>): string[] {
+  const directProperty = properties["子级 项目"];
+  if (directProperty) return extractRelationIds(directProperty);
+
+  const fallbackEntry = Object.entries(properties).find(([name, value]) => {
+    if (value?.type !== "relation") return false;
+    const normalized = name.trim().toLowerCase();
+    return normalized.includes("子级") || normalized.includes("子項目") || normalized.includes("sub");
+  });
+  if (!fallbackEntry) return [];
+  return extractRelationIds(fallbackEntry[1]);
+}
+
+function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
+  const normalized = systemValue.trim().toLowerCase();
+  const tokens = normalized
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const includesToken = (value: string) => tokens.includes(value.toLowerCase());
+  const matchesAny = (aliases: string[]) => aliases.some((alias) => normalized === alias || includesToken(alias));
+
+  switch (area) {
+    case "jmotto":
+      return matchesAny(["jmottoポータル"]);
+    case "univ":
+      return matchesAny(["univ2", "univcontents", "univ"]);
+    case "overseas":
+      return matchesAny(["海外調書", "海外调书"]);
+    case "credit":
+      return matchesAny(["企業情報", "企業信用情報", "企业信用情报", "企业信息"]);
+    default:
+      return false;
+  }
+}
+
+function toNotionNumberValue(rawValue: string, fieldName: string): number | null {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/[^\d.-]/g, "");
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${fieldName} must be a number`);
+  }
+  return parsed;
+}
+
+function buildUpdatableProperty(property: any, rawValue: string, fieldName: string): any {
+  if (!property || typeof property !== "object") {
+    throw new Error(`Notion property "${fieldName}" is missing`);
+  }
+
+  switch (property.type) {
+    case "number":
+      return { number: toNotionNumberValue(rawValue, fieldName) };
+    case "rich_text": {
+      const content = rawValue.trim();
+      return { rich_text: content ? [{ type: "text", text: { content } }] : [] };
+    }
+    default:
+      throw new Error(`Notion property "${fieldName}" type "${property.type}" is not writable by this tool`);
+  }
+}
+
+async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]> {
+  if (!notion) return [];
+
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) {
+    throw new Error("No data source found in NOTION_PROGRESS_DATABASE_ID");
+  }
+
+  const items: ProgressItem[] = [];
+  let hasMore = true;
+  let nextCursor: string | undefined = undefined;
+
+  while (hasMore) {
+    const response = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: nextCursor,
+      page_size: 100,
+    });
+
+    for (const page of response.results) {
+      items.push(parseProgressItem(page));
+    }
+
+    hasMore = response.has_more;
+    nextCursor = response.next_cursor ?? undefined;
+  }
+
+  return items;
+}
+
+async function retrievePagesByIds(pageIds: string[]): Promise<ProgressItem[]> {
+  if (!notion || pageIds.length === 0) return [];
+
+  const uniquePageIds = Array.from(new Set(pageIds));
+  const pages = await Promise.all(
+    uniquePageIds.map((pageId) =>
+      notion.pages
+        .retrieve({ page_id: pageId })
+        .then((page) => parseProgressItem(page))
+        .catch((error) => {
+          console.error(`Failed to retrieve Notion page ${pageId}:`, error);
+          return null;
+        })
+    )
+  );
+
+  return pages.filter((page): page is ProgressItem => !!page);
+}
+
 // ── Routes ────────────────────────────────────────────────────────────
 
 app.get("/api/pdf-status", (_req, res) => {
   const ready = !!(process.env.ADOBE_CLIENT_ID && process.env.ADOBE_CLIENT_SECRET);
   res.json({ ready, error: ready ? null : "Adobe API credentials not configured" });
+});
+
+app.get("/api/test-center", async (req, res) => {
+  const area = req.query.area as TestCenterArea | undefined;
+  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit"];
+  if (!area || !validAreas.includes(area)) {
+    return res.status(400).json({ error: "Invalid area parameter" });
+  }
+
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_PROGRESS_DATABASE_ID",
+    });
+  }
+
+  try {
+    const allItems = await queryAllProgressItems(databaseId);
+    const parentItems = allItems
+      .filter((item) => isItemInArea(area, item.system))
+      .filter((item) => item.childProjectIds.length > 0);
+
+    const childIds = parentItems.flatMap((item) => item.childProjectIds);
+    const childItems = await retrievePagesByIds(childIds);
+
+    const areaItems = childItems
+      .filter((item) => item.childProjectIds.length === 0)
+      .map(({
+        id,
+        month,
+        projectName,
+        status,
+        estimateTotal,
+        actualTotal,
+        developmentEffort,
+        tcStartDate,
+        tcDesignCompleteDate,
+        tcExecutionCompleteDate,
+        testTotalCount,
+        bugCount,
+        testBlockedCount,
+        pendingConfirmCount,
+      }) => ({
+        id,
+        month,
+        projectName,
+        status,
+        estimateTotal,
+        actualTotal,
+        developmentEffort,
+        tcStartDate,
+        tcDesignCompleteDate,
+        tcExecutionCompleteDate,
+        testTotalCount,
+        bugCount,
+        testBlockedCount,
+        pendingConfirmCount,
+      }));
+
+    return res.json({ area, total: areaItems.length, items: areaItems });
+  } catch (error) {
+    console.error("Test center query error:", error);
+    return res.status(500).json({ error: "Failed to query Notion progress database" });
+  }
+});
+
+app.post("/api/test-center/results", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+
+  const updates = req.body?.updates as ResultUpdateItem[] | undefined;
+  if (!Array.isArray(updates) || updates.length === 0) {
+    return res.status(400).json({ error: "updates is required" });
+  }
+
+  const results: Array<{ id: string; success: boolean; error?: string }> = [];
+
+  for (const update of updates) {
+    try {
+      if (!update?.id) {
+        throw new Error("id is required");
+      }
+
+      const page = await notion.pages.retrieve({ page_id: update.id });
+      const properties = (page as any)?.properties ?? {};
+
+      const nextProperties = {
+        ["Test総件数"]: buildUpdatableProperty(properties["Test総件数"], update.testTotalCount ?? "", "Test総件数"),
+        ["BUG数"]: buildUpdatableProperty(properties["BUG数"], update.bugCount ?? "", "BUG数"),
+        ["Test不可"]: buildUpdatableProperty(properties["Test不可"], update.testBlockedCount ?? "", "Test不可"),
+        ["確認中件数"]: buildUpdatableProperty(
+          properties["確認中件数"],
+          update.pendingConfirmCount ?? "",
+          "確認中件数"
+        ),
+      };
+
+      await notion.pages.update({
+        page_id: update.id,
+        properties: nextProperties,
+      });
+
+      results.push({ id: update.id, success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      results.push({ id: update?.id ?? "", success: false, error: message });
+    }
+  }
+
+  const failed = results.filter((result) => !result.success);
+  const ok = failed.length === 0;
+  const payload = { ok, updated: results.length - failed.length, failed: failed.length, results };
+  return res.status(ok ? 200 : 207).json(payload);
 });
 
 // Upload: parse file metadata (sheet names for Excel) — file bytes are NOT stored server-side.

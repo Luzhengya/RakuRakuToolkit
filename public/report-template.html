@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{REPORT_DOCUMENT_TITLE}}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Noto Sans JP", "Yu Gothic", sans-serif;
+      background-color: #f4f7fc;
+      padding: 28px 20px;
+      color: #1e2b3c;
+    }
+    .report-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background-color: #ffffff;
+      border-radius: 18px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+      overflow: hidden;
+      padding: 30px 34px;
+    }
+    .cover-page {
+      min-height: 76vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      border-bottom: 2px solid #2a5c8a;
+      margin-bottom: 24px;
+    }
+    .cover-title {
+      font-size: 40px;
+      font-weight: 700;
+      color: #0a2942;
+      letter-spacing: 1px;
+    }
+    .cover-sub {
+      margin-top: 12px;
+      font-size: 24px;
+      color: #2a5c8a;
+      font-weight: 600;
+    }
+    .cover-meta {
+      margin-top: 16px;
+      text-align: center;
+      color: #6b7f92;
+      font-size: 14px;
+      line-height: 1.7;
+    }
+    .info-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .info-card {
+      border: 1px solid #dfe7ef;
+      border-radius: 14px;
+      padding: 14px 16px;
+      background: #f9fbfd;
+    }
+    .info-card h3 {
+      font-size: 14px;
+      color: #3e5f7e;
+      border-left: 4px solid #2a5c8a;
+      padding-left: 10px;
+      margin-bottom: 8px;
+    }
+    ul.check-list { list-style: none; padding-left: 0; }
+    ul.check-list li { margin: 6px 0; padding-left: 18px; position: relative; font-size: 14px; }
+    ul.check-list li::before { content: "●"; position: absolute; left: 0; color: #2a5c8a; font-size: 10px; top: 4px; }
+    .schedule-line {
+      font-size: 14px;
+      line-height: 1.8;
+      color: #1e3b5a;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .stat-box {
+      border: 1px solid #d8dee9;
+      background: #f8fafc;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .stat-label { font-size: 12px; color: #64748b; margin-bottom: 6px; }
+    .stat-value { font-size: 24px; font-weight: 700; color: #0f172a; }
+    .conclusion-box {
+      background: #f0f6fe;
+      border-left: 8px solid #1e4f7a;
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin-top: 18px;
+    }
+    .effort-box {
+      background: #f8fafc;
+      border: 1px solid #d8dee9;
+      border-left: 6px solid #2a5c8a;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-top: 10px;
+      font-size: 14px;
+      line-height: 1.8;
+      color: #1e3b5a;
+    }
+    .effort-overrun {
+      border-left-color: #b91c1c;
+      background: #fff5f5;
+      color: #7f1d1d;
+      font-weight: 700;
+    }
+    .effort-summary-cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .effort-summary-card {
+      border: 1px solid #d8dee9;
+      background: #f8fafc;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .effort-summary-card .label {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 6px;
+      white-space: nowrap;
+    }
+    .effort-summary-card .value {
+      font-size: 22px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .effort-summary-card.overrun {
+      border-color: #fecaca;
+      background: #fff5f5;
+    }
+    .effort-summary-card.overrun .value {
+      color: #b91c1c;
+    }
+    .effort-project-block {
+      border: 1px solid #d5dde8;
+      margin-top: 14px;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .effort-project-title {
+      background: #eaf1fb;
+      padding: 10px 12px;
+      font-weight: 600;
+      color: #1f4e8c;
+      border-bottom: 1px solid #d5dde8;
+    }
+    .effort-project-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0;
+    }
+    .effort-project-table th,
+    .effort-project-table td {
+      border: 1px solid #d5dde8;
+      padding: 9px 11px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .effort-project-table th {
+      width: 190px;
+      background: #f5f8fc;
+    }
+    .effort-diff-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .effort-diff-overrun {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+    .effort-diff-under {
+      background: #dcfce7;
+      color: #166534;
+    }
+    .effort-diff-even {
+      background: #e2e8f0;
+      color: #334155;
+    }
+    .conclusion-title { font-size: 18px; font-weight: 700; color: #0a2942; margin-bottom: 10px; }
+    .section-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin: 30px 0 16px;
+      color: #1e3b5a;
+      border-bottom: 2px solid #cbd6e3;
+      padding-bottom: 8px;
+    }
+    .task-block {
+      border-radius: 14px;
+      border: 1px solid #d9e2ec;
+      margin-bottom: 16px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .task-header {
+      background: #e6edf5;
+      padding: 12px 16px;
+      font-weight: 700;
+      color: #103a5c;
+      border-bottom: 1px solid #cbd6e3;
+    }
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px 16px 8px;
+      background: transparent;
+    }
+    .stat-item {
+      display: flex;
+      align-items: baseline;
+      justify-content: flex-start;
+      gap: 6px;
+      min-height: auto;
+      text-align: left;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      padding: 0;
+      white-space: nowrap;
+    }
+    .stats-row .stat-label {
+      white-space: nowrap;
+      font-size: 13px;
+      color: #334155;
+      margin-bottom: 0;
+    }
+    .stat-number {
+      font-size: 16px;
+      font-weight: 700;
+      color: #1e3b5a;
+      margin-top: 0;
+      white-space: nowrap;
+      background: #e6edf7;
+      padding: 2px 10px;
+      border-radius: 999px;
+    }
+    .ok-badge { color: #0f6e3f; background: #dff0e4; padding: 2px 10px; border-radius: 999px; }
+    .ng-badge { color: #b13e3e; background: #ffe6e6; padding: 2px 10px; border-radius: 999px; }
+    .pending-badge { color: #7d5d0a; background: #f9eec1; padding: 2px 10px; border-radius: 999px; }
+    .explain-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .explain-block {
+      border: 1px solid #d8dee9;
+      border-radius: 10px;
+      background: #f9fbfd;
+      padding: 10px 12px;
+      min-height: 110px;
+    }
+    .explain-block h4 {
+      font-size: 14px;
+      color: #244c6f;
+      margin-bottom: 8px;
+    }
+    .editable-note { font-size: 14px; line-height: 1.7; color: #334155; }
+    .footer {
+      margin-top: 24px;
+      border-top: 1px solid #d8dee9;
+      padding-top: 12px;
+      text-align: right;
+      color: #64748b;
+      font-size: 12px;
+    }
+    @media print {
+      @page { size: A4; margin: 12mm; }
+      body { background: #fff; padding: 0; }
+      .report-container { box-shadow: none; border-radius: 0; padding: 0; }
+      .cover-page {
+        min-height: 273mm;
+        page-break-after: always;
+        break-after: page;
+      }
+      .cover-page, .info-card, .stats, .stat-box, .conclusion-box, .task-block, .explain-block, .section-title {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+<div class="report-container">
+  <section class="cover-page">
+    <div class="cover-title">テスト結果報告書</div>
+    <div class="cover-sub">{{AREA_RELEASE_NAME}} {{MM}}月リリース</div>
+    <div class="cover-meta">
+      <div>作成日: {{Today}}</div>
+      <div>テストセンター</div>
+    </div>
+  </section>
+
+  <div class="report-main">
+  <div class="info-stack">
+    <div class="info-card">
+      <h3>テストの対象</h3>
+      <ul class="check-list">{{PROJECT_LIST}}</ul>
+    </div>
+    <div class="info-card">
+      <h3>テストスケジュール</h3>
+      <div class="schedule-line">［済］{{TC開始予定日}}～{{TC設計書完了予定日}} 設計書作成</div>
+      <div class="schedule-line">［済］{{TC設計書完了予定日+1}}～{{TC設計書完了予定日+2}} キックオフミーティング</div>
+      <div class="schedule-line">［済］{{TC設計書完了予定日+1}}～{{TC実施完了予定日}} テスト実施</div>
+      <div class="schedule-line">［待］{{TC実施完了予定日+1}}～{{TC実施完了予定日+2}} テスト結果報告</div>
+    </div>
+    <div class="info-card">
+      <h3>テスト環境</h3>
+      <div class="editable-note" contenteditable="true">{{TEST_ENVIRONMENT_BLOCK}}</div>
+    </div>
+  </div>
+
+  <div class="section-title">テスト実施結果（集計）</div>
+  <div class="stats">
+    <div class="stat-box"><div class="stat-label">テスト総件数</div><div class="stat-value">{{TEST_TOTAL_COUNT}}</div></div>
+    <div class="stat-box"><div class="stat-label">BUG数</div><div class="stat-value">{{BUG_COUNT}}</div></div>
+    <div class="stat-box"><div class="stat-label">テスト不可</div><div class="stat-value">{{TEST_BLOCKED_COUNT}}</div></div>
+    <div class="stat-box"><div class="stat-label">判断不可/想定外件数</div><div class="stat-value">{{PENDING_CONFIRM_COUNT}}</div></div>
+  </div>
+
+  <div class="conclusion-box">
+    <div class="conclusion-title">テスト結論（サマリ）</div>
+    <div>{{REPORT_CONCLUSION}}</div>
+  </div>
+
+  <div class="section-title">案件別結果</div>
+  {{RESULT_CARDS}}
+
+  <div class="section-title">補足説明</div>
+  <div class="explain-grid">
+    <div class="explain-block">
+      <h4>BUG説明</h4>
+      <div class="editable-note" contenteditable="true">ここにBUGの詳細説明を記入してください。</div>
+    </div>
+    <div class="explain-block">
+      <h4>テスト不可説明</h4>
+      <div class="editable-note" contenteditable="true">ここにテスト不可の理由・影響を記入してください。</div>
+    </div>
+    <div class="explain-block">
+      <h4>判断不可/想定外説明</h4>
+      <div class="editable-note" contenteditable="true">ここに判断不可/想定外事項の内容と対応方針を記入してください。</div>
+    </div>
+  </div>
+
+  <div class="section-title">実績工数</div>
+  <div class="effort-summary-cards">
+    <div class="effort-summary-card">
+      <div class="label">見積工数合計</div>
+      <div class="value">{{ESTIMATE_TOTAL_EFFORT}} 人日</div>
+    </div>
+    <div class="effort-summary-card{{ACTUAL_EFFORT_EXTRA_CLASS}}">
+      <div class="label">実績工数合計</div>
+      <div class="value">{{ACTUAL_TOTAL_EFFORT}} 人日</div>
+    </div>
+    <div class="effort-summary-card">
+      <div class="label">差分</div>
+      <div class="value">{{TOTAL_EFFORT_DIFF}} 人日</div>
+    </div>
+  </div>
+  {{EFFORT_PROJECT_BLOCKS}}
+
+  <div class="footer">リスクモンスター株式会社 海南テストセンター</div>
+  </div>
+</div>
+</body>
+</html>
