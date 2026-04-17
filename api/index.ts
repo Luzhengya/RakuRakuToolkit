@@ -96,6 +96,10 @@ type ProgressItem = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  designEstimate: string;
+  implementationEstimate: string;
+  executionEstimate: string;
+  reviewEstimate: string;
   system: string;
   childProjectIds: string[];
 };
@@ -150,6 +154,13 @@ function propertyToPlainText(property: any): string {
   }
 }
 
+function pickProperty(properties: Record<string, any>, names: string[]): any {
+  for (const name of names) {
+    if (properties[name] !== undefined) return properties[name];
+  }
+  return undefined;
+}
+
 function parseProgressItem(page: any): ProgressItem {
   const properties = page?.properties ?? {};
   const childProjectIds = extractChildProjectIds(properties);
@@ -168,6 +179,18 @@ function parseProgressItem(page: any): ProgressItem {
     bugCount: propertyToPlainText(properties["BUG数"]),
     testBlockedCount: propertyToPlainText(properties["Test不可"]),
     pendingConfirmCount: propertyToPlainText(properties["確認中件数"]),
+    designEstimate: propertyToPlainText(
+      pickProperty(properties, ["工数見積(設計書)", "工数見積(設計書)", "工数見積(設計)", "工数見積(設計)"])
+    ),
+    implementationEstimate: propertyToPlainText(
+      pickProperty(properties, ["工数見積(実装)", "工数見積(実装)"])
+    ),
+    executionEstimate: propertyToPlainText(
+      pickProperty(properties, ["工数見積(実施)", "工数見積(実施)"])
+    ),
+    reviewEstimate: propertyToPlainText(
+      pickProperty(properties, ["review見積工数", "Review見積工数", "レビュー見積工数", "review見積工数"])
+    ),
     system: propertyToPlainText(properties["System"]),
     childProjectIds,
   };
@@ -342,6 +365,10 @@ app.get("/api/test-center", async (req, res) => {
         bugCount,
         testBlockedCount,
         pendingConfirmCount,
+        designEstimate,
+        implementationEstimate,
+        executionEstimate,
+        reviewEstimate,
       }) => ({
         id,
         month,
@@ -357,6 +384,10 @@ app.get("/api/test-center", async (req, res) => {
         bugCount,
         testBlockedCount,
         pendingConfirmCount,
+        designEstimate,
+        implementationEstimate,
+        executionEstimate,
+        reviewEstimate,
       }));
 
     return res.json({ area, total: areaItems.length, items: areaItems });

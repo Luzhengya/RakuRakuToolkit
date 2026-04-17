@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
-  ArrowLeft,
   Building2,
   Globe2,
   Landmark,
@@ -31,6 +30,10 @@ type ProgressItem = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  designEstimate: string;
+  implementationEstimate: string;
+  executionEstimate: string;
+  reviewEstimate: string;
 };
 
 type ApiResponse = {
@@ -148,7 +151,7 @@ function replaceToken(source: string, token: string, value: string): string {
 function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
   const byArea: Record<AreaId, string[]> = {
     jmotto: [
-      '☑ [ブラウザ] Chrome（146.0.7680.154）',
+      '☑ [ブラウザ] Chrome（147.0.7727.102）',
       '☑ [ポータル] https://www1-v2stg100.j-motto.co.jp/web/doLogin',
       '☑ [ GW ] https://gws85.j-motto.co.jp/cgi-bin/',
       '□ [ポータル申込画面] https://www1-v2stg100.j-motto.co.jp/web2/entrRegist',
@@ -156,18 +159,18 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '□ [ WPDL ] https://www1-v2stg101.j-motto.co.jp/00000000/wp/',
     ],
     univ: [
-      '☑ [ブラウザ] Chrome (145.0.7632.160)',
+      '☑ [ブラウザ] Chrome (147.0.7727.102)',
       '☑ [ スマホ ] IOS26.1 ｜ android16',
       '☑ [ UNIV2 ] https://54.64.96.104/login',
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     credit: [
-      '☑ [ブラウザ] Chrome (146.0.7680.164)',
+      '☑ [ブラウザ] Chrome (147.0.7727.102)',
       '☑ [利用者] https://test-alb.kigyo-joho.com/login/1DCCyG3Xe1',
       '☑ [管理者] http://10.240.14.166/login/',
     ],
     overseas: [
-      '☑ [ChromeVersion] 146.0.7680.165',
+      '☑ [ChromeVersion] 147.0.7727.102',
       '☑ [管理] http://54.92.97.142/report/inner/index.html',
       '☑ [利墨] https://140.179.40.134/ssoLogin/login',
       '☑ [与信・RM] http://172.26.4.109:8080/rismon_ukeire/',
@@ -248,7 +251,7 @@ function buildPlanHtml(
             <tr><th>開発工数</th><td contenteditable="true">${safeHtml(item.developmentEffort || '')}</td></tr>
             <tr><th>テストセンターの見積工数</th><td contenteditable="true">${safeHtml(item.estimateTotal || '')}</td></tr>
             <tr><th>テストセンターの実績工数</th><td contenteditable="true">${safeHtml(item.actualTotal || '')}</td></tr>
-            <tr><th>詳細内訳</th><td>設計書作成:<br>実装作成:<br>テスト実施:<br>レビュー:</td></tr>
+            <tr><th>詳細内訳</th><td contenteditable="true">設計書作成: ${safeHtml(item.designEstimate || '')}<br>実装作成: ${safeHtml(item.implementationEstimate || '')}<br>テスト実施: ${safeHtml(item.executionEstimate || '')}<br>レビュー: ${safeHtml(item.reviewEstimate || '')}</td></tr>
           </tbody>
         </table>
       </div>`
@@ -756,46 +759,92 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     previewWindow.print();
   };
 
+  const goToAreaList = () => {
+    setSelectedAreaId(null);
+    setItems([]);
+    setError(null);
+    setActiveMonthTab('');
+    setCheckedMap({});
+    setPlanError(null);
+    setReportError(null);
+    setResultDraftMap({});
+    setSavingResultMap({});
+    setResultSaveNoticeMap({});
+    setEditingResultItemId(null);
+  };
+
   return (
     <>
     <div className="space-y-6">
-      <button
-        onClick={onBack}
-        className="inline-flex items-center gap-2 text-sm font-medium text-neutral-500 hover:text-neutral-900 transition-colors"
-      >
-        <ArrowLeft size={16} />
-        返回首页
-      </button>
+      <nav className="flex items-center gap-2 text-sm">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+        >
+          首页
+        </button>
+        <span className="text-neutral-400">{'>>'}</span>
+        {selectedArea ? (
+          <button
+            type="button"
+            onClick={goToAreaList}
+            className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+          >
+            测试中心
+          </button>
+        ) : (
+          <span className="text-neutral-900 font-medium">测试中心</span>
+        )}
+        {selectedArea && (
+          <>
+            <span className="text-neutral-400">{'>>'}</span>
+            {editingResultItem ? (
+              <button
+                type="button"
+                onClick={() => setEditingResultItemId(null)}
+                className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+              >
+                {selectedArea.title.replace(/エリア$/, '')}
+              </button>
+            ) : (
+              <span className="text-neutral-900 font-medium">
+                {selectedArea.title.replace(/エリア$/, '')}
+              </span>
+            )}
+          </>
+        )}
+        {editingResultItem && (
+          <>
+            <span className="text-neutral-400">{'>>'}</span>
+            <span
+              className="text-neutral-900 font-medium"
+              title={editingResultItem.projectName || '-'}
+            >
+              {(() => {
+                const name = editingResultItem.projectName || '-';
+                return name.length > 8 ? `${name.slice(0, 8)}...` : name;
+              })()}
+            </span>
+          </>
+        )}
+      </nav>
 
       <div className="space-y-2">
-        <h2 className="text-2xl font-bold text-neutral-900">测试中心管理画面</h2>
+        <h2 className="text-2xl font-bold text-neutral-900">
+          {editingResultItem ? '案件詳細' : '测试中心管理画面'}
+        </h2>
         <p className="text-neutral-500">
-          {selectedArea ? `${selectedArea.title} - 进捗列表` : '请按区域进入对应测试管理模块。'}
+          {editingResultItem
+            ? editingResultItem.projectName || '-'
+            : selectedArea
+              ? `${selectedArea.title} - 进捗列表`
+              : '请按区域进入对应测试管理模块。'}
         </p>
       </div>
 
       {selectedArea ? (
         <div className="space-y-4">
-          <button
-            onClick={() => {
-              setSelectedAreaId(null);
-              setItems([]);
-              setError(null);
-              setActiveMonthTab('');
-              setCheckedMap({});
-              setPlanError(null);
-              setReportError(null);
-              setResultDraftMap({});
-              setSavingResultMap({});
-              setResultSaveNoticeMap({});
-              setEditingResultItemId(null);
-            }}
-            className="inline-flex items-center gap-2 text-sm font-medium text-neutral-500 hover:text-neutral-900 transition-colors"
-          >
-            <ArrowLeft size={16} />
-            返回区域列表
-          </button>
-
           {loading && (
             <div className="bg-white border border-neutral-200 rounded-xl p-8 flex items-center justify-center gap-2 text-neutral-500">
               <Loader2 size={18} className="animate-spin" />
@@ -819,15 +868,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           {!loading && !error && items.length > 0 && (
             editingResultItem ? (
               <div className="space-y-4">
-                <button
-                  type="button"
-                  onClick={() => setEditingResultItemId(null)}
-                  className="inline-flex items-center gap-2 text-sm font-medium text-neutral-500 hover:text-neutral-900 transition-colors"
-                >
-                  <ArrowLeft size={16} />
-                  返回列表
-                </button>
-
                 <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-5">
                   <div>
                     <p className="text-xs uppercase tracking-wider text-neutral-400 font-semibold">案件名</p>
