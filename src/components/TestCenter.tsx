@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Building2,
@@ -250,7 +250,6 @@ function buildPlanHtml(
           <tbody>
             <tr><th>開発工数</th><td contenteditable="true">${safeHtml(item.developmentEffort || '')}</td></tr>
             <tr><th>テストセンターの見積工数</th><td contenteditable="true">${safeHtml(item.estimateTotal || '')}</td></tr>
-            <tr><th>テストセンターの実績工数</th><td contenteditable="true">${safeHtml(item.actualTotal || '')}</td></tr>
             <tr><th>詳細内訳</th><td contenteditable="true">設計書作成: ${safeHtml(item.designEstimate || '')}<br>実装作成: ${safeHtml(item.implementationEstimate || '')}<br>テスト実施: ${safeHtml(item.executionEstimate || '')}<br>レビュー: ${safeHtml(item.reviewEstimate || '')}</td></tr>
           </tbody>
         </table>
@@ -433,6 +432,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [checkedMap, setCheckedMap] = useState<Record<string, boolean>>({});
   const [planHtml, setPlanHtml] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
+  const planPreviewIframeRef = useRef<HTMLIFrameElement>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [templateHtml, setTemplateHtml] = useState('');
   const [creatingPlan, setCreatingPlan] = useState(false);
@@ -702,13 +702,18 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
   const handleSavePdf = () => {
     if (!selectedAreaId) return;
+    const iframe = planPreviewIframeRef.current;
+    const liveRoot = iframe?.contentDocument?.documentElement;
+    const htmlToPrint = liveRoot
+      ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
+      : planHtml;
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
       setPlanError('浏览器阻止了弹窗，请允许后重试。');
       return;
     }
     previewWindow.document.open();
-    previewWindow.document.write(planHtml);
+    previewWindow.document.write(htmlToPrint);
     previewWindow.document.close();
     previewWindow.document.title = getPlanPdfFilename(currentMonthKey, selectedAreaId);
     previewWindow.focus();
@@ -1089,7 +1094,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
         <div className="h-full max-w-7xl mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
-            <h3 className="text-base font-semibold text-neutral-900">計画資料（可编辑）</h3>
+            <h3 className="text-base font-semibold text-neutral-900">計画資料</h3>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -1107,13 +1112,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </button>
             </div>
           </div>
-          <div className="flex-1 grid grid-cols-2 min-h-0">
-            <textarea
-              value={planHtml}
-              onChange={(e) => setPlanHtml(e.target.value)}
-              className="w-full h-full min-h-[260px] p-4 font-mono text-xs border-r border-neutral-200 outline-none resize-none"
+          <div className="flex-1 min-h-0 flex flex-col">
+            <iframe
+              ref={planPreviewIframeRef}
+              title="plan-preview"
+              srcDoc={planHtml}
+              className="w-full flex-1 min-h-[260px] bg-white border-0"
             />
-            <iframe title="plan-preview" srcDoc={planHtml} className="w-full h-full bg-white" />
           </div>
         </div>
       </div>
