@@ -79,7 +79,7 @@ async function convertPdfToWordBuffer(pdfBuffer: Buffer): Promise<Buffer> {
   return streamToBuffer(streamAsset.readStream);
 }
 
-type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit";
+type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu";
 
 type ProgressItem = {
   id: string;
@@ -234,6 +234,16 @@ function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
       return matchesAny(["海外調書", "海外调书"]);
     case "credit":
       return matchesAny(["企業情報", "企業信用情報", "企业信用情报", "企业信息"]);
+    case "jmotto-app":
+      return matchesAny(["jmottoアプリ"]);
+    case "univ-app":
+      return matchesAny(["univアプリ", "univ アプリ"]);
+    case "univ-contents":
+      return matchesAny(["univcontents", "univ contents", "univコンテンツ"]);
+    case "nayose":
+      return matchesAny(["名寄せアプリ", "名寄せ"]);
+    case "gyoshu":
+      return matchesAny(["業種別", "业种别"]);
     default:
       return false;
   }
@@ -326,7 +336,7 @@ app.get("/api/pdf-status", (_req, res) => {
 
 app.get("/api/test-center", async (req, res) => {
   const area = req.query.area as TestCenterArea | undefined;
-  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit"];
+  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu"];
   if (!area || !validAreas.includes(area)) {
     return res.status(400).json({ error: "Invalid area parameter" });
   }

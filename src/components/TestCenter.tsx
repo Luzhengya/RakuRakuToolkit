@@ -6,14 +6,18 @@ import {
   Landmark,
   Loader2,
   FileText,
-  School
+  School,
+  Smartphone,
+  BookOpen,
+  Users,
+  Briefcase,
 } from 'lucide-react';
 
 type TestCenterProps = {
   onBack: () => void;
 };
 
-type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas';
+type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu';
 
 type ProgressItem = {
   id: string;
@@ -176,6 +180,38 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '☑ [与信・RM] http://172.26.4.109:8080/rismon_ukeire/',
       '☑ [FNA] https://140.179.40.134/.mypage/fna_login',
     ],
+    'jmotto-app': [
+      '[本番環境]',
+      '☑ IOS26.1.0（iphone13）',
+      '☑ Android16（Pixel 6A）',
+      '[テストアカウント]',
+      '☑ JM0000017 / 00391 / test1234',
+    ],
+    'univ-app': [
+      '[検証環境]',
+      '☑ IOS26.1.0（iphone13）(safari)',
+      '☑ Android16（Pixel 6A）(chrome)',
+      '☑ [ UNIV２ ] https://18.178.87.210/',
+      '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
+    ],
+    'univ-contents': [
+      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ スマホ ] IOS26.1 ｜ android16',
+      '☑ [ スマホ ] IOS18 ｜ android12（比較バージョン）',
+      '☑ [ UNIVコンテンツ ] https://www.cybaxuniv.com/',
+      '☑ [ UNIV２ ] https://54.64.96.104/login',
+    ],
+    'nayose': [
+      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [URL] https://test-nayose.riskmonster.net/login',
+      '☑ [URL] http://172.26.4.109:8080/rismon_ukeire/',
+    ],
+    'gyoshu': [
+      '☑ Chrome（147.0.7727.102）',
+      '☑ IOS26.1.0（iphone13）',
+      '☑ Android16（Pixel 6A）',
+      '☑ https://test-gyoushu.riskmonster.net/',
+    ],
   };
   return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
 }
@@ -200,7 +236,32 @@ const AREA_DOC_META: Record<AreaId, AreaDocMeta> = {
     releaseNameJa: '企業信用情報',
     planFileNamePrefix: '企業信用情報',
     svnPathSegment: '企業調査WEB,SYS'
-  }
+  },
+  'jmotto-app': {
+    releaseNameJa: 'jmottoアプリ',
+    planFileNamePrefix: 'jmottoアプリ',
+    svnPathSegment: 'J-motto(スマホ)',
+  },
+  'univ-app': {
+    releaseNameJa: 'Univアプリ',
+    planFileNamePrefix: 'Univアプリ',
+    svnPathSegment: 'Univ(スマホ)',
+  },
+  'univ-contents': {
+    releaseNameJa: 'UnivContents',
+    planFileNamePrefix: 'Univコンテンツ',
+    svnPathSegment: 'Univ(コンテンツ)',
+  },
+  'nayose': {
+    releaseNameJa: '名寄せアプリ',
+    planFileNamePrefix: '名寄せアプリ',
+    svnPathSegment: '名寄せアプリ',
+  },
+  'gyoshu': {
+    releaseNameJa: '業種別審査ノート',
+    planFileNamePrefix: '業種別審査ノート',
+    svnPathSegment: '業種別',
+  },
 };
 
 /** ブラウザ「名前を付けて PDF 保存」の初期ファイル名に使う（document.title と一致） */
@@ -420,7 +481,37 @@ const AREAS = [
     title: '海外調書エリア',
     description: '用于海外調書测试任务的统一管理。',
     icon: <Globe2 className="text-emerald-600" size={22} />
-  }
+  },
+  {
+    id: 'jmotto-app' as AreaId,
+    title: 'jmottoアプリエリア',
+    description: 'jmottoアプリ関連のテスト項目を統一管理する。',
+    icon: <Smartphone className="text-blue-500" size={22} />
+  },
+  {
+    id: 'univ-app' as AreaId,
+    title: 'Univアプリエリア',
+    description: 'Univアプリ関連のテスト項目を統一管理する。',
+    icon: <Smartphone className="text-violet-500" size={22} />
+  },
+  {
+    id: 'univ-contents' as AreaId,
+    title: 'UnivContentsエリア',
+    description: 'UnivContents関連のテスト項目を統一管理する。',
+    icon: <BookOpen className="text-teal-600" size={22} />
+  },
+  {
+    id: 'nayose' as AreaId,
+    title: '名寄せアプリエリア',
+    description: '名寄せアプリ関連のテスト項目を統一管理する。',
+    icon: <Users className="text-orange-500" size={22} />
+  },
+  {
+    id: 'gyoshu' as AreaId,
+    title: '業種別エリア',
+    description: '業種別審査ノート関連のテスト項目を統一管理する。',
+    icon: <Briefcase className="text-rose-500" size={22} />
+  },
 ];
 
 export default function TestCenter({ onBack }: TestCenterProps) {
