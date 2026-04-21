@@ -1,23 +1,43 @@
-import { 
-  FileSpreadsheet, 
-  FileText as FilePdf, 
+import {
+  FileSpreadsheet,
+  FileText as FilePdf,
   Layers,
   LayoutGrid,
-  Loader2, 
-  ExternalLink, 
-  ChevronRight 
+  FilePen,
+  Loader2,
+  ExternalLink,
+  ChevronRight,
 } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 
-export default function Home({ onSelectTool }: { onSelectTool: (id: string) => void }) {
-  const tools = [
+interface Tool {
+  id: string;
+  title: string;
+  description: string;
+  category: '文档类' | '管理类';
+  icon: React.ReactNode;
+  onClick: () => void;
+}
+
+const CATEGORY_META: Record<string, { heading: string; sub: string }> = {
+  文档类: { heading: '文档工具', sub: '文件格式转换、合并与编辑' },
+  管理类: { heading: '管理工具', sub: '项目与测试过程管理' },
+};
+
+interface HomeProps {
+  category: '文档类' | '管理类';
+  onSelectTool: (id: string) => void;
+}
+
+export default function Home({ category, onSelectTool }: HomeProps) {
+  const allTools: Tool[] = [
     {
       id: 'excel-to-md',
       title: 'Excel转Markdown',
       description: '将Excel文件转换为精简的Markdown表格，支持图片提取和形状文字识别。',
       category: '文档类',
       icon: <FileSpreadsheet className="text-green-600" size={24} />,
-      onClick: () => onSelectTool('excel-to-md')
+      onClick: () => onSelectTool('excel-to-md'),
     },
     {
       id: 'pdf-to-word',
@@ -25,7 +45,7 @@ export default function Home({ onSelectTool }: { onSelectTool: (id: string) => v
       description: '将PDF文件转换为可编辑的Word文档，保持原有文件名。',
       category: '文档类',
       icon: <FilePdf className="text-red-600" size={24} />,
-      onClick: () => onSelectTool('pdf-to-word')
+      onClick: () => onSelectTool('pdf-to-word'),
     },
     {
       id: 'pdf-merge',
@@ -33,7 +53,15 @@ export default function Home({ onSelectTool }: { onSelectTool: (id: string) => v
       description: '上传多个PDF文件，拖拽调整合并顺序，一键合并成单个PDF文件下载。',
       category: '文档类',
       icon: <Layers className="text-indigo-600" size={24} />,
-      onClick: () => onSelectTool('pdf-merge')
+      onClick: () => onSelectTool('pdf-merge'),
+    },
+    {
+      id: 'pdf-edit',
+      title: 'PDF编辑',
+      description: '上传PDF文件，直接点击文字区域修改内容，支持中日文，完成后下载修改版。',
+      category: '文档类',
+      icon: <FilePen className="text-violet-600" size={24} />,
+      onClick: () => onSelectTool('pdf-edit'),
     },
     {
       id: 'test-center',
@@ -41,29 +69,51 @@ export default function Home({ onSelectTool }: { onSelectTool: (id: string) => v
       description: '进入测试中心管理画面，按区域管理测试模块。',
       category: '管理类',
       icon: <LayoutGrid className="text-sky-600" size={24} />,
-      onClick: () => onSelectTool('test-center')
+      onClick: () => onSelectTool('test-center'),
     },
   ];
 
+  const tools = allTools.filter(t => t.category === category);
+  const meta = CATEGORY_META[category];
+
   return (
     <div className="space-y-8">
-      <div className="flex flex-col gap-2">
-        <h2 className="text-2xl font-bold text-neutral-900">推荐工具</h2>
-        <p className="text-neutral-500">高效、简洁、好用的在线工具集</p>
-      </div>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={category}
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.18 }}
+          className="flex flex-col gap-2"
+        >
+          <h2 className="text-2xl font-bold text-neutral-900">{meta.heading}</h2>
+          <p className="text-neutral-500">{meta.sub}</p>
+        </motion.div>
+      </AnimatePresence>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {tools.map((tool) => (
-          <ToolCard key={tool.id} {...tool} />
-        ))}
-        
-        <div className="border border-dashed border-neutral-200 rounded-xl p-6 flex flex-col items-center justify-center text-neutral-300 gap-2 min-h-[180px]">
-          <div className="w-12 h-12 rounded-full bg-neutral-50 flex items-center justify-center">
-            <Loader2 size={24} />
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={category}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -8 }}
+          transition={{ duration: 0.2 }}
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+        >
+          {tools.map(tool => (
+            <ToolCard key={tool.id} {...tool} />
+          ))}
+
+          {/* "Coming soon" placeholder */}
+          <div className="border border-dashed border-neutral-200 rounded-xl p-6 flex flex-col items-center justify-center text-neutral-300 gap-2 min-h-[180px]">
+            <div className="w-12 h-12 rounded-full bg-neutral-50 flex items-center justify-center">
+              <Loader2 size={24} />
+            </div>
+            <p className="text-sm font-medium">更多工具开发中...</p>
           </div>
-          <p className="text-sm font-medium">更多工具开发中...</p>
-        </div>
-      </div>
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }

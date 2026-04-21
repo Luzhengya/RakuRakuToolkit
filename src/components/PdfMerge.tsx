@@ -1,4 +1,7 @@
-import { useState, useEffect, type DragEvent } from 'react';
+import { useState, useRef, useCallback, type DragEvent, type ChangeEvent } from 'react';
+import * as pdfjsLib from 'pdfjs-dist';
+// Vite ?url import serves the worker from local node_modules — avoids CDN version mismatch
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
   Upload,
   Download,
@@ -7,70 +10,141 @@ import {
   ArrowLeft,
   GripVertical,
   X,
-  FileText,
   Layers,
-  ChevronUp,
-  ChevronDown,
+  FileText,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { useFileUpload } from '../hooks/useFileUpload';
-import type { UploadedFile } from '../types';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+const THUMB_W = 132;
+
+interface PageItem {
+  id: string;
+  fileIndex: number;
+  pageIndex: number; // 0-based
+  pageNumber: number; // 1-based, for display
+  fileName: string;
+  thumbnail: string; // data URL
+}
+
+async function renderThumbnail(
+  pdf: pdfjsLib.PDFDocumentProxy,
+  pageNum: number // 1-based
+): Promise<string> {
+  const page = await pdf.getPage(pageNum);
+  const viewport = page.getViewport({ scale: 1 });
+  const scale = THUMB_W / viewport.width;
+  const scaled = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(scaled.width);
+  canvas.height = Math.round(scaled.height);
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport: scaled }).promise;
+  return canvas.toDataURL('image/jpeg', 0.75);
+}
 
 export default function PdfMerge({ onBack }: { onBack: () => void }) {
-  const {
-    files,
-    uploadedFiles,
-    loading: uploading,
-    error: uploadError,
-    isDragging,
-    fileInputRef,
-    handleFiles,
-    handleDragOver,
-    handleDragLeave,
-    handleDrop,
-    reset: resetUpload,
-  } = useFileUpload({ accept: ['.pdf'], maxFiles: 20 });
+  const fileInputRef = useRef<HTMLInputElement>(null!);
 
-  // Accumulated ordered file list across multiple upload sessions
-  const [orderedFiles, setOrderedFiles] = useState<UploadedFile[]>([]);
-  // Drag-to-reorder state
+  // All accumulated File objects (never shrinks; fileIndex references into this)
+  const [allFiles, setAllFiles] = useState<File[]>([]);
+  // Ordered page list shown in the grid
+  const [pages, setPages] = useState<PageItem[]>([]);
+
+  const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Drag-to-reorder page cards
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+
   // Merge state
   const [merging, setMerging] = useState(false);
   const [mergeSuccess, setMergeSuccess] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [outputName, setOutputName] = useState('merged.pdf');
 
-  // Append newly uploaded PDFs to the ordered list
-  useEffect(() => {
-    const pdfs = uploadedFiles.filter(f => f.type === 'pdf');
-    if (pdfs.length > 0) {
-      setOrderedFiles(prev => [...prev, ...pdfs]);
+  // ── Load PDFs & render thumbnails ──────────────────────────────────
+  const addPdfFiles = useCallback(async (newFiles: File[]) => {
+    const pdfs = newFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfs.length === 0) {
+      setUploadError('请上传 .pdf 格式的文件');
+      return;
     }
-  }, [uploadedFiles]);
-
-  // ── File list manipulation ──────────────────────────────────────────
-  const removeFile = (index: number) => {
-    setOrderedFiles(prev => prev.filter((_, i) => i !== index));
+    setUploadError(null);
+    setLoading(true);
     setMergeSuccess(false);
-  };
+    setMergeError(null);
 
-  const moveFile = (index: number, dir: 'up' | 'down') => {
-    const next = dir === 'up' ? index - 1 : index + 1;
-    if (next < 0 || next >= orderedFiles.length) return;
-    const arr = [...orderedFiles];
-    [arr[index], arr[next]] = [arr[next], arr[index]];
-    setOrderedFiles(arr);
-    setMergeSuccess(false);
-  };
+    try {
+      const newPages: PageItem[] = [];
+      // Snapshot current file count so indices are stable across batches
+      const startIndex = allFiles.length;
 
-  // ── Drag-to-reorder handlers (file list items) ─────────────────────
-  const onItemDragStart = (e: DragEvent<HTMLDivElement>, index: number) => {
+      for (let fi = 0; fi < pdfs.length; fi++) {
+        const file = pdfs[fi];
+        const fileIndex = startIndex + fi;
+        setLoadingMsg(`读取 ${file.name}（${fi + 1}/${pdfs.length}）...`);
+
+        const buf = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+
+        for (let pi = 0; pi < pdf.numPages; pi++) {
+          setLoadingMsg(`渲染 ${file.name} 第 ${pi + 1}/${pdf.numPages} 页...`);
+          const thumbnail = await renderThumbnail(pdf, pi + 1);
+          newPages.push({
+            id: `f${fileIndex}-p${pi}-${Date.now()}`,
+            fileIndex,
+            pageIndex: pi,
+            pageNumber: pi + 1,
+            fileName: file.name,
+            thumbnail,
+          });
+        }
+      }
+
+      setAllFiles(prev => [...prev, ...pdfs]);
+      setPages(prev => [...prev, ...newPages]);
+    } catch (err) {
+      console.error(err);
+      setUploadError('PDF 读取失败，请确认文件未损坏');
+    } finally {
+      setLoading(false);
+      setLoadingMsg('');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allFiles.length]);
+
+  const handleFileInput = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    addPdfFiles(files);
+  }, [addPdfFiles]);
+
+  const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    setIsDragging(true);
+  }, []);
+  const handleDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    setIsDragging(false);
+  }, []);
+  const handleDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault(); e.stopPropagation();
+    setIsDragging(false);
+    addPdfFiles(Array.from(e.dataTransfer.files));
+  }, [addPdfFiles]);
+
+  // ── Page card drag-to-reorder ──────────────────────────────────────
+  const onCardDragStart = (e: DragEvent<HTMLDivElement>, index: number) => {
     e.stopPropagation();
     setDragIndex(index);
     e.dataTransfer.effectAllowed = 'move';
-    // Transparent drag ghost
     const ghost = document.createElement('div');
     ghost.style.opacity = '0';
     document.body.appendChild(ghost);
@@ -78,27 +152,33 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
     setTimeout(() => document.body.removeChild(ghost), 0);
   };
 
-  const onItemDragOver = (e: DragEvent<HTMLDivElement>, index: number) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const onCardDragOver = (e: DragEvent<HTMLDivElement>, index: number) => {
+    e.preventDefault(); e.stopPropagation();
     setDragOverIndex(index);
     if (dragIndex === null || dragIndex === index) return;
-    const arr = [...orderedFiles];
-    const [moved] = arr.splice(dragIndex, 1);
-    arr.splice(index, 0, moved);
-    setOrderedFiles(arr);
+    setPages(prev => {
+      const arr = [...prev];
+      const [moved] = arr.splice(dragIndex, 1);
+      arr.splice(index, 0, moved);
+      return arr;
+    });
     setDragIndex(index);
   };
 
-  const onItemDragEnd = (e: DragEvent<HTMLDivElement>) => {
+  const onCardDragEnd = (e: DragEvent<HTMLDivElement>) => {
     e.stopPropagation();
     setDragIndex(null);
     setDragOverIndex(null);
   };
 
+  const removePage = (index: number) => {
+    setPages(prev => prev.filter((_, i) => i !== index));
+    setMergeSuccess(false);
+  };
+
   // ── Merge & download ───────────────────────────────────────────────
   const handleMerge = async () => {
-    if (orderedFiles.length < 2) return;
+    if (pages.length === 0 || merging) return;
     setMerging(true);
     setMergeError(null);
     setMergeSuccess(false);
@@ -107,25 +187,18 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       const name = outputName.trim() || 'merged.pdf';
       const finalName = name.endsWith('.pdf') ? name : `${name}.pdf`;
 
-      // Re-send original File objects in the user-selected order.
-      // orderedFiles[i].filename maps to uploadedFiles[j].filename → files[j]
       const formData = new FormData();
-      for (const fileInfo of orderedFiles) {
-        const idx = uploadedFiles.findIndex(uf => uf.filename === fileInfo.filename);
-        if (idx !== -1 && files[idx]) {
-          formData.append('files', files[idx]);
-        }
-      }
+      allFiles.forEach(f => formData.append('files', f));
+      formData.append(
+        'pages',
+        JSON.stringify(pages.map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex })))
+      );
       formData.append('outputName', finalName);
 
-      const response = await fetch('/api/pdf-merge', {
-        method: 'POST',
-        body: formData,
-      });
-
+      const response = await fetch('/api/pdf-merge', { method: 'POST', body: formData });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || '合并请求失败');
+        throw new Error((data as { error?: string }).error || '合并请求失败');
       }
 
       const blob = await response.blob();
@@ -139,19 +212,21 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       window.URL.revokeObjectURL(url);
 
       setMergeSuccess(true);
-      setOrderedFiles([]);
-      resetUpload();
-    } catch (err: any) {
-      setMergeError(err.message || '合并失败，请重试');
+      setPages([]);
+      setAllFiles([]);
+    } catch (err: unknown) {
+      setMergeError(err instanceof Error ? err.message : '合并失败，请重试');
     } finally {
       setMerging(false);
     }
   };
 
-  const canMerge = orderedFiles.length >= 2 && !merging;
+  const totalPages = pages.length;
+  const uniqueFiles = new Set(pages.map(p => p.fileIndex)).size;
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-5xl mx-auto">
+      {/* Back */}
       <button
         onClick={onBack}
         className="flex items-center gap-2 text-neutral-500 hover:text-neutral-900 transition-colors mb-6 group"
@@ -161,59 +236,74 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       </button>
 
       <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-8">
+        {/* Header */}
         <div className="mb-8">
           <h2 className="text-2xl font-bold text-neutral-900 mb-2">PDF 合并</h2>
-          <p className="text-neutral-500">上传多个 PDF，调整合并顺序后一键下载</p>
+          <p className="text-neutral-500">
+            上传多个 PDF，按页显示后可调整每一页的顺序、删除不需要的页，最后合并下载
+          </p>
         </div>
 
         <div className="space-y-6">
 
           {/* ── Upload zone ── */}
           <div
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => !loading && fileInputRef.current?.click()}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             className={[
-              'relative group cursor-pointer border-2 border-dashed rounded-xl p-8 transition-all duration-300',
-              isDragging
-                ? 'border-indigo-500 bg-indigo-50 scale-[1.01]'
-                : orderedFiles.length > 0
-                  ? 'border-indigo-300 bg-indigo-50/40 hover:border-indigo-400'
-                  : 'border-neutral-200 hover:border-neutral-300 bg-neutral-50',
+              'relative group cursor-pointer border-2 border-dashed rounded-xl p-6 transition-all duration-300',
+              loading
+                ? 'cursor-not-allowed border-neutral-200 bg-neutral-50'
+                : isDragging
+                  ? 'border-indigo-500 bg-indigo-50 scale-[1.01]'
+                  : pages.length > 0
+                    ? 'border-indigo-300 bg-indigo-50/40 hover:border-indigo-400'
+                    : 'border-neutral-200 hover:border-neutral-300 bg-neutral-50',
             ].join(' ')}
           >
             <input
               type="file"
               ref={fileInputRef}
-              onChange={e => handleFiles(e.target.files)}
+              onChange={handleFileInput}
               className="hidden"
               accept=".pdf"
               multiple
             />
             <div className="flex items-center gap-4">
               <div className={[
-                'p-3 rounded-xl flex-shrink-0 transition-transform group-hover:scale-110',
-                isDragging || orderedFiles.length > 0
-                  ? 'bg-indigo-100 text-indigo-600'
-                  : 'bg-white shadow-sm text-neutral-400',
+                'p-3 rounded-xl flex-shrink-0 transition-transform',
+                loading ? 'bg-white shadow-sm text-neutral-400'
+                  : isDragging || pages.length > 0
+                    ? 'bg-indigo-100 text-indigo-600 group-hover:scale-110'
+                    : 'bg-white shadow-sm text-neutral-400 group-hover:scale-110',
               ].join(' ')}>
-                {uploading
+                {loading
                   ? <Loader2 size={24} className="animate-spin" />
                   : <Upload size={24} />
                 }
               </div>
               <div>
-                <p className="font-semibold text-neutral-700">
-                  {isDragging
-                    ? '松开鼠标以添加文件'
-                    : orderedFiles.length > 0
-                      ? '继续拖拽或点击添加更多 PDF'
-                      : '点击或拖拽上传 PDF 文件'}
-                </p>
-                <p className="text-xs text-neutral-400 mt-0.5">
-                  支持 .pdf 格式，最多 20 个，单文件最大 100MB
-                </p>
+                {loading ? (
+                  <>
+                    <p className="font-semibold text-neutral-700">正在处理…</p>
+                    <p className="text-xs text-neutral-400 mt-0.5">{loadingMsg}</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-neutral-700">
+                      {isDragging
+                        ? '松开以添加文件'
+                        : pages.length > 0
+                          ? '继续拖拽或点击添加更多 PDF'
+                          : '点击或拖拽上传 PDF 文件'}
+                    </p>
+                    <p className="text-xs text-neutral-400 mt-0.5">
+                      支持 .pdf 格式，最多 20 个，单文件最大 50MB
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -230,145 +320,140 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
             </motion.div>
           )}
 
-          {/* ── File preview list ── */}
+          {/* ── Page grid ── */}
           <AnimatePresence>
-            {orderedFiles.length > 0 && (
+            {pages.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
                 className="space-y-4"
               >
-                {/* List header */}
+                {/* Grid header */}
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-neutral-400 uppercase tracking-widest">
-                    合并顺序（{orderedFiles.length} 个文件）
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-neutral-400 uppercase tracking-widest">
+                      页面预览
+                    </span>
+                    <span className="text-xs text-neutral-400">
+                      共 {totalPages} 页
+                      {uniqueFiles > 1 ? `，来自 ${uniqueFiles} 个文件` : ''}
+                    </span>
+                  </div>
                   <span className="text-xs text-neutral-400 flex items-center gap-1">
                     <GripVertical size={12} />
-                    拖拽或使用箭头调整顺序
+                    拖拽页面卡片调整顺序
                   </span>
                 </div>
 
-                {/* File cards */}
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                  {orderedFiles.map((file, index) => (
-                    <div
-                      key={`${file.filename}-${index}`}
-                      draggable
-                      onDragStart={e => onItemDragStart(e, index)}
-                      onDragOver={e => onItemDragOver(e, index)}
-                      onDragEnd={onItemDragEnd}
-                      className={[
-                        'flex items-center gap-3 p-3 rounded-xl border transition-all duration-150 select-none',
-                        dragIndex === index
-                          ? 'opacity-40 border-indigo-300 bg-indigo-50 scale-[0.97] shadow-inner'
-                          : dragOverIndex === index && dragIndex !== null
-                            ? 'border-indigo-400 bg-indigo-50 shadow-md'
-                            : 'border-neutral-200 bg-white hover:border-neutral-300 hover:shadow-sm',
-                      ].join(' ')}
-                    >
-                      {/* Drag handle */}
-                      <div className="cursor-grab active:cursor-grabbing text-neutral-300 hover:text-neutral-500 flex-shrink-0 transition-colors">
-                        <GripVertical size={16} />
-                      </div>
-
-                      {/* Order badge */}
-                      <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-xs font-bold flex items-center justify-center flex-shrink-0">
-                        {index + 1}
-                      </div>
-
-                      {/* PDF icon */}
-                      <div className="w-8 h-8 bg-red-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <FileText size={16} className="text-red-500" />
-                      </div>
-
-                      {/* File name */}
-                      <p
-                        className="flex-1 text-sm text-neutral-700 font-medium truncate"
-                        title={file.originalName}
+                {/* Scrollable page grid */}
+                <div className="max-h-[600px] overflow-y-auto rounded-xl border border-neutral-100 bg-neutral-50 p-4">
+                  <div
+                    className="grid gap-3"
+                    style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${THUMB_W}px, 1fr))` }}
+                  >
+                    {pages.map((page, index) => (
+                      <div
+                        key={page.id}
+                        draggable
+                        onDragStart={e => onCardDragStart(e, index)}
+                        onDragOver={e => onCardDragOver(e, index)}
+                        onDragEnd={onCardDragEnd}
+                        className={[
+                          'relative group flex flex-col rounded-xl border overflow-hidden select-none transition-all duration-150 cursor-grab active:cursor-grabbing',
+                          dragIndex === index
+                            ? 'opacity-40 border-indigo-400 shadow-inner scale-95'
+                            : dragOverIndex === index && dragIndex !== null
+                              ? 'border-indigo-400 shadow-lg scale-[1.03]'
+                              : 'border-neutral-200 bg-white hover:border-neutral-300 hover:shadow-md',
+                        ].join(' ')}
                       >
-                        {file.originalName}
-                      </p>
+                        {/* Thumbnail */}
+                        <div className="relative bg-neutral-100 flex items-center justify-center overflow-hidden"
+                          style={{ minHeight: 100 }}
+                        >
+                          {page.thumbnail ? (
+                            <img
+                              src={page.thumbnail}
+                              alt={`${page.fileName} 第 ${page.pageNumber} 页`}
+                              className="w-full object-contain"
+                              draggable={false}
+                            />
+                          ) : (
+                            <FileText size={32} className="text-neutral-300" />
+                          )}
 
-                      {/* Up / Down arrows */}
-                      <div className="flex flex-col gap-0.5 flex-shrink-0">
-                        <button
-                          onClick={() => moveFile(index, 'up')}
-                          disabled={index === 0}
-                          className="p-0.5 rounded text-neutral-300 hover:text-neutral-600 disabled:opacity-20 transition-colors"
-                          title="上移"
-                        >
-                          <ChevronUp size={14} />
-                        </button>
-                        <button
-                          onClick={() => moveFile(index, 'down')}
-                          disabled={index === orderedFiles.length - 1}
-                          className="p-0.5 rounded text-neutral-300 hover:text-neutral-600 disabled:opacity-20 transition-colors"
-                          title="下移"
-                        >
-                          <ChevronDown size={14} />
-                        </button>
+                          {/* Order badge */}
+                          <div className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold flex items-center justify-center shadow">
+                            {index + 1}
+                          </div>
+
+                          {/* Delete button (shows on hover) */}
+                          <button
+                            onClick={e => { e.stopPropagation(); removePage(index); }}
+                            className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500 transition-all"
+                            title="删除此页"
+                          >
+                            <X size={11} />
+                          </button>
+
+                          {/* Drag handle overlay (top strip) */}
+                          <div className="absolute inset-x-0 top-0 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                            <GripVertical size={14} className="text-white drop-shadow" />
+                          </div>
+                        </div>
+
+                        {/* Info footer */}
+                        <div className="px-1.5 py-1 bg-white border-t border-neutral-100">
+                          <p className="text-[10px] font-semibold text-neutral-600 truncate" title={page.fileName}>
+                            {page.fileName}
+                          </p>
+                          <p className="text-[10px] text-neutral-400">
+                            第 {page.pageNumber} 页
+                          </p>
+                        </div>
                       </div>
-
-                      {/* Remove button */}
-                      <button
-                        onClick={() => removeFile(index)}
-                        className="flex-shrink-0 p-1.5 rounded-lg text-neutral-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                        title="移除"
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
 
-                {/* Warning: need at least 2 files */}
-                {orderedFiles.length === 1 && (
-                  <p className="text-xs text-amber-600 bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
-                    请至少添加 2 个 PDF 文件才能合并
-                  </p>
-                )}
-
                 {/* Output settings + merge button */}
-                {orderedFiles.length >= 2 && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="space-y-4 pt-2 border-t border-neutral-100"
-                  >
-                    <div className="flex flex-col gap-2">
-                      <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">
-                        输出文件名
-                      </label>
-                      <input
-                        type="text"
-                        value={outputName}
-                        onChange={e => setOutputName(e.target.value)}
-                        placeholder="merged.pdf"
-                        className="w-full p-3 bg-white border border-neutral-200 rounded-lg shadow-sm focus:ring-2 focus:ring-neutral-900 outline-none transition-all text-sm"
-                      />
-                    </div>
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="space-y-4 pt-4 border-t border-neutral-100"
+                >
+                  <div className="flex flex-col gap-2">
+                    <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">
+                      输出文件名
+                    </label>
+                    <input
+                      type="text"
+                      value={outputName}
+                      onChange={e => setOutputName(e.target.value)}
+                      placeholder="merged.pdf"
+                      className="w-full p-3 bg-white border border-neutral-200 rounded-lg shadow-sm focus:ring-2 focus:ring-neutral-900 outline-none transition-all text-sm"
+                    />
+                  </div>
 
-                    <button
-                      onClick={handleMerge}
-                      disabled={!canMerge}
-                      className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
-                    >
-                      {merging ? (
-                        <>
-                          <Loader2 className="animate-spin" size={20} />
-                          合并中...
-                        </>
-                      ) : (
-                        <>
-                          <Layers size={20} />
-                          合并 {orderedFiles.length} 个文件并下载
-                        </>
-                      )}
-                    </button>
-                  </motion.div>
-                )}
+                  <button
+                    onClick={handleMerge}
+                    disabled={pages.length === 0 || merging}
+                    className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                  >
+                    {merging ? (
+                      <>
+                        <Loader2 className="animate-spin" size={20} />
+                        合并中...
+                      </>
+                    ) : (
+                      <>
+                        <Layers size={20} />
+                        合并 {totalPages} 页并下载
+                      </>
+                    )}
+                  </button>
+                </motion.div>
               </motion.div>
             )}
           </AnimatePresence>

@@ -462,7 +462,7 @@ app.post("/api/upload", upload.array("files", 10), async (req, res) => {
 
         if (originalName.endsWith(".xlsx") || originalName.endsWith(".xls")) {
           const workbook = new ExcelJS.Workbook();
-          await workbook.xlsx.load(file.buffer);
+          await workbook.xlsx.load(file.buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
           const sheetNames = workbook.worksheets.map((ws) => ws.name);
           // Use originalName as the "filename" key since we don't save to disk
           return { filename: originalName, originalName, type: "excel" as const, sheetNames };
@@ -515,17 +515,57 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
   }
 });
 
-// PDF merge: client re-sends files in the correct (user-chosen) order
+// PDF merge: accepts files + a JSON `pages` array specifying {fileIndex, pageIndex} per output page.
+// This allows page-level reordering and deletion from multiple source PDFs.
 app.post("/api/pdf-merge", upload.array("files", 20), async (req, res) => {
   const multerFiles = req.files as Express.Multer.File[];
-  if (!multerFiles || multerFiles.length < 2) {
-    return res.status(400).json({ error: "At least 2 files are required for merging" });
+  if (!multerFiles || multerFiles.length === 0) {
+    return res.status(400).json({ error: "No files provided" });
+  }
+
+  const pagesParam = req.body.pages as string | undefined;
+  let pageOrder: Array<{ fileIndex: number; pageIndex: number }> | null = null;
+
+  if (pagesParam) {
+    try {
+      pageOrder = JSON.parse(pagesParam);
+      if (!Array.isArray(pageOrder) || pageOrder.length === 0) {
+        return res.status(400).json({ error: "pages must be a non-empty array" });
+      }
+    } catch {
+      return res.status(400).json({ error: "Invalid pages parameter" });
+    }
   }
 
   const outputName = (req.body.outputName as string) || "merged.pdf";
 
   try {
-    const mergedBuffer = await mergePDFBuffers(multerFiles.map((f) => f.buffer));
+    let mergedBuffer: Buffer;
+
+    if (pageOrder) {
+      // Page-level merge: load all PDFs, then copy only the specified pages in order
+      const pdfDocs = await Promise.all(
+        multerFiles.map((f) => PDFDocument.load(f.buffer as unknown as Parameters<typeof PDFDocument.load>[0]))
+      );
+      const merged = await PDFDocument.create();
+      for (const { fileIndex, pageIndex } of pageOrder) {
+        if (fileIndex < 0 || fileIndex >= pdfDocs.length) continue;
+        const srcDoc = pdfDocs[fileIndex];
+        if (pageIndex < 0 || pageIndex >= srcDoc.getPageCount()) continue;
+        const [copiedPage] = await merged.copyPages(srcDoc, [pageIndex]);
+        merged.addPage(copiedPage);
+      }
+      mergedBuffer = Buffer.from(await merged.save());
+    } else {
+      // Legacy: merge all files in upload order (file-level granularity)
+      if (multerFiles.length < 2) {
+        return res.status(400).json({ error: "At least 2 files are required for merging" });
+      }
+      mergedBuffer = await mergePDFBuffers(
+        multerFiles.map((f) => f.buffer as unknown as Buffer)
+      );
+    }
+
     const filename = outputName.replace(/[^\w\u4e00-\u9fff\-_.]/g, "_");
     res.set("Content-Type", "application/pdf");
     res.set("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
@@ -555,7 +595,7 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
       const fileBuffer = file.buffer;
 
       const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.load(fileBuffer);
+      await workbook.xlsx.load(fileBuffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
       const zip = new JSZip();
       const imagesFolder = zip.folder("images");
