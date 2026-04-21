@@ -176,7 +176,7 @@ function parseProgressItem(page: any): ProgressItem {
     tcDesignCompleteDate: propertyToPlainText(properties["TC設計書完了予定日"]),
     tcExecutionCompleteDate: propertyToPlainText(properties["TC実施完了予定日"]),
     testTotalCount: propertyToPlainText(properties["Test総件数"]),
-    bugCount: propertyToPlainText(properties["BUG数"]),
+    bugCount: propertyToPlainText(properties["NG数"]),
     testBlockedCount: propertyToPlainText(properties["Test不可"]),
     pendingConfirmCount: propertyToPlainText(properties["確認中件数"]),
     designEstimate: propertyToPlainText(
@@ -430,7 +430,7 @@ app.post("/api/test-center/results", async (req, res) => {
 
       const nextProperties = {
         ["Test総件数"]: buildUpdatableProperty(properties["Test総件数"], update.testTotalCount ?? "", "Test総件数"),
-        ["BUG数"]: buildUpdatableProperty(properties["BUG数"], update.bugCount ?? "", "BUG数"),
+        ["NG数"]: buildUpdatableProperty(properties["NG数"], update.bugCount ?? "", "NG数"),
         ["Test不可"]: buildUpdatableProperty(properties["Test不可"], update.testBlockedCount ?? "", "Test不可"),
         ["確認中件数"]: buildUpdatableProperty(
           properties["確認中件数"],

@@ -275,6 +275,49 @@
       margin-bottom: 8px;
     }
     .editable-note { font-size: 14px; line-height: 1.7; color: #334155; }
+    /* 補足説明セクション */
+    .supplement-block {
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 14px;
+      background: #fff;
+    }
+    .supplement-project {
+      background: #f1f5f9;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 10px 16px;
+      font-weight: 700;
+      font-size: 14px;
+      color: #1e3b5a;
+    }
+    .supplement-items {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    .supplement-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .supplement-item:last-child { border-bottom: none; }
+    .supplement-label {
+      flex-shrink: 0;
+      width: 160px;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #475569;
+      background: #f8fafc;
+      border-right: 1px solid #e2e8f0;
+    }
+    .supplement-item .editable-note {
+      flex: 1;
+      padding: 10px 14px;
+      min-height: 44px;
+    }
     .footer {
       margin-top: 24px;
       border-top: 1px solid #d8dee9;
@@ -318,10 +361,7 @@
     </div>
     <div class="info-card">
       <h3>テストスケジュール</h3>
-      <div class="schedule-line">［済］{{TC開始予定日}}～{{TC設計書完了予定日}} 設計書作成</div>
-      <div class="schedule-line">［済］{{TC設計書完了予定日+1}}～{{TC設計書完了予定日+2}} キックオフミーティング</div>
-      <div class="schedule-line">［済］{{TC設計書完了予定日+1}}～{{TC実施完了予定日}} テスト実施</div>
-      <div class="schedule-line">［待］{{TC実施完了予定日+1}}～{{TC実施完了予定日+2}} テスト結果報告</div>
+      <div class="editable-note" contenteditable="true">［済］{{TC開始予定日}}～{{TC設計書完了予定日}} 設計書作成<br>［済］{{TC設計書完了予定日+1}}～{{TC設計書完了予定日+2}} キックオフミーティング<br>［済］{{TC設計書完了予定日+1}}～{{TC実施完了予定日}} テスト実施<br>［待］{{TC実施完了予定日+1}}～{{TC実施完了予定日+2}} テスト結果報告</div>
     </div>
     <div class="info-card">
       <h3>テスト環境</h3>
@@ -332,34 +372,18 @@
   <div class="section-title">テスト実施結果（集計）</div>
   <div class="stats">
     <div class="stat-box"><div class="stat-label">テスト総件数</div><div class="stat-value">{{TEST_TOTAL_COUNT}}</div></div>
-    <div class="stat-box"><div class="stat-label">BUG数</div><div class="stat-value">{{BUG_COUNT}}</div></div>
+    <div class="stat-box"><div class="stat-label">NG数</div><div class="stat-value">{{BUG_COUNT}}</div></div>
     <div class="stat-box"><div class="stat-label">テスト不可</div><div class="stat-value">{{TEST_BLOCKED_COUNT}}</div></div>
     <div class="stat-box"><div class="stat-label">判断不可/想定外件数</div><div class="stat-value">{{PENDING_CONFIRM_COUNT}}</div></div>
   </div>
 
   <div class="conclusion-box">
     <div class="conclusion-title">テスト結論（サマリ）</div>
-    <div>{{REPORT_CONCLUSION}}</div>
+    <div contenteditable="true" style="outline:none;">{{REPORT_CONCLUSION}}</div>
   </div>
 
   <div class="section-title">案件別結果</div>
   {{RESULT_CARDS}}
-
-  <div class="section-title">補足説明</div>
-  <div class="explain-grid">
-    <div class="explain-block">
-      <h4>BUG説明</h4>
-      <div class="editable-note" contenteditable="true">ここにBUGの詳細説明を記入してください。</div>
-    </div>
-    <div class="explain-block">
-      <h4>テスト不可説明</h4>
-      <div class="editable-note" contenteditable="true">ここにテスト不可の理由・影響を記入してください。</div>
-    </div>
-    <div class="explain-block">
-      <h4>判断不可/想定外説明</h4>
-      <div class="editable-note" contenteditable="true">ここに判断不可/想定外事項の内容と対応方針を記入してください。</div>
-    </div>
-  </div>
 
   <div class="section-title">実績工数</div>
   <div class="effort-summary-cards">

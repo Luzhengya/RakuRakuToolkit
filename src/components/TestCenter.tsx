@@ -384,6 +384,34 @@ function buildResultReportHtml(
       const blocked = parseNumber(item.testBlockedCount);
       const pending = parseNumber(item.pendingConfirmCount);
       const pass = Math.max(0, testTotal - bug - blocked - pending);
+
+      // stats-row 直下に条件付き説明行を追加（案件名ヘッダーなし）
+      const explainRows: string[] = [];
+      if (bug > 0) {
+        explainRows.push(`
+          <div class="supplement-item">
+            <div class="supplement-label">NG説明</div>
+            <div class="editable-note" contenteditable="true">ここにNGの詳細説明を記入してください。</div>
+          </div>`);
+      }
+      if (blocked > 0) {
+        explainRows.push(`
+          <div class="supplement-item">
+            <div class="supplement-label">テスト不可説明</div>
+            <div class="editable-note" contenteditable="true">ここにテスト不可の理由・影響を記入してください。</div>
+          </div>`);
+      }
+      if (pending > 0) {
+        explainRows.push(`
+          <div class="supplement-item">
+            <div class="supplement-label">判断不可/想定外説明</div>
+            <div class="editable-note" contenteditable="true">ここに判断不可/想定外事項の内容と対応方針を記入してください。</div>
+          </div>`);
+      }
+      const explainHtml = explainRows.length > 0
+        ? `<div class="supplement-items" style="border-top:1px solid #e2e8f0;">${explainRows.join('')}</div>`
+        : '';
+
       return `
       <div class="task-block">
         <div class="task-header">${safeHtml(item.projectName || '-')}</div>
@@ -394,6 +422,7 @@ function buildResultReportHtml(
           <div class="stat-item"><span class="stat-label">テストNG</span><span class="stat-number ng-badge">${bug}</span></div>
           <div class="stat-item"><span class="stat-label">判断不可/想定外</span><span class="stat-number pending-badge">${pending}</span></div>
         </div>
+        ${explainHtml}
       </div>`;
     })
     .join('\n');
@@ -402,6 +431,12 @@ function buildResultReportHtml(
     .map((item) => {
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
+      const diff = actual - estimate;
+
+      // 工数差分 > 2 の場合のみ工数説明行を追加
+      const effortNoteRow = diff > 2
+        ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${diff}人日を超えています。理由を記入してください。</td></tr>`
+        : '';
 
       return `
       <div class="effort-project-block">
@@ -411,6 +446,7 @@ function buildResultReportHtml(
             <tr><th>開発工数</th><td>${safeHtml(item.developmentEffort || '0')}</td></tr>
             <tr><th>見積工数</th><td>${estimate}</td></tr>
             <tr><th>実績工数</th><td>${actual}</td></tr>
+            ${effortNoteRow}
           </tbody>
         </table>
       </div>`;
@@ -524,6 +560,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [planHtml, setPlanHtml] = useState('');
   const [planOpen, setPlanOpen] = useState(false);
   const planPreviewIframeRef = useRef<HTMLIFrameElement>(null);
+  const reportPreviewIframeRef = useRef<HTMLIFrameElement>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [templateHtml, setTemplateHtml] = useState('');
   const [creatingPlan, setCreatingPlan] = useState(false);
@@ -842,13 +879,18 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
   const handleSaveReportPdf = () => {
     if (!selectedAreaId) return;
+    const iframe = reportPreviewIframeRef.current;
+    const liveRoot = iframe?.contentDocument?.documentElement;
+    const htmlToPrint = liveRoot
+      ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
+      : reportHtml;
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
       setReportError('浏览器阻止了弹窗，请允许后重试。');
       return;
     }
     previewWindow.document.open();
-    previewWindow.document.write(reportHtml);
+    previewWindow.document.write(htmlToPrint);
     previewWindow.document.close();
     previewWindow.document.title = getReportPdfFilename(currentMonthKey, selectedAreaId);
     previewWindow.focus();
@@ -982,7 +1024,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       />
                     </label>
                     <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">BUG数</p>
+                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">NG数</p>
                       <input
                         type="text"
                         value={getResultDraft(editingResultItem).bugCount}
@@ -1023,13 +1065,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       {savingResultMap[editingResultItem.id] ? <Loader2 size={14} className="animate-spin" /> : null}
                       保存到Notion
                     </button>
-                    <span
-                      className={`text-xs font-medium ${
-                        isResultReady(editingResultItem) ? 'text-emerald-600' : 'text-amber-600'
-                      }`}
-                    >
-                      {isResultReady(editingResultItem) ? '测试结果已出' : '测试结果未出'}
-                    </span>
                     {resultSaveNoticeMap[editingResultItem.id] && (
                       <span
                         className={`text-xs ${
@@ -1145,15 +1180,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       {renderField('実績総', item.actualTotal)}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2">
-                    <span
-                      className={`text-sm font-medium ${
-                        isResultReady(item) ? 'text-emerald-700' : 'text-amber-700'
-                      }`}
-                    >
-                      {isResultReady(item) ? '测试结果已出' : '测试结果未出'}
-                    </span>
-                  </div>
                 </section>
               ))}
             </div>
@@ -1218,7 +1244,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
         <div className="h-full max-w-7xl mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
-            <h3 className="text-base font-semibold text-neutral-900">结果报告（可编辑）</h3>
+            <h3 className="text-base font-semibold text-neutral-900">结果报告</h3>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -1236,13 +1262,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </button>
             </div>
           </div>
-          <div className="flex-1 grid grid-cols-2 min-h-0">
-            <textarea
-              value={reportHtml}
-              onChange={(e) => setReportHtml(e.target.value)}
-              className="w-full h-full min-h-[260px] p-4 font-mono text-xs border-r border-neutral-200 outline-none resize-none"
-            />
-            <iframe title="report-preview" srcDoc={reportHtml} className="w-full h-full bg-white" />
+          <div className="flex-1 min-h-0">
+            <iframe ref={reportPreviewIframeRef} title="report-preview" srcDoc={reportHtml} className="w-full h-full bg-white border-0" />
           </div>
         </div>
       </div>
