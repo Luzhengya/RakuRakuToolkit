@@ -14,18 +14,19 @@ interface Tool {
   id: string;
   title: string;
   description: string;
-  category: '文档类' | '管理类';
+  category: '文档类' | '管理类' | 'データ収集类';
   icon: React.ReactNode;
   onClick: () => void;
 }
 
 const CATEGORY_META: Record<string, { heading: string; sub: string }> = {
-  文档类: { heading: '文档工具', sub: '文件格式转换、合并与编辑' },
-  管理类: { heading: '管理工具', sub: '项目与测试过程管理' },
+  文档类:      { heading: '文档工具',     sub: '文件格式转换、合并与编辑' },
+  管理类:      { heading: '管理工具',     sub: '项目与测试过程管理' },
+  データ収集类: { heading: 'データ収集ツール', sub: 'ウェブ情報の自動収集と整理' },
 };
 
 interface HomeProps {
-  category: '文档类' | '管理类';
+  category: '文档类' | '管理类' | 'データ収集类';
   onSelectTool: (id: string) => void;
 }
 
@@ -70,6 +71,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <LayoutGrid className="text-sky-600" size={24} />,
       onClick: () => onSelectTool('test-center'),
+    },
+    {
+      id: 'data-collection',
+      title: 'データ収集',
+      description: '時事速報・界面新聞などのウェブ情報をキーワードや日付・地域条件で自動収集します。',
+      category: 'データ収集类',
+      icon: <LayoutGrid className="text-emerald-600" size={24} />,
+      onClick: () => onSelectTool('data-collection'),
     },
   ];
 

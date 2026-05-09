@@ -735,4 +735,72 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
   }
 });
 
+// ── 時事速報 収集 ──────────────────────────────────────────────────────
+
+app.post("/api/jiji-search", async (req, res) => {
+  const { keywords, dateFrom, dateTo, regions } = req.body as {
+    keywords?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    regions?: string[];
+  };
+
+  const token = process.env.BROWSERLESS_TOKEN;
+  if (!token) {
+    res.status(500).json({ error: "BROWSERLESS_TOKEN が設定されていません" });
+    return;
+  }
+
+  const TIMEOUT = 60000;
+
+  let browser: import("playwright-core").Browser | undefined;
+  try {
+    const { chromium } = await import("playwright-core");
+    browser = await chromium.connectOverCDP(
+      `wss://production-sfo.browserless.io?token=${token}`
+    );
+    const page = await browser.newPage();
+    page.setDefaultTimeout(TIMEOUT);
+
+    // TODO: 対象サイトの URL・セレクタをここに実装する
+    // 以下はスケルトン実装。実際のスクレイピング対象サイトに合わせて変更すること。
+    //
+    // 例:
+    //   await page.goto("https://example.com/news/search", { waitUntil: "domcontentloaded" });
+    //   await page.fill('input[name="keyword"]', keywords ?? "");
+    //   await page.fill('input[name="dateFrom"]', dateFrom ?? "");
+    //   await page.fill('input[name="dateTo"]', dateTo ?? "");
+    //   await page.click('button[type="submit"]');
+    //   await page.waitForSelector("table.results");
+    //
+    //   const results = await page.evaluate(() => {
+    //     return Array.from(document.querySelectorAll("table.results tr")).map(tr => ({
+    //       title: tr.querySelector(".title")?.textContent?.trim() ?? "",
+    //       date:  tr.querySelector(".date")?.textContent?.trim() ?? "",
+    //       region: tr.querySelector(".region")?.textContent?.trim() ?? "",
+    //       url:   tr.querySelector("a")?.href ?? "",
+    //       summary: "",
+    //     }));
+    //   });
+
+    // 暫定: 空配列を返す
+    const results: Array<{
+      title: string; date: string; region: string; url: string; summary: string;
+    }> = [];
+
+    res.json({ results });
+  } catch (err: any) {
+    console.error("jiji-search error:", err);
+    const msg: string = err.message ?? "";
+    const isTimeout = msg.includes("Timeout") || msg.includes("timeout");
+    res.status(500).json({
+      error: isTimeout
+        ? "タイムアウトしました。条件を絞って再試行してください。"
+        : msg || "データ収集に失敗しました",
+    });
+  } finally {
+    await browser?.close();
+  }
+});
+
 export default app;

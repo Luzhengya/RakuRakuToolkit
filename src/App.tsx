@@ -12,11 +12,12 @@ import PdfToWord from './components/PdfToWord';
 import PdfMerge from './components/PdfMerge';
 import PdfEditor from './components/PdfEditor';
 import TestCenter from './components/TestCenter';
+import DataCollection from './components/DataCollection';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'test-center';
-type Category = '文档类' | '管理类';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'test-center' | 'data-collection';
+type Category = '文档类' | '管理类' | 'データ収集类';
 
-const CATEGORIES: Category[] = ['文档类', '管理类'];
+const CATEGORIES: Category[] = ['文档类', '管理类', 'データ収集类'];
 
 export default function App() {
   const [view, setView] = useState<View>('home');
@@ -114,6 +115,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <PdfEditor onBack={() => setView('home')} />
+            </motion.div>
+          ) : view === 'data-collection' ? (
+            <motion.div
+              key="data-collection"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <DataCollection onBack={() => setView('home')} />
             </motion.div>
           ) : (
             <motion.div
