@@ -12,8 +12,9 @@ import PdfToWord from './components/PdfToWord';
 import PdfMerge from './components/PdfMerge';
 import PdfEditor from './components/PdfEditor';
 import TestCenter from './components/TestCenter';
+import CmdbSearch from './components/CmdbSearch';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'test-center';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'test-center' | 'cmdb-search';
 type Category = '文档类' | '管理类';
 
 const CATEGORIES: Category[] = ['文档类', '管理类'];
@@ -114,6 +115,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <PdfEditor onBack={() => setView('home')} />
+            </motion.div>
+          ) : view === 'cmdb-search' ? (
+            <motion.div
+              key="cmdb-search"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <CmdbSearch onBack={() => setView('home')} />
             </motion.div>
           ) : (
             <motion.div
