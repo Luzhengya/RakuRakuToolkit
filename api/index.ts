@@ -735,125 +735,68 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
   }
 });
 
-// ── CMDB 検索 ─────────────────────────────────────────────────────────
+// ── 時事速報 収集 ──────────────────────────────────────────────────────
 
-app.post("/api/cmdb-search", async (req, res) => {
-  const { releaseDateFrom, releaseDateTo, selectedServices } = req.body as {
-    releaseDateFrom?: string;
-    releaseDateTo?: string;
-    selectedServices?: string[];
+app.post("/api/jiji-search", async (req, res) => {
+  const { keywords, dateFrom, dateTo, regions } = req.body as {
+    keywords?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    regions?: string[];
   };
 
-  const userId = process.env.CMDB_USER_ID;
-  const password = process.env.CMDB_PASSWORD;
-  if (!userId || !password) {
-    res.status(500).json({ error: "CMDB_USER_ID または CMDB_PASSWORD が設定されていません" });
+  const token = process.env.BROWSERLESS_TOKEN;
+  if (!token) {
+    res.status(500).json({ error: "BROWSERLESS_TOKEN が設定されていません" });
     return;
   }
 
-  const NAV_TIMEOUT = 20000;   // ページ遷移・ログイン
-  const SEARCH_TIMEOUT = 60000; // 検索結果待ち
+  const TIMEOUT = 60000;
 
   let browser: import("playwright-core").Browser | undefined;
   try {
-    const chromiumPkg = await import("@sparticuz/chromium");
     const { chromium } = await import("playwright-core");
-    browser = await chromium.launch({
-      args: chromiumPkg.default.args,
-      executablePath: await chromiumPkg.default.executablePath(),
-      headless: true,
-    });
+    browser = await chromium.connectOverCDP(
+      `wss://production-sfo.browserless.io?token=${token}`
+    );
     const page = await browser.newPage();
-    page.setDefaultTimeout(NAV_TIMEOUT);
+    page.setDefaultTimeout(TIMEOUT);
 
-    // 1. ログイン画面
-    await page.goto("https://cmdb-web.riskmonster.jp/Cmdb/index.do", {
-      waitUntil: "domcontentloaded",
-      timeout: NAV_TIMEOUT,
-    });
+    // TODO: 対象サイトの URL・セレクタをここに実装する
+    // 以下はスケルトン実装。実際のスクレイピング対象サイトに合わせて変更すること。
+    //
+    // 例:
+    //   await page.goto("https://example.com/news/search", { waitUntil: "domcontentloaded" });
+    //   await page.fill('input[name="keyword"]', keywords ?? "");
+    //   await page.fill('input[name="dateFrom"]', dateFrom ?? "");
+    //   await page.fill('input[name="dateTo"]', dateTo ?? "");
+    //   await page.click('button[type="submit"]');
+    //   await page.waitForSelector("table.results");
+    //
+    //   const results = await page.evaluate(() => {
+    //     return Array.from(document.querySelectorAll("table.results tr")).map(tr => ({
+    //       title: tr.querySelector(".title")?.textContent?.trim() ?? "",
+    //       date:  tr.querySelector(".date")?.textContent?.trim() ?? "",
+    //       region: tr.querySelector(".region")?.textContent?.trim() ?? "",
+    //       url:   tr.querySelector("a")?.href ?? "",
+    //       summary: "",
+    //     }));
+    //   });
 
-    // ユーザID・パスワード入力
-    const userField = page.locator('input[name*="userId"], input[name*="loginId"], input[name*="userName"], input[type="text"]').first();
-    await userField.fill(userId);
-    await page.locator('input[type="password"]').first().fill(password);
-
-    // ログインボタンクリック
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT }),
-      page.locator('input[value="ログイン"], button:has-text("ログイン"), input[type="submit"]').first().click(),
-    ]);
-
-    // 2. RFC リスト検索画面へ遷移
-    await page.goto("https://cmdb-web.riskmonster.jp/Cmdb/showRfcList.do", {
-      waitUntil: "domcontentloaded",
-      timeout: NAV_TIMEOUT,
-    });
-
-    // 3. 検索条件設定
-    if (releaseDateFrom) {
-      await page.locator('input[name="rfcListActionModel.rfcSearchCondition.releaseDateFrom"]').fill(releaseDateFrom);
-    }
-    if (releaseDateTo) {
-      await page.locator('input[name="rfcListActionModel.rfcSearchCondition.releaseDateTo"]').fill(releaseDateTo);
-    }
-
-    // 変更対象チェックボックス: まず全解除してから選択
-    const allCheckboxes = await page.locator('input[name="rfcListActionModel.rfcSearchCondition.searchServiceList"]').all();
-    for (const cb of allCheckboxes) {
-      if (await cb.isChecked()) await cb.uncheck();
-    }
-    if (selectedServices && selectedServices.length > 0) {
-      for (const value of selectedServices) {
-        const cb = page.locator(`input[name="rfcListActionModel.rfcSearchCondition.searchServiceList"][value="${value}"]`);
-        if (await cb.count() > 0) await cb.check();
-      }
-    }
-
-    // 4. 検索ボタンクリック
-    await Promise.all([
-      page.waitForURL("**/searchRfcList.do", { timeout: SEARCH_TIMEOUT }),
-      page.locator('input[name="search"][value="検索"]').click(),
-    ]);
-
-    // 5. 結果取得 — string form avoids esbuild __name injection when serializing to browser context
-    const results = await page.evaluate(`
-      (() => {
-        var rows = Array.prototype.slice.call(document.querySelectorAll("tbody tr")).filter(function(tr) {
-          var bg = tr.getAttribute("bgcolor");
-          return bg === "#EFF6FF" || bg === "#FFFFFF";
-        });
-        return rows.map(function(row) {
-          var tds = Array.prototype.slice.call(row.querySelectorAll("td"));
-          function t(td) { return td && td.querySelector("span.text") ? (td.querySelector("span.text").textContent || "").trim() : ""; }
-          var codeEl = tds[1] ? tds[1].querySelector("span.text a") || tds[1].querySelector("span.text") : null;
-          return {
-            status: t(tds[0]),
-            code: codeEl ? (codeEl.textContent || "").trim() : "",
-            summary: t(tds[2]),
-            addDate: t(tds[3]),
-            releaseDate: t(tds[4]),
-            serviceStartDate: t(tds[5]),
-            completeDate: t(tds[6]),
-            rmChargeUser: t(tds[7]),
-            tmxChargeUser: t(tds[8])
-          };
-        });
-      })()
-    `) as Array<{
-      status: string; code: string; summary: string; addDate: string;
-      releaseDate: string; serviceStartDate: string; completeDate: string;
-      rmChargeUser: string; tmxChargeUser: string;
-    }>;
+    // 暫定: 空配列を返す
+    const results: Array<{
+      title: string; date: string; region: string; url: string; summary: string;
+    }> = [];
 
     res.json({ results });
   } catch (err: any) {
-    console.error("CMDB search error:", err);
+    console.error("jiji-search error:", err);
     const msg: string = err.message ?? "";
     const isTimeout = msg.includes("Timeout") || msg.includes("timeout");
     res.status(500).json({
       error: isTimeout
-        ? "検索がタイムアウトしました。条件を絞って再試行してください。"
-        : msg || "CMDB検索に失敗しました",
+        ? "タイムアウトしました。条件を絞って再試行してください。"
+        : msg || "データ収集に失敗しました",
     });
   } finally {
     await browser?.close();
