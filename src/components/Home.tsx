@@ -71,6 +71,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       icon: <LayoutGrid className="text-sky-600" size={24} />,
       onClick: () => onSelectTool('test-center'),
     },
+    {
+      id: 'cmdb-search',
+      title: 'CMDB検索',
+      description: 'CMDBシステムのRFCリストをリリース日・変更対象で検索し、結果を一覧表示します。',
+      category: '管理类',
+      icon: <LayoutGrid className="text-teal-600" size={24} />,
+      onClick: () => onSelectTool('cmdb-search'),
+    },
   ];
 
   const tools = allTools.filter(t => t.category === category);
