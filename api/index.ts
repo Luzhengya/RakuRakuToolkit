@@ -754,10 +754,15 @@ app.post("/api/cmdb-search", async (req, res) => {
   const NAV_TIMEOUT = 20000;   // ページ遷移・ログイン
   const SEARCH_TIMEOUT = 60000; // 検索結果待ち
 
-  let browser: import("playwright").Browser | undefined;
+  let browser: import("playwright-core").Browser | undefined;
   try {
-    const { chromium } = await import("playwright");
-    browser = await chromium.launch({ headless: true });
+    const chromiumPkg = await import("@sparticuz/chromium");
+    const { chromium } = await import("playwright-core");
+    browser = await chromium.launch({
+      args: chromiumPkg.default.args,
+      executablePath: await chromiumPkg.default.executablePath(),
+      headless: true,
+    });
     const page = await browser.newPage();
     page.setDefaultTimeout(NAV_TIMEOUT);
 
