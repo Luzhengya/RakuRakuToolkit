@@ -20,7 +20,7 @@ type TestCenterProps = {
   onBack: () => void;
 };
 
-type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu';
+type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros';
 
 type ProgressItem = {
   id: string;
@@ -215,6 +215,9 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '☑ Android16（Pixel 6A）',
       '☑ https://test-gyoushu.riskmonster.net/',
     ],
+    'ros': [
+      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+    ],
   };
   return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
 }
@@ -264,6 +267,11 @@ const AREA_DOC_META: Record<AreaId, AreaDocMeta> = {
     releaseNameJa: '業種別審査ノート',
     planFileNamePrefix: '業種別審査ノート',
     svnPathSegment: '業種別',
+  },
+  'ros': {
+    releaseNameJa: '与信ROS',
+    planFileNamePrefix: '与信ROS',
+    svnPathSegment: '与信ROS',
   },
 };
 
@@ -600,6 +608,12 @@ const AREAS = [
     title: '業種別エリア',
     description: '業種別審査ノート関連のテスト項目を統一管理する。',
     icon: <Briefcase className="text-rose-500" size={22} />
+  },
+  {
+    id: 'ros' as AreaId,
+    title: '与信ROSエリア',
+    description: '与信ROS関連のテスト項目を統一管理する。',
+    icon: <FileText className="text-cyan-600" size={22} />
   },
 ];
 
