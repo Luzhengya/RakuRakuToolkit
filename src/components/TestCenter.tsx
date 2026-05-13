@@ -2,13 +2,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Building2,
+  Eye,
   Globe2,
+  History,
   Landmark,
   Loader2,
   FileText,
   School,
   Smartphone,
   BookOpen,
+  Trash2,
   Users,
   Briefcase,
 } from 'lucide-react';
@@ -371,7 +374,7 @@ function buildResultReportHtml(
   const totalPendingCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.pendingConfirmCount), 0);
   const totalEstimateEffort = selectedItems.reduce((sum, item) => sum + parseNumber(item.estimateTotal), 0);
   const totalActualEffort = selectedItems.reduce((sum, item) => sum + parseNumber(item.actualTotal), 0);
-  const totalEffortDiff = totalActualEffort - totalEstimateEffort;
+  const totalEffortDiff = parseFloat((totalActualEffort - totalEstimateEffort).toFixed(2));
 
   const projectListHtml = selectedItems
     .map((item) => `<li>${safeHtml(item.projectName || '-')}</li>`)
@@ -431,7 +434,7 @@ function buildResultReportHtml(
     .map((item) => {
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
-      const diff = actual - estimate;
+      const diff = parseFloat((actual - estimate).toFixed(2));
 
       // 工数差分 > 2 の場合のみ工数説明行を追加
       const effortNoteRow = diff > 2
@@ -491,6 +494,56 @@ function buildResultReportHtml(
   html = replaceToken(html, '{{RESULT_CARDS}}', resultCardsHtml);
   html = replaceToken(html, '{{REPORT_CONCLUSION}}', reportConclusion);
   return html;
+}
+
+// ---- HTML 保存履歴 ----
+
+type HtmlHistory = {
+  id: string;
+  type: 'plan' | 'report';
+  areaId: string;
+  monthKey: string;
+  title: string;
+  htmlContent: string;
+  savedAt: string;
+};
+
+const HISTORY_STORAGE_KEY = 'testcenter-html-history';
+const MAX_HISTORY_ITEMS = 30;
+
+function loadHistory(): HtmlHistory[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as HtmlHistory[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function addToHistory(entry: Omit<HtmlHistory, 'id' | 'savedAt'>): HtmlHistory[] {
+  const history = loadHistory();
+  const newEntry: HtmlHistory = {
+    ...entry,
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    savedAt: new Date().toISOString(),
+  };
+  const updated = [newEntry, ...history].slice(0, MAX_HISTORY_ITEMS);
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
+  } catch {
+    const trimmed = [newEntry, ...history].slice(0, 10);
+    try { localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(trimmed)); } catch { /* ignore */ }
+    return trimmed;
+  }
+  return updated;
+}
+
+function deleteFromHistory(id: string): HtmlHistory[] {
+  const history = loadHistory().filter((e) => e.id !== id);
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+  } catch { /* ignore */ }
+  return history;
 }
 
 const AREAS = [
@@ -573,6 +626,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [savingResultMap, setSavingResultMap] = useState<Record<string, boolean>>({});
   const [resultSaveNoticeMap, setResultSaveNoticeMap] = useState<Record<string, SaveNotice>>({});
   const [editingResultItemId, setEditingResultItemId] = useState<string | null>(null);
+  const [htmlHistory, setHtmlHistory] = useState<HtmlHistory[]>(() => loadHistory());
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
 
@@ -835,6 +891,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const htmlToPrint = liveRoot
       ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
       : planHtml;
+    const updated = addToHistory({
+      type: 'plan',
+      areaId: selectedAreaId,
+      monthKey: currentMonthKey,
+      title: getPlanPdfFilename(currentMonthKey, selectedAreaId),
+      htmlContent: htmlToPrint,
+    });
+    setHtmlHistory(updated);
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
       setPlanError('浏览器阻止了弹窗，请允许后重试。');
@@ -884,6 +948,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const htmlToPrint = liveRoot
       ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
       : reportHtml;
+    const updated = addToHistory({
+      type: 'report',
+      areaId: selectedAreaId,
+      monthKey: currentMonthKey,
+      title: getReportPdfFilename(currentMonthKey, selectedAreaId),
+      htmlContent: htmlToPrint,
+    });
+    setHtmlHistory(updated);
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
       setReportError('浏览器阻止了弹窗，请允许后重试。');
@@ -969,9 +1041,24 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       </nav>
 
       <div className="space-y-2">
-        <h2 className="text-2xl font-bold text-neutral-900">
-          {editingResultItem ? '案件詳細' : '测试中心管理画面'}
-        </h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold text-neutral-900">
+            {editingResultItem ? '案件詳細' : '测试中心管理画面'}
+          </h2>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
+          >
+            <History size={15} />
+            履歴
+            {htmlHistory.length > 0 && (
+              <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-neutral-900 text-white text-[10px] font-bold w-4 h-4">
+                {htmlHistory.length > 9 ? '9+' : htmlHistory.length}
+              </span>
+            )}
+          </button>
+        </div>
         <p className="text-neutral-500">
           {editingResultItem
             ? editingResultItem.projectName || '-'
@@ -1268,6 +1355,130 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         </div>
       </div>
     )}
+    {historyOpen && (
+      <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8 flex items-start justify-center overflow-auto">
+        <div className="w-full max-w-3xl bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col max-h-[90vh]">
+          <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <History size={18} className="text-neutral-600" />
+              <h3 className="text-base font-semibold text-neutral-900">HTML 保存履歴</h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(false)}
+              className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+            >
+              关闭
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            {htmlHistory.length === 0 ? (
+              <div className="text-center py-12 text-neutral-400 text-sm">
+                まだ履歴がありません。PDFを保存すると自動的に記録されます。
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {htmlHistory.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="flex items-center gap-3 p-3 rounded-lg border border-neutral-200 hover:bg-neutral-50"
+                  >
+                    <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                      entry.type === 'plan'
+                        ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
+                        : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                    }`}>
+                      {entry.type === 'plan' ? '計画' : '報告'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-neutral-800 truncate">{entry.title}</p>
+                      <p className="text-xs text-neutral-400 mt-0.5">
+                        {new Date(entry.savedAt).toLocaleString('ja-JP', {
+                          year: 'numeric', month: '2-digit', day: '2-digit',
+                          hour: '2-digit', minute: '2-digit',
+                        })}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => { setHistoryPreviewId(entry.id); setHistoryOpen(false); }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 transition-colors"
+                      >
+                        <Eye size={13} />
+                        プレビュー
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHtmlHistory(deleteFromHistory(entry.id))}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-100 text-xs text-red-500 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+    {historyPreviewId && (() => {
+      const entry = htmlHistory.find((e) => e.id === historyPreviewId);
+      if (!entry) return null;
+      return (
+        <div className="fixed inset-0 z-[60] bg-black/40 p-4 md:p-8">
+          <div className="h-full max-w-7xl mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
+            <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                  entry.type === 'plan'
+                    ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
+                    : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                }`}>
+                  {entry.type === 'plan' ? '計画' : '報告'}
+                </span>
+                <p className="text-sm font-semibold text-neutral-800 truncate">{entry.title}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const win = window.open('', '_blank');
+                    if (win) {
+                      win.document.open();
+                      win.document.write(entry.htmlContent);
+                      win.document.close();
+                      win.document.title = entry.title;
+                      win.focus();
+                      win.print();
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
+                >
+                  再保存PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setHistoryPreviewId(null); setHistoryOpen(true); }}
+                  className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+                >
+                  戻る
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 min-h-0">
+              <iframe
+                title="history-preview"
+                srcDoc={entry.htmlContent}
+                className="w-full h-full bg-white border-0"
+              />
+            </div>
+          </div>
+        </div>
+      );
+    })()}
     </>
   );
 }
