@@ -217,6 +217,7 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
     ],
     'ros': [
       '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [URL] http://10.240.14.201:8080/mkt/login.html',
     ],
   };
   return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
@@ -642,9 +643,24 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [editingResultItemId, setEditingResultItemId] = useState<string | null>(null);
   const [htmlHistory, setHtmlHistory] = useState<HtmlHistory[]>(() => loadHistory());
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyShowAll, setHistoryShowAll] = useState(false);
   const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
+
+  // 結果報告の左側に表示する：このエリアの最新の計画資料HTML
+  const latestPlanEntry = useMemo(
+    () => htmlHistory.find((e) => e.type === 'plan' && e.areaId === selectedAreaId) ?? null,
+    [htmlHistory, selectedAreaId]
+  );
+
+  // 履歴モーダル用フィルタ済みリスト
+  const filteredHistory = useMemo(
+    () => (historyShowAll || !selectedAreaId)
+      ? htmlHistory
+      : htmlHistory.filter((e) => e.areaId === selectedAreaId),
+    [htmlHistory, historyShowAll, selectedAreaId]
+  );
 
   const selectedArea = useMemo(
     () => AREAS.find((area) => area.id === selectedAreaId) ?? null,
@@ -1061,7 +1077,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           </h2>
           <button
             type="button"
-            onClick={() => setHistoryOpen(true)}
+            onClick={() => { setHistoryShowAll(false); setHistoryOpen(true); }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
           >
             <History size={15} />
@@ -1343,7 +1359,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     )}
     {reportOpen && (
       <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
-        <div className="h-full max-w-7xl mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
+        <div className="h-full max-w-[96rem] mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
             <h3 className="text-base font-semibold text-neutral-900">结果报告</h3>
             <div className="flex items-center gap-2">
@@ -1352,7 +1368,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 onClick={handleSaveReportPdf}
                 className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500"
               >
-                保存为PDF
+                保存为PDF（结果报告）
               </button>
               <button
                 type="button"
@@ -1363,8 +1379,50 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </button>
             </div>
           </div>
-          <div className="flex-1 min-h-0">
-            <iframe ref={reportPreviewIframeRef} title="report-preview" srcDoc={reportHtml} className="w-full h-full bg-white border-0" />
+          <div className="flex-1 min-h-0 flex">
+            {/* 左側：計画資料（参考） */}
+            <div className="w-2/5 border-r border-neutral-200 flex flex-col min-w-0">
+              <div className="px-3 py-1.5 bg-neutral-50 border-b border-neutral-200 flex items-center gap-2">
+                <span className="text-xs font-medium text-neutral-500">計画資料（参考）</span>
+                {latestPlanEntry && (
+                  <span className="text-[10px] text-neutral-400 truncate">
+                    {new Date(latestPlanEntry.savedAt).toLocaleString('ja-JP', {
+                      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+                    })}
+                  </span>
+                )}
+              </div>
+              <div className="flex-1 min-h-0">
+                {latestPlanEntry ? (
+                  <iframe
+                    title="plan-reference"
+                    srcDoc={latestPlanEntry.htmlContent}
+                    className="w-full h-full bg-white border-0"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full gap-2 text-neutral-400">
+                    <FileText size={28} className="opacity-30" />
+                    <p className="text-sm">計画資料の履歴がありません</p>
+                    <p className="text-xs">先に計画資料を作成・PDF保存してください</p>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* 右側：結果報告（編集・印刷対象） */}
+            <div className="flex-1 flex flex-col min-w-0">
+              <div className="px-3 py-1.5 bg-indigo-50 border-b border-indigo-100 flex items-center gap-2">
+                <span className="text-xs font-medium text-indigo-600">結果報告</span>
+                <span className="text-[10px] text-indigo-400">← 編集・印刷対象</span>
+              </div>
+              <div className="flex-1 min-h-0">
+                <iframe
+                  ref={reportPreviewIframeRef}
+                  title="report-preview"
+                  srcDoc={reportHtml}
+                  className="w-full h-full bg-white border-0"
+                />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1376,62 +1434,94 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             <div className="flex items-center gap-2">
               <History size={18} className="text-neutral-600" />
               <h3 className="text-base font-semibold text-neutral-900">HTML 保存履歴</h3>
+              {selectedAreaId && (
+                <span className="text-xs text-neutral-400">
+                  {historyShowAll ? '（全エリア）' : `（${selectedArea?.title ?? selectedAreaId}）`}
+                </span>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => setHistoryOpen(false)}
-              className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
-            >
-              关闭
-            </button>
+            <div className="flex items-center gap-2">
+              {selectedAreaId && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryShowAll((v) => !v)}
+                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                    historyShowAll
+                      ? 'border-neutral-900 bg-neutral-900 text-white'
+                      : 'border-neutral-300 text-neutral-600 hover:bg-neutral-50'
+                  }`}
+                >
+                  {historyShowAll ? '全エリア表示中' : '全エリアを表示'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setHistoryOpen(false)}
+                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+              >
+                关闭
+              </button>
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
-            {htmlHistory.length === 0 ? (
+            {filteredHistory.length === 0 ? (
               <div className="text-center py-12 text-neutral-400 text-sm">
-                まだ履歴がありません。PDFを保存すると自動的に記録されます。
+                {htmlHistory.length === 0
+                  ? 'まだ履歴がありません。PDFを保存すると自動的に記録されます。'
+                  : 'このエリアの履歴はありません。'}
               </div>
             ) : (
               <div className="space-y-2">
-                {htmlHistory.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="flex items-center gap-3 p-3 rounded-lg border border-neutral-200 hover:bg-neutral-50"
-                  >
-                    <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                      entry.type === 'plan'
-                        ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
-                        : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                    }`}>
-                      {entry.type === 'plan' ? '計画' : '報告'}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-neutral-800 truncate">{entry.title}</p>
-                      <p className="text-xs text-neutral-400 mt-0.5">
-                        {new Date(entry.savedAt).toLocaleString('ja-JP', {
-                          year: 'numeric', month: '2-digit', day: '2-digit',
-                          hour: '2-digit', minute: '2-digit',
-                        })}
-                      </p>
+                {filteredHistory.map((entry) => {
+                  const entryAreaTitle = AREAS.find((a) => a.id === entry.areaId)?.title ?? entry.areaId;
+                  return (
+                    <div
+                      key={entry.id}
+                      className="flex items-center gap-3 p-3 rounded-lg border border-neutral-200 hover:bg-neutral-50"
+                    >
+                      <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        entry.type === 'plan'
+                          ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
+                          : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                      }`}>
+                        {entry.type === 'plan' ? '計画' : '報告'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm font-medium text-neutral-800 truncate">{entry.title}</p>
+                          {historyShowAll && (
+                            <span className="shrink-0 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] bg-neutral-50 border border-neutral-200 text-neutral-500">
+                              {entryAreaTitle.replace(/エリア$/, '')}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-neutral-400 mt-0.5">
+                          {new Date(entry.savedAt).toLocaleString('ja-JP', {
+                            year: 'numeric', month: '2-digit', day: '2-digit',
+                            hour: '2-digit', minute: '2-digit',
+                          })}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => { setHistoryPreviewId(entry.id); setHistoryOpen(false); }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 transition-colors"
+                        >
+                          <Eye size={13} />
+                          プレビュー
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHtmlHistory(deleteFromHistory(entry.id))}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-100 text-xs text-red-500 hover:bg-red-50 transition-colors"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => { setHistoryPreviewId(entry.id); setHistoryOpen(false); }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 transition-colors"
-                      >
-                        <Eye size={13} />
-                        プレビュー
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setHtmlHistory(deleteFromHistory(entry.id))}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-100 text-xs text-red-500 hover:bg-red-50 transition-colors"
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
