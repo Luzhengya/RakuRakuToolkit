@@ -51,6 +51,8 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
 
   // All accumulated File objects (never shrinks; fileIndex references into this)
   const [allFiles, setAllFiles] = useState<File[]>([]);
+  // Ref keeps allFiles in sync so addPdfFiles never captures a stale length
+  const allFilesRef = useRef<File[]>([]);
   // Ordered page list shown in the grid
   const [pages, setPages] = useState<PageItem[]>([]);
 
@@ -83,8 +85,8 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
 
     try {
       const newPages: PageItem[] = [];
-      // Snapshot current file count so indices are stable across batches
-      const startIndex = allFiles.length;
+      // Read from ref to always get the live count, never a stale closure value
+      const startIndex = allFilesRef.current.length;
 
       for (let fi = 0; fi < pdfs.length; fi++) {
         const file = pdfs[fi];
@@ -108,7 +110,11 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
         }
       }
 
-      setAllFiles(prev => [...prev, ...pdfs]);
+      setAllFiles(prev => {
+        const next = [...prev, ...pdfs];
+        allFilesRef.current = next;
+        return next;
+      });
       setPages(prev => [...prev, ...newPages]);
     } catch (err) {
       console.error(err);
@@ -117,8 +123,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       setLoading(false);
       setLoadingMsg('');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allFiles.length]);
+  }, []);
 
   const handleFileInput = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
@@ -137,8 +142,9 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
   const handleDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault(); e.stopPropagation();
     setIsDragging(false);
+    if (loading) return;
     addPdfFiles(Array.from(e.dataTransfer.files));
-  }, [addPdfFiles]);
+  }, [addPdfFiles, loading]);
 
   // ── Page card drag-to-reorder ──────────────────────────────────────
   const onCardDragStart = (e: DragEvent<HTMLDivElement>, index: number) => {
@@ -214,6 +220,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       setMergeSuccess(true);
       setPages([]);
       setAllFiles([]);
+      allFilesRef.current = [];
     } catch (err: unknown) {
       setMergeError(err instanceof Error ? err.message : '合并失败，请重试');
     } finally {

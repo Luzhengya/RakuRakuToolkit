@@ -507,6 +507,7 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
   try {
     const zip = new JSZip();
     const folder = downloadPath ? zip.folder(downloadPath) : zip;
+    const failedFiles: string[] = [];
 
     for (const file of multerFiles) {
       const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
@@ -515,12 +516,20 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
         folder?.file(originalName.replace(/\.pdf$/i, ".docx"), docxBuffer);
       } catch (e) {
         console.error(`Adobe conversion error for ${originalName}:`, e);
+        failedFiles.push(originalName);
       }
+    }
+
+    if (failedFiles.length === multerFiles.length) {
+      return res.status(500).json({ error: `转换失败：${failedFiles.join("、")}` });
     }
 
     const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
     res.set("Content-Type", "application/zip");
     res.set("Content-Disposition", `attachment; filename="converted_pdfs.zip"`);
+    if (failedFiles.length > 0) {
+      res.set("X-Failed-Files", encodeURIComponent(failedFiles.join(",")));
+    }
     res.send(zipBuffer);
   } catch (error) {
     console.error("PDF convert error:", error);
@@ -614,10 +623,19 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
       const imagesFolder = zip.folder("images");
 
       let markdown = "";
-      const sheetsToConvert =
-        sheetName === "全部"
-          ? workbook.worksheets
-          : ([workbook.getWorksheet(sheetName)].filter(Boolean) as ExcelJS.Worksheet[]);
+      let sheetsToConvert: ExcelJS.Worksheet[];
+      if (sheetName === "全部") {
+        sheetsToConvert = workbook.worksheets;
+      } else {
+        const found = workbook.getWorksheet(sheetName);
+        if (!found) {
+          const available = workbook.worksheets.map((ws) => ws.name).join("、");
+          markdown += `> ⚠️ 文件「${originalName}」中不存在工作表「${sheetName}」。\n> 可用工作表：${available || "（无）"}\n\n`;
+          sheetsToConvert = [];
+        } else {
+          sheetsToConvert = [found];
+        }
+      }
 
       for (const worksheet of sheetsToConvert) {
         markdown += `## Sheet: ${worksheet.name}\n\n`;
@@ -701,27 +719,27 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
             }
           }
         }
-
-        // Shape text
-        try {
-          const xlsxZip = await JSZip.loadAsync(fileBuffer);
-          const drawingFiles = Object.keys(xlsxZip.files).filter((n) =>
-            n.startsWith("xl/drawings/drawing")
-          );
-          const shapeTexts: string[] = [];
-          for (const df of drawingFiles) {
-            const content = await xlsxZip.file(df)?.async("string");
-            content?.match(/<a:t>([^<]+)<\/a:t>/g)?.forEach((m) => {
-              const t = m.replace(/<\/?a:t>/g, "");
-              if (t && !shapeTexts.includes(t)) shapeTexts.push(t);
-            });
-          }
-          if (shapeTexts.length) {
-            markdown += `### Extracted Text from Shapes (${worksheet.name})\n\n`;
-            shapeTexts.forEach((t) => { markdown += `> ${t}\n\n`; });
-          }
-        } catch { /* optional */ }
       }
+
+      // Shape text: extracted once per file to avoid repeating across sheets
+      try {
+        const xlsxZip = await JSZip.loadAsync(fileBuffer);
+        const drawingFiles = Object.keys(xlsxZip.files).filter((n) =>
+          n.startsWith("xl/drawings/drawing")
+        );
+        const shapeTexts: string[] = [];
+        for (const df of drawingFiles) {
+          const content = await xlsxZip.file(df)?.async("string");
+          content?.match(/<a:t>([^<]+)<\/a:t>/g)?.forEach((m) => {
+            const t = m.replace(/<\/?a:t>/g, "");
+            if (t && !shapeTexts.includes(t)) shapeTexts.push(t);
+          });
+        }
+        if (shapeTexts.length) {
+          markdown += `### Extracted Text from Shapes\n\n`;
+          shapeTexts.forEach((t) => { markdown += `> ${t}\n\n`; });
+        }
+      } catch { /* optional */ }
 
       zip.file("output.md", markdown);
       const zipBuf = await zip.generateAsync({ type: "nodebuffer" });
