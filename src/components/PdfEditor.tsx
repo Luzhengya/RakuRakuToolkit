@@ -21,6 +21,10 @@ import {
   RotateCcw,
   FilePen,
   Download,
+  Type,
+  Table as TableIcon,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -50,7 +54,123 @@ interface PageData {
   items: TextItem[];
 }
 
+// Editor mode: standard text editing vs. table region editing
+type EditorMode = 'text' | 'table';
+
+interface TableRegion {
+  id: string;
+  pageNum: number;
+  // Rectangle in canvas px (top-left origin)
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rows: number;
+  cols: number;
+  cells: string[][]; // [rowIdx][colIdx]
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * For a freshly-drawn table region, assign each original text item to a cell
+ * based on its centre point. Items in the same cell are joined left-to-right
+ * with a single space.
+ */
+function autoFillCells(region: TableRegion, items: TextItem[]): string[][] {
+  const cellW = region.w / region.cols;
+  const cellH = region.h / region.rows;
+  const cells: string[][] = Array.from({ length: region.rows }, () =>
+    Array.from({ length: region.cols }, () => ''),
+  );
+  const bucket: TextItem[][][] = Array.from({ length: region.rows }, () =>
+    Array.from({ length: region.cols }, () => [] as TextItem[]),
+  );
+
+  for (const it of items) {
+    const cx = it.x + it.w / 2;
+    const cy = it.y + it.h / 2;
+    if (cx < region.x || cx >= region.x + region.w) continue;
+    if (cy < region.y || cy >= region.y + region.h) continue;
+    const col = Math.min(region.cols - 1, Math.floor((cx - region.x) / cellW));
+    const row = Math.min(region.rows - 1, Math.floor((cy - region.y) / cellH));
+    bucket[row][col].push(it);
+  }
+
+  for (let r = 0; r < region.rows; r++) {
+    for (let c = 0; c < region.cols; c++) {
+      bucket[r][c].sort((a, b) => a.x - b.x);
+      cells[r][c] = bucket[r][c].map(it => it.str).join(' ').trim();
+    }
+  }
+  return cells;
+}
+
+/**
+ * Paint all table regions for a page onto a 2D context.
+ * For each region: fill white over the original area, then draw black gridlines
+ * and the (edited) cell text. Works in canvas px space.
+ */
+function paintTablesOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  tables: TableRegion[],
+) {
+  for (const t of tables) {
+    // White out the original area (covers original glyphs and rules)
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(t.x, t.y, t.w, t.h);
+
+    const cellW = t.w / t.cols;
+    const cellH = t.h / t.rows;
+
+    // Gridlines
+    ctx.strokeStyle = '#222222';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let r = 0; r <= t.rows; r++) {
+      const y = t.y + r * cellH;
+      ctx.moveTo(t.x, y);
+      ctx.lineTo(t.x + t.w, y);
+    }
+    for (let c = 0; c <= t.cols; c++) {
+      const x = t.x + c * cellW;
+      ctx.moveTo(x, t.y);
+      ctx.lineTo(x, t.y + t.h);
+    }
+    ctx.stroke();
+
+    // Cell text — auto-shrink to fit, fall back to clipping
+    ctx.fillStyle = '#111111';
+    ctx.textBaseline = 'middle';
+    const PAD = 4;
+    for (let r = 0; r < t.rows; r++) {
+      for (let c = 0; c < t.cols; c++) {
+        const text = (t.cells[r]?.[c] ?? '').trim();
+        if (!text) continue;
+        const cellX = t.x + c * cellW;
+        const cellY = t.y + r * cellH;
+        const innerW = cellW - PAD * 2;
+        const innerH = cellH - PAD * 2;
+        // Start from cell-height-based font, but clamp so it fits horizontally
+        let fontSize = Math.min(Math.max(innerH * 0.6, 9), 18);
+        ctx.font = `${fontSize}px sans-serif`;
+        let metrics = ctx.measureText(text);
+        while (metrics.width > innerW && fontSize > 7) {
+          fontSize -= 1;
+          ctx.font = `${fontSize}px sans-serif`;
+          metrics = ctx.measureText(text);
+        }
+        // Clip to cell bounds so overflow doesn't bleed
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
+        ctx.clip();
+        ctx.fillText(text, cellX + PAD, cellY + cellH / 2);
+        ctx.restore();
+      }
+    }
+  }
+}
 
 async function renderAndExtract(
   pdf: pdfjsLib.PDFDocumentProxy,
@@ -124,11 +244,14 @@ async function renderAndExtract(
  * For each modified page: redraw the page with edits applied via Canvas 2D API
  * (handles CJK correctly since browser handles glyph rendering), then embed
  * the result as an image into the PDF.  Unmodified pages are left untouched.
+ *
+ * Modifications include text edits (per item) and table regions (per page).
  */
 async function buildModifiedPdf(
   file: File,
   pages: PageData[],
   edits: Record<string, string>,
+  pageTables: Record<number, TableRegion[]>,
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(await file.arrayBuffer());
   const pdfPages = pdfDoc.getPages();
@@ -137,7 +260,8 @@ async function buildModifiedPdf(
     const changed = pd.items.filter(
       it => edits[it.id] !== undefined && edits[it.id] !== it.str,
     );
-    if (changed.length === 0) continue;
+    const tables = pageTables[pd.pageNum] ?? [];
+    if (changed.length === 0 && tables.length === 0) continue;
 
     // Build modified canvas frame
     const canvas = document.createElement('canvas');
@@ -153,7 +277,10 @@ async function buildModifiedPdf(
     });
     ctx.drawImage(bgImg, 0, 0);
 
-    // Apply each edit: erase original, draw new text
+    // Paint tables (white overlay + gridlines + cell text)
+    paintTablesOnCanvas(ctx, tables);
+
+    // Apply each text edit: erase original, draw new text
     for (const item of changed) {
       const newText = edits[item.id];
 
@@ -320,8 +447,22 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
+  // ── Table-mode state ────────────────────────────────────────────────
+  const [mode, setMode] = useState<EditorMode>('text');
+  // Tables keyed by 1-based page number
+  const [pageTables, setPageTables] = useState<Record<number, TableRegion[]>>({});
+  // In-progress rectangle selection (canvas px, top-left origin)
+  const [dragRect, setDragRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  // Pending region: selection finished, awaiting rows/cols input
+  const [pendingRegion, setPendingRegion] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [pendingRows, setPendingRows] = useState(3);
+  const [pendingCols, setPendingCols] = useState(3);
+  // Overlay canvas ref — re-drawn whenever the current page's tables change
+  const tableLayerRef = useRef<HTMLCanvasElement>(null);
+
   // Count genuinely modified text items
-  const totalEdits = Object.entries(editedTexts).filter(([id, v]) => {
+  const textEditCount = Object.entries(editedTexts).filter(([id, v]) => {
     for (const pg of pages) {
       const it = pg.items.find(x => x.id === id);
       if (it) return v !== it.str;
@@ -329,16 +470,43 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     return false;
   }).length;
 
+  const tableCount = (Object.values(pageTables) as TableRegion[][]).reduce(
+    (sum, arr) => sum + arr.length,
+    0,
+  );
+  const totalEdits = textEditCount + tableCount;
+
   // Mirror totalEdits into a ref so stable callbacks can read the live value
   const totalEditsRef = useRef(0);
   useEffect(() => {
     totalEditsRef.current = totalEdits;
   }, [totalEdits]);
 
+  // Redraw the table overlay layer whenever the current page's tables change.
+  // The overlay canvas sits on top of the rendered PDF image but below the
+  // contenteditable text layer; it shows the live white-out + grid + cell text
+  // so the user sees the result in real time.
+  useEffect(() => {
+    const canvas = tableLayerRef.current;
+    const page = pages[currentPageIdx];
+    if (!canvas || !page) return;
+    if (canvas.width !== page.canvasW) canvas.width = page.canvasW;
+    if (canvas.height !== page.canvasH) canvas.height = page.canvasH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const tables = page.pageNum != null ? pageTables[page.pageNum] ?? [] : [];
+    paintTablesOnCanvas(ctx, tables);
+  }, [pages, currentPageIdx, pageTables]);
+
   const loadPdf = useCallback(async (f: File) => {
     setLoading(true);
     setUploadError(null);
     setEditedTexts({});
+    setPageTables({});
+    setPendingRegion(null);
+    setDragRect(null);
+    setMode('text');
     setCurrentPageIdx(0);
     setProgress({ current: 0, total: 0 });
 
@@ -408,13 +576,123 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setIsDragging(false);
   };
 
+  // ── Table editing callbacks ─────────────────────────────────────────
+
+  const currentPageNum = pages[currentPageIdx]?.pageNum;
+  const currentTables: TableRegion[] =
+    currentPageNum != null ? pageTables[currentPageNum] ?? [] : [];
+
+  const beginDragSelect = (canvasX: number, canvasY: number) => {
+    dragStartRef.current = { x: canvasX, y: canvasY };
+    setDragRect({ x: canvasX, y: canvasY, w: 0, h: 0 });
+  };
+
+  const updateDragSelect = (canvasX: number, canvasY: number) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    const x = Math.min(start.x, canvasX);
+    const y = Math.min(start.y, canvasY);
+    const w = Math.abs(canvasX - start.x);
+    const h = Math.abs(canvasY - start.y);
+    setDragRect({ x, y, w, h });
+  };
+
+  const finishDragSelect = () => {
+    const r = dragRect;
+    dragStartRef.current = null;
+    setDragRect(null);
+    if (!r || r.w < 24 || r.h < 24) return; // ignore tiny accidental drags
+    setPendingRegion(r);
+    setPendingRows(3);
+    setPendingCols(3);
+  };
+
+  const cancelPendingRegion = () => {
+    setPendingRegion(null);
+  };
+
+  const confirmPendingRegion = () => {
+    if (!pendingRegion || currentPageNum == null) return;
+    const page = pages[currentPageIdx];
+    const region: TableRegion = {
+      id: `t-${currentPageNum}-${Date.now()}`,
+      pageNum: currentPageNum,
+      x: pendingRegion.x,
+      y: pendingRegion.y,
+      w: pendingRegion.w,
+      h: pendingRegion.h,
+      rows: Math.max(1, Math.min(50, pendingRows | 0)),
+      cols: Math.max(1, Math.min(20, pendingCols | 0)),
+      cells: [],
+    };
+    region.cells = autoFillCells(region, page.items);
+    setPageTables(prev => ({
+      ...prev,
+      [currentPageNum]: [...(prev[currentPageNum] ?? []), region],
+    }));
+    setPendingRegion(null);
+  };
+
+  const updateRegion = (regionId: string, updater: (r: TableRegion) => TableRegion) => {
+    if (currentPageNum == null) return;
+    setPageTables(prev => ({
+      ...prev,
+      [currentPageNum]: (prev[currentPageNum] ?? []).map(r => (r.id === regionId ? updater(r) : r)),
+    }));
+  };
+
+  const removeRegion = (regionId: string) => {
+    if (currentPageNum == null) return;
+    setPageTables(prev => ({
+      ...prev,
+      [currentPageNum]: (prev[currentPageNum] ?? []).filter(r => r.id !== regionId),
+    }));
+  };
+
+  const editCell = (regionId: string, rowIdx: number, colIdx: number, value: string) => {
+    updateRegion(regionId, r => {
+      const cells = r.cells.map((row, i) =>
+        i === rowIdx ? row.map((c, j) => (j === colIdx ? value : c)) : row,
+      );
+      return { ...r, cells };
+    });
+  };
+
+  const deleteRow = (regionId: string, rowIdx: number) => {
+    updateRegion(regionId, r => {
+      if (r.rows <= 1) return r;
+      const cellH = r.h / r.rows;
+      return {
+        ...r,
+        rows: r.rows - 1,
+        h: r.h - cellH,
+        cells: r.cells.filter((_, i) => i !== rowIdx),
+      };
+    });
+  };
+
+  const deleteCol = (regionId: string, colIdx: number) => {
+    updateRegion(regionId, r => {
+      if (r.cols <= 1) return r;
+      const cellW = r.w / r.cols;
+      return {
+        ...r,
+        cols: r.cols - 1,
+        w: r.w - cellW,
+        cells: r.cells.map(row => row.filter((_, j) => j !== colIdx)),
+      };
+    });
+  };
+
+  // ── Save / reset ────────────────────────────────────────────────────
+
   const handleSave = async () => {
     if (!file || saving || totalEdits === 0) return;
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
     try {
-      const bytes = await buildModifiedPdf(file, pages, editedTexts);
+      const bytes = await buildModifiedPdf(file, pages, editedTexts, pageTables);
       const blob = new Blob([bytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -440,6 +718,10 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setFile(null);
     setPages([]);
     setEditedTexts({});
+    setPageTables({});
+    setPendingRegion(null);
+    setDragRect(null);
+    setMode('text');
     setCurrentPageIdx(0);
     setSaveError(null);
     setSaveSuccess(false);
@@ -599,9 +881,14 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                   >
                     {file.name}
                   </span>
-                  {totalEdits > 0 && (
+                  {textEditCount > 0 && (
                     <span className="flex-shrink-0 px-2 py-0.5 bg-amber-100 text-amber-700 text-[11px] font-bold rounded-full">
-                      {totalEdits} 处修改
+                      {textEditCount} 处文本
+                    </span>
+                  )}
+                  {tableCount > 0 && (
+                    <span className="flex-shrink-0 px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[11px] font-bold rounded-full">
+                      {tableCount} 个表格
                     </span>
                   )}
                 </div>
@@ -649,22 +936,57 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                 </button>
               </div>
 
-              {/* Legend */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-400">
-                <span className="flex items-center gap-1.5">
-                  <span className="inline-block w-4 h-3 border border-dashed border-amber-400 rounded-sm bg-amber-50" />
-                  已修改
-                </span>
-                <span className="flex items-center gap-1.5">
-                  <span className="inline-block w-4 h-3 border-[1.5px] border-violet-500 rounded-sm bg-white/90" />
-                  编辑中
-                </span>
-                <span className="text-neutral-300">
-                  • 点击文字编辑 · Enter 或点击空白处确认 · Esc 还原
-                </span>
+              {/* Mode switch + contextual legend */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
+                  <button
+                    onClick={() => { setMode('text'); setPendingRegion(null); setDragRect(null); }}
+                    className={[
+                      'flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors',
+                      mode === 'text'
+                        ? 'bg-neutral-900 text-white'
+                        : 'text-neutral-500 hover:text-neutral-800',
+                    ].join(' ')}
+                  >
+                    <Type size={13} />
+                    文本模式
+                  </button>
+                  <button
+                    onClick={() => setMode('table')}
+                    className={[
+                      'flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors',
+                      mode === 'table'
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-neutral-500 hover:text-neutral-800',
+                    ].join(' ')}
+                  >
+                    <TableIcon size={13} />
+                    表格模式
+                  </button>
+                </div>
+
+                {mode === 'text' ? (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-400">
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-4 h-3 border border-dashed border-amber-400 rounded-sm bg-amber-50" />
+                      已修改
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="inline-block w-4 h-3 border-[1.5px] border-violet-500 rounded-sm bg-white/90" />
+                      编辑中
+                    </span>
+                    <span className="text-neutral-300">
+                      • 点击文字编辑 · Enter 或点击空白处确认 · Esc 还原
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-xs text-neutral-400">
+                    在 PDF 上拖框 → 输入行/列数 → 自动识别为表格,可编辑单元格 / 删除行 / 删除列
+                  </div>
+                )}
               </div>
 
-              {/* Page view: canvas background + text overlay */}
+              {/* Page view: canvas background + table overlay + text overlay */}
               {currentPage && (
                 <div className="overflow-x-auto">
                   <div
@@ -683,8 +1005,27 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                       draggable={false}
                     />
 
-                    {/* Editable text overlay */}
-                    <div style={{ position: 'absolute', inset: 0 }}>
+                    {/* Table overlay layer (live-redrawn from pageTables) */}
+                    <canvas
+                      ref={tableLayerRef}
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        width: currentPage.canvasW,
+                        height: currentPage.canvasH,
+                        pointerEvents: 'none',
+                        zIndex: 5,
+                      }}
+                    />
+
+                    {/* Editable text overlay — disabled while in table mode */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        pointerEvents: mode === 'table' ? 'none' : 'auto',
+                      }}
+                    >
                       {currentPage.items.map(item => (
                         <EditableTextItem
                           key={item.id}
@@ -703,7 +1044,216 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                         />
                       ))}
                     </div>
+
+                    {/* Table-mode drag-select capture layer */}
+                    {mode === 'table' && !pendingRegion && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          cursor: 'crosshair',
+                          zIndex: 30,
+                        }}
+                        onMouseDown={e => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          beginDragSelect(
+                            e.clientX - rect.left,
+                            e.clientY - rect.top,
+                          );
+                        }}
+                        onMouseMove={e => {
+                          if (!dragStartRef.current) return;
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          updateDragSelect(
+                            e.clientX - rect.left,
+                            e.clientY - rect.top,
+                          );
+                        }}
+                        onMouseUp={finishDragSelect}
+                        onMouseLeave={() => {
+                          if (dragStartRef.current) finishDragSelect();
+                        }}
+                      >
+                        {/* In-progress selection rectangle */}
+                        {dragRect && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: dragRect.x,
+                              top: dragRect.y,
+                              width: dragRect.w,
+                              height: dragRect.h,
+                              background: 'rgba(99,102,241,0.18)',
+                              border: '1.5px dashed #6366f1',
+                              pointerEvents: 'none',
+                            }}
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    {/* Pending region: rows/cols input popover */}
+                    {mode === 'table' && pendingRegion && (
+                      <>
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: pendingRegion.x,
+                            top: pendingRegion.y,
+                            width: pendingRegion.w,
+                            height: pendingRegion.h,
+                            background: 'rgba(99,102,241,0.12)',
+                            border: '1.5px solid #6366f1',
+                            pointerEvents: 'none',
+                            zIndex: 25,
+                          }}
+                        />
+                        <div
+                          className="absolute bg-white rounded-lg shadow-xl border border-neutral-200 p-3 flex items-center gap-3"
+                          style={{
+                            left: Math.min(
+                              pendingRegion.x,
+                              currentPage.canvasW - 280,
+                            ),
+                            top: Math.min(
+                              pendingRegion.y + pendingRegion.h + 8,
+                              currentPage.canvasH - 60,
+                            ),
+                            zIndex: 40,
+                          }}
+                        >
+                          <label className="flex items-center gap-1.5 text-xs">
+                            <span className="text-neutral-500 font-medium">行</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={50}
+                              value={pendingRows}
+                              onChange={e => setPendingRows(Number(e.target.value) || 1)}
+                              className="w-14 px-2 py-1 border border-neutral-200 rounded text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            />
+                          </label>
+                          <label className="flex items-center gap-1.5 text-xs">
+                            <span className="text-neutral-500 font-medium">列</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={20}
+                              value={pendingCols}
+                              onChange={e => setPendingCols(Number(e.target.value) || 1)}
+                              className="w-14 px-2 py-1 border border-neutral-200 rounded text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                            />
+                          </label>
+                          <button
+                            onClick={confirmPendingRegion}
+                            className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded hover:bg-indigo-700 transition-colors"
+                          >
+                            创建表格
+                          </button>
+                          <button
+                            onClick={cancelPendingRegion}
+                            className="p-1 text-neutral-400 hover:text-neutral-700 transition-colors"
+                            title="取消"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
+                </div>
+              )}
+
+              {/* Per-table editing panels (below canvas, current page only) */}
+              {currentTables.length > 0 && (
+                <div className="space-y-4">
+                  {currentTables.map((t, idx) => (
+                    <div
+                      key={t.id}
+                      className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <TableIcon size={14} className="text-indigo-600" />
+                          <span className="text-sm font-bold text-indigo-700">
+                            表格 #{idx + 1}
+                          </span>
+                          <span className="text-xs text-neutral-500">
+                            {t.rows} 行 × {t.cols} 列
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => removeRegion(t.id)}
+                          className="flex items-center gap-1 px-2 py-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                          title="移除该表格(恢复原 PDF 这块内容)"
+                        >
+                          <Trash2 size={12} />
+                          移除表格
+                        </button>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="border-collapse">
+                          <thead>
+                            <tr>
+                              {/* Top-left empty corner */}
+                              <th className="w-8 h-8 bg-neutral-100" />
+                              {Array.from({ length: t.cols }, (_, c) => (
+                                <th
+                                  key={c}
+                                  className="relative min-w-[100px] bg-neutral-100 border border-neutral-200 px-2 py-1 text-[11px] font-semibold text-neutral-500"
+                                >
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span>列 {c + 1}</span>
+                                    <button
+                                      onClick={() => deleteCol(t.id, c)}
+                                      disabled={t.cols <= 1}
+                                      className="p-0.5 text-neutral-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                      title="删除该列"
+                                    >
+                                      <X size={11} />
+                                    </button>
+                                  </div>
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {t.cells.map((row, r) => (
+                              <tr key={r}>
+                                <th className="w-8 bg-neutral-100 border border-neutral-200 px-1 text-[11px] font-semibold text-neutral-500">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span>{r + 1}</span>
+                                    <button
+                                      onClick={() => deleteRow(t.id, r)}
+                                      disabled={t.rows <= 1}
+                                      className="p-0.5 text-neutral-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                      title="删除该行"
+                                    >
+                                      <X size={11} />
+                                    </button>
+                                  </div>
+                                </th>
+                                {row.map((cell, c) => (
+                                  <td
+                                    key={c}
+                                    className="border border-neutral-200 bg-white p-0"
+                                  >
+                                    <input
+                                      type="text"
+                                      value={cell}
+                                      onChange={e => editCell(t.id, r, c, e.target.value)}
+                                      className="w-full min-w-[100px] px-2 py-1.5 text-sm bg-transparent outline-none focus:bg-indigo-50 transition-colors"
+                                    />
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
 
