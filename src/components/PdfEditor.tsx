@@ -20,6 +20,7 @@ import {
   FileText,
   RotateCcw,
   FilePen,
+  Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -155,12 +156,24 @@ async function buildModifiedPdf(
     // Apply each edit: erase original, draw new text
     for (const item of changed) {
       const newText = edits[item.id];
-      // White-out the original text region (add small padding)
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(item.x - 2, item.y - 2, item.w + 4, item.h + 4);
-      // Draw replacement text with same approximate metrics
-      ctx.fillStyle = '#000000';
+
+      // Measure new text width to ensure the erase region is wide enough
       ctx.font = `${item.fontSize}px sans-serif`;
+      const measuredW = ctx.measureText(newText).width;
+      const eraseW = Math.max(item.w, measuredW);
+
+      // Sample background color from just outside the left edge of the text box
+      // (avoids sampling on top of the text glyphs themselves)
+      const sampleX = Math.max(0, item.x - 4);
+      const sampleY = Math.min(canvas.height - 1, Math.round(item.y + item.h / 2));
+      const pixel = ctx.getImageData(sampleX, sampleY, 1, 1).data;
+      const bgColor = `rgb(${pixel[0]},${pixel[1]},${pixel[2]})`;
+
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(item.x - 2, item.y - 2, eraseW + 4, item.h + 4);
+
+      // Draw replacement text
+      ctx.fillStyle = '#000000';
       ctx.textBaseline = 'top';
       ctx.fillText(newText, item.x, item.y + item.fontSize * 0.05);
     }
@@ -305,6 +318,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Count genuinely modified text items
   const totalEdits = Object.entries(editedTexts).filter(([id, v]) => {
@@ -314,6 +328,12 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     }
     return false;
   }).length;
+
+  // Mirror totalEdits into a ref so stable callbacks can read the live value
+  const totalEditsRef = useRef(0);
+  useEffect(() => {
+    totalEditsRef.current = totalEdits;
+  }, [totalEdits]);
 
   const loadPdf = useCallback(async (f: File) => {
     setLoading(true);
@@ -346,7 +366,9 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const handleFileInput = (e: ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     e.target.value = '';
-    if (f) loadPdf(f);
+    if (!f) return;
+    if (!confirmDiscardEdits()) return;
+    loadPdf(f);
   };
 
   const handleDrop = useCallback(
@@ -354,9 +376,23 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
       e.preventDefault();
       e.stopPropagation();
       setIsDragging(false);
-      const f = e.dataTransfer.files?.[0];
-      if (f?.name.toLowerCase().endsWith('.pdf')) loadPdf(f);
-      else setUploadError('请上传 .pdf 格式的文件');
+      const dropped: File[] = e.dataTransfer.files ? Array.from<File>(e.dataTransfer.files) : [];
+      if (dropped.length === 0) return;
+      const f = dropped[0];
+      if (!f.name.toLowerCase().endsWith('.pdf')) {
+        setUploadError('请上传 .pdf 格式的文件');
+        return;
+      }
+      const pending = totalEditsRef.current;
+      if (pending > 0 && !window.confirm(`当前有 ${pending} 处未保存的修改，确定要丢弃并加载新文件吗？`)) {
+        return;
+      }
+      if (dropped.length > 1) {
+        setUploadError(`PDF 编辑器每次只能处理一个文件，已加载「${f.name}」，其余文件已忽略`);
+      } else {
+        setUploadError(null);
+      }
+      loadPdf(f);
     },
     [loadPdf],
   );
@@ -376,6 +412,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     if (!file || saving || totalEdits === 0) return;
     setSaving(true);
     setSaveError(null);
+    setSaveSuccess(false);
     try {
       const bytes = await buildModifiedPdf(file, pages, editedTexts);
       const blob = new Blob([bytes], { type: 'application/pdf' });
@@ -387,6 +424,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      setSaveSuccess(true);
     } catch (err) {
       console.error(err);
       setSaveError('保存失败，请重试');
@@ -396,12 +434,21 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   };
 
   const resetEditor = () => {
+    if (totalEdits > 0 && !window.confirm(`当前有 ${totalEdits} 处未保存的修改，确定要丢弃并重新上传吗？`)) {
+      return;
+    }
     setFile(null);
     setPages([]);
     setEditedTexts({});
     setCurrentPageIdx(0);
     setSaveError(null);
+    setSaveSuccess(false);
     setUploadError(null);
+  };
+
+  const confirmDiscardEdits = (): boolean => {
+    if (totalEdits === 0) return true;
+    return window.confirm(`当前有 ${totalEdits} 处未保存的修改，确定要丢弃并加载新文件吗？`);
   };
 
   const currentPage = pages[currentPageIdx];
@@ -669,6 +716,20 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                 >
                   <AlertCircle size={18} />
                   <p className="text-sm font-medium">{saveError}</p>
+                </motion.div>
+              )}
+
+              {/* Save success */}
+              {saveSuccess && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="p-4 bg-green-50 border border-green-100 rounded-lg flex items-center gap-3 text-green-600"
+                >
+                  <Download size={18} />
+                  <p className="text-sm font-medium">
+                    已下载修改版：{file?.name.replace(/\.pdf$/i, '_edited.pdf')}
+                  </p>
                 </motion.div>
               )}
 

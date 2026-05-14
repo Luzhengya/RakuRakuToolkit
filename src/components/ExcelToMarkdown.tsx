@@ -33,9 +33,14 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
     reset,
   } = useFileUpload({ accept: ['.xlsx', '.xls'], maxFiles: 10 });
 
-  const sheetNames = Array.from(
-    new Set(uploadedFiles.flatMap(f => f.sheetNames ?? []))
-  );
+  // For multiple files, only offer sheet names common to ALL files (intersection).
+  // This avoids ambiguity when files share some sheet names but not others.
+  const sheetNames = (() => {
+    if (uploadedFiles.length === 0) return [];
+    const perFile = uploadedFiles.map(f => new Set(f.sheetNames ?? []));
+    const [first, ...rest] = perFile;
+    return Array.from(first).filter(name => rest.every(s => s.has(name)));
+  })();
 
   const handleConvert = async () => {
     if (files.length === 0) return;
@@ -55,7 +60,10 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
         body: formData,
       });
 
-      if (!response.ok) throw new Error('Failed to convert files');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || '文件转换失败，请重试');
+      }
 
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -69,7 +77,7 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
       setSuccess(true);
       reset();
     } catch (err) {
-      setError('文件转换失败，请重试');
+      setError(err instanceof Error ? err.message : '文件转换失败，请重试');
       console.error(err);
     } finally {
       setLoading(false);
@@ -119,7 +127,7 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
                 <p className="font-semibold text-neutral-700">
                   {isDragging ? '松开鼠标以上传文件' : files.length > 0 ? `已选择 ${files.length} 个文件` : '点击或拖拽上传 Excel 文件'}
                 </p>
-                <p className="text-xs text-neutral-400 mt-1">支持 .xlsx 和 .xls 格式，最多 10 个，单文件最大 100MB</p>
+                <p className="text-xs text-neutral-400 mt-1">支持 .xlsx 和 .xls 格式，最多 10 个，单文件最大 50MB</p>
               </div>
             </div>
           </div>
@@ -145,6 +153,11 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
 
                 <div className="flex flex-col gap-2">
                   <label className="text-xs font-bold text-neutral-400 uppercase tracking-widest">选择工作表（Sheet）</label>
+                  {uploadedFiles.length > 1 && (
+                    <p className="text-xs text-neutral-400 -mt-1">
+                      多文件场景下仅显示所有文件共有的工作表名
+                    </p>
+                  )}
                   <select
                     value={selectedSheet}
                     onChange={(e) => setSelectedSheet(e.target.value)}

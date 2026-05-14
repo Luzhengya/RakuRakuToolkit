@@ -49,7 +49,10 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
         body: formData,
       });
 
-      if (!response.ok) throw new Error('Failed to convert files');
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || '文件转换失败，请重试');
+      }
 
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
@@ -60,10 +63,17 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
       a.click();
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
-      setSuccess(true);
+
+      const failedHeader = response.headers.get('X-Failed-Files');
+      if (failedHeader) {
+        const failedNames = decodeURIComponent(failedHeader).split(',');
+        setError(`部分文件转换失败：${failedNames.join('、')}，其余文件已下载`);
+      } else {
+        setSuccess(true);
+      }
       reset();
     } catch (err) {
-      setError('文件转换失败，请重试');
+      setError(err instanceof Error ? err.message : '文件转换失败，请重试');
       console.error(err);
     } finally {
       setLoading(false);
@@ -113,7 +123,7 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
                 <p className="font-semibold text-neutral-700">
                   {isDragging ? '松开鼠标以上传文件' : files.length > 0 ? `已选择 ${files.length} 个文件` : '点击或拖拽上传 PDF 文件'}
                 </p>
-                <p className="text-xs text-neutral-400 mt-1">支持 .pdf 格式，最多 10 个，单文件最大 100MB</p>
+                <p className="text-xs text-neutral-400 mt-1">支持 .pdf 格式，最多 10 个，单文件最大 50MB</p>
               </div>
             </div>
           </div>
