@@ -4,6 +4,10 @@ import type { UploadedFile } from '../types';
 interface UseFileUploadOptions {
   accept: string[];
   maxFiles?: number;
+  // When true, skip the /api/upload round-trip and populate uploadedFiles from
+  // the File objects directly. Use for file types where the server upload step
+  // provides no additional metadata (e.g. PDF-only tools).
+  skipUpload?: boolean;
 }
 
 interface UseFileUploadReturn {
@@ -24,7 +28,7 @@ interface UseFileUploadReturn {
   reset: () => void;
 }
 
-export function useFileUpload({ accept, maxFiles = 10 }: UseFileUploadOptions): UseFileUploadReturn {
+export function useFileUpload({ accept, maxFiles = 10, skipUpload = false }: UseFileUploadOptions): UseFileUploadReturn {
   const [files, setFiles] = useState<File[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -46,9 +50,20 @@ export function useFileUpload({ accept, maxFiles = 10 }: UseFileUploadOptions): 
     }
 
     setFiles(selectedFiles);
-    setLoading(true);
     setError(null);
     setSuccess(false);
+
+    if (skipUpload) {
+      // Derive metadata from the File objects — no server round-trip needed.
+      setUploadedFiles(selectedFiles.map(f => ({
+        filename: f.name,
+        originalName: f.name,
+        type: 'pdf' as const,
+      })));
+      return;
+    }
+
+    setLoading(true);
     setUploadedFiles([]);
 
     const formData = new FormData();
@@ -65,7 +80,7 @@ export function useFileUpload({ accept, maxFiles = 10 }: UseFileUploadOptions): 
     } finally {
       setLoading(false);
     }
-  }, [accept, maxFiles]);
+  }, [accept, maxFiles, skipUpload]);
 
   const handleDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();

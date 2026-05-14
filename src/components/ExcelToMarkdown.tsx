@@ -30,7 +30,6 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
     setLoading,
     setError,
     setSuccess,
-    reset,
   } = useFileUpload({ accept: ['.xlsx', '.xls'], maxFiles: 10 });
 
   // For multiple files, only offer sheet names common to ALL files (intersection).
@@ -75,7 +74,7 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
       setSuccess(true);
-      reset();
+      // No reset() — keep file list visible so user can confirm what was processed
     } catch (err) {
       setError(err instanceof Error ? err.message : '文件转换失败，请重试');
       console.error(err);
@@ -171,20 +170,31 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
                   </select>
                 </div>
 
-                <button
-                  onClick={handleConvert}
-                  disabled={loading}
-                  className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 group"
-                >
-                  {loading ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <>
-                      <FileText size={20} />
-                      开始转换并下载
-                    </>
-                  )}
-                </button>
+                {loading ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-neutral-600 flex items-center gap-2">
+                        <Loader2 size={14} className="animate-spin" />
+                        正在转换 {files.length} 个文件...
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full w-1/3 bg-green-400 rounded-full"
+                        animate={{ x: ['−100%', '300%'] }}
+                        transition={{ repeat: Infinity, duration: 1.2, ease: 'easeInOut' }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleConvert}
+                    className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 transition-all flex items-center justify-center gap-2"
+                  >
+                    <FileText size={20} />
+                    开始转换并下载
+                  </button>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

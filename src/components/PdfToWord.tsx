@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Upload,
   FileText,
@@ -13,6 +13,8 @@ import { useFileUpload } from '../hooks/useFileUpload';
 
 export default function PdfToWord({ onBack }: { onBack: () => void }) {
   const [downloadPath, setDownloadPath] = useState<string>('');
+  const [convertProgress, setConvertProgress] = useState(0);
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const {
     files,
@@ -29,17 +31,40 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
     setLoading,
     setError,
     setSuccess,
-    reset,
-  } = useFileUpload({ accept: ['.pdf'], maxFiles: 10 });
+  } = useFileUpload({ accept: ['.pdf'], maxFiles: 10, skipUpload: true });
+
+  // Clean up interval on unmount
+  useEffect(() => {
+    return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
+  }, []);
+
+  const startProgress = useCallback((fileCount: number) => {
+    setConvertProgress(0);
+    const totalMs = fileCount * 40_000; // ~40s per file via Adobe API
+    const stepMs = 300;
+    const increment = 95 / (totalMs / stepMs);
+    progressIntervalRef.current = setInterval(() => {
+      setConvertProgress(prev => {
+        if (prev >= 95) { clearInterval(progressIntervalRef.current!); return 95; }
+        return Math.min(95, prev + increment);
+      });
+    }, stepMs);
+  }, []);
+
+  const finishProgress = useCallback(() => {
+    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    setConvertProgress(100);
+  }, []);
 
   const handleConvert = async () => {
     if (files.length === 0) return;
 
     setLoading(true);
     setError(null);
+    setSuccess(false);
+    startProgress(files.length);
 
     try {
-      // Re-send original File objects so the server doesn't depend on /tmp state
       const formData = new FormData();
       files.forEach(f => formData.append('files', f));
       if (downloadPath) formData.append('downloadPath', downloadPath);
@@ -64,6 +89,7 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
 
+      finishProgress();
       const failedHeader = response.headers.get('X-Failed-Files');
       if (failedHeader) {
         const failedNames = decodeURIComponent(failedHeader).split(',');
@@ -71,8 +97,9 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
       } else {
         setSuccess(true);
       }
-      reset();
+      // No reset() — keep file list visible so user can confirm what was processed
     } catch (err) {
+      finishProgress();
       setError(err instanceof Error ? err.message : '文件转换失败，请重试');
       console.error(err);
     } finally {
@@ -147,20 +174,35 @@ export default function PdfToWord({ onBack }: { onBack: () => void }) {
                   />
                 </div>
 
-                <button
-                  onClick={handleConvert}
-                  disabled={loading}
-                  className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 group"
-                >
-                  {loading ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <>
-                      <FileText size={20} />
-                      开始转换并下载
-                    </>
-                  )}
-                </button>
+                {loading ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-neutral-600 flex items-center gap-2">
+                        <Loader2 size={14} className="animate-spin" />
+                        正在转换 {files.length} 个文件，请耐心等待...
+                      </span>
+                      <span className="text-neutral-500 tabular-nums">{Math.round(convertProgress)}%</span>
+                    </div>
+                    <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full bg-red-400 rounded-full"
+                        animate={{ width: `${convertProgress}%` }}
+                        transition={{ duration: 0.3, ease: 'linear' }}
+                      />
+                    </div>
+                    <p className="text-xs text-neutral-400 text-center">
+                      每个文件约 30–40 秒（Adobe API 转换中）
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleConvert}
+                    className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 transition-all flex items-center justify-center gap-2"
+                  >
+                    <FileText size={20} />
+                    开始转换并下载
+                  </button>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
