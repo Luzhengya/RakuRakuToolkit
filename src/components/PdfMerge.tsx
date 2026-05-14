@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, type DragEvent, type ChangeEvent } from 'react';
+import { useState, useRef, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 // Vite ?url import serves the worker from local node_modules — avoids CDN version mismatch
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -12,6 +12,7 @@ import {
   X,
   Layers,
   FileText,
+  ZoomIn,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -70,6 +71,60 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
   const [mergeSuccess, setMergeSuccess] = useState(false);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [outputName, setOutputName] = useState('merged.pdf');
+
+  // Lightbox: double-click a thumbnail to view it at high resolution
+  const [lightboxPage, setLightboxPage] = useState<PageItem | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<string>('');
+  const [lightboxLoading, setLightboxLoading] = useState(false);
+
+  const openLightbox = useCallback(async (page: PageItem) => {
+    setLightboxPage(page);
+    setLightboxImage('');
+    setLightboxLoading(true);
+    try {
+      const file = allFilesRef.current[page.fileIndex];
+      if (!file) throw new Error('文件已被移除');
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+      const pdfPage = await pdf.getPage(page.pageIndex + 1);
+      const base = pdfPage.getViewport({ scale: 1 });
+      // Scale up to ~90% of viewport, capped to keep huge pages reasonable
+      const targetW = Math.min(window.innerWidth * 0.85, 1600);
+      const scale = Math.min(3, Math.max(1.2, targetW / base.width));
+      const viewport = pdfPage.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await pdfPage.render({
+        canvas,
+        canvasContext: ctx as unknown as CanvasRenderingContext2D,
+        viewport,
+      }).promise;
+      setLightboxImage(canvas.toDataURL('image/jpeg', 0.92));
+    } catch (err) {
+      console.error('lightbox render failed', err);
+      setLightboxPage(null);
+    } finally {
+      setLightboxLoading(false);
+    }
+  }, []);
+
+  const closeLightbox = useCallback(() => {
+    setLightboxPage(null);
+    setLightboxImage('');
+  }, []);
+
+  useEffect(() => {
+    if (!lightboxPage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeLightbox();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightboxPage, closeLightbox]);
 
   // ── Load PDFs & render thumbnails ──────────────────────────────────
   const addPdfFiles = useCallback(async (newFiles: File[]) => {
@@ -383,12 +438,20 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
                             <img
                               src={page.thumbnail}
                               alt={`${page.fileName} 第 ${page.pageNumber} 页`}
-                              className="w-full object-contain"
+                              className="w-full object-contain cursor-zoom-in"
                               draggable={false}
+                              onDoubleClick={e => { e.stopPropagation(); openLightbox(page); }}
+                              title="双击放大查看"
                             />
                           ) : (
                             <FileText size={32} className="text-neutral-300" />
                           )}
+
+                          {/* Zoom hint (shows on hover, bottom-right) */}
+                          <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 pointer-events-none">
+                            <ZoomIn size={10} />
+                            双击放大
+                          </div>
 
                           {/* Order badge */}
                           <div className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold flex items-center justify-center shadow">
@@ -491,6 +554,53 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
 
         </div>
       </div>
+
+      {/* Lightbox: high-res preview triggered by double-clicking a thumbnail */}
+      <AnimatePresence>
+        {lightboxPage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-6"
+            onClick={closeLightbox}
+          >
+            <div
+              className="relative max-w-[90vw] max-h-[90vh]"
+              onClick={e => e.stopPropagation()}
+            >
+              <button
+                onClick={closeLightbox}
+                className="absolute -top-3 -right-3 w-9 h-9 rounded-full bg-white text-neutral-700 shadow-lg flex items-center justify-center hover:bg-neutral-100 transition-colors z-10"
+                title="关闭 (ESC)"
+                aria-label="关闭预览"
+              >
+                <X size={18} />
+              </button>
+
+              {lightboxLoading || !lightboxImage ? (
+                <div className="flex flex-col items-center justify-center gap-3 bg-white rounded-lg p-12 min-w-[280px] min-h-[280px]">
+                  <Loader2 size={28} className="animate-spin text-neutral-400" />
+                  <p className="text-sm text-neutral-500">正在渲染高清预览...</p>
+                </div>
+              ) : (
+                <>
+                  <img
+                    src={lightboxImage}
+                    alt={`${lightboxPage.fileName} 第 ${lightboxPage.pageNumber} 页`}
+                    className="max-w-[90vw] max-h-[90vh] object-contain shadow-2xl rounded"
+                    draggable={false}
+                  />
+                  <div className="absolute bottom-2 left-2 text-white text-xs bg-black/55 px-2 py-1 rounded">
+                    {lightboxPage.fileName} · 第 {lightboxPage.pageNumber} 页
+                  </div>
+                </>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
