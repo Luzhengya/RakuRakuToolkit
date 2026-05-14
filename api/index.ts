@@ -605,12 +605,22 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
     return res.status(400).json({ error: "No files provided" });
   }
 
-  const sheetName = (req.body.sheetName as string) || "全部";
-  const downloadPath = (req.body.downloadPath as string) || "";
+  // sheetNames is a JSON-encoded string array. Empty array == convert all sheets.
+  // Falls back to legacy `sheetName` single-value param for backwards compat.
+  let sheetNames: string[] = [];
+  try {
+    const raw = req.body.sheetNames;
+    if (typeof raw === "string" && raw.length) sheetNames = JSON.parse(raw);
+  } catch { sheetNames = []; }
+  if (sheetNames.length === 0) {
+    const legacy = req.body.sheetName as string | undefined;
+    if (legacy && legacy !== "全部") sheetNames = [legacy];
+  }
+  const convertAll = sheetNames.length === 0;
 
   try {
-    const mainZip = new JSZip();
-    const resultsFolder = downloadPath ? mainZip.folder(downloadPath) : mainZip;
+    // Per-file markdown payloads, keyed by display filename (.md)
+    const fileMarkdowns: { name: string; markdown: string }[] = [];
 
     for (const file of multerFiles) {
       const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
@@ -619,25 +629,27 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(fileBuffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
 
-      const zip = new JSZip();
-      const imagesFolder = zip.folder("images");
-
       let markdown = "";
       let sheetsToConvert: ExcelJS.Worksheet[];
-      if (sheetName === "全部") {
+      if (convertAll) {
         sheetsToConvert = workbook.worksheets;
       } else {
-        const found = workbook.getWorksheet(sheetName);
-        if (!found) {
+        sheetsToConvert = [];
+        const missing: string[] = [];
+        for (const name of sheetNames) {
+          const found = workbook.getWorksheet(name);
+          if (found) sheetsToConvert.push(found);
+          else missing.push(name);
+        }
+        if (missing.length) {
           const available = workbook.worksheets.map((ws) => ws.name).join("、");
-          markdown += `> ⚠️ 文件「${originalName}」中不存在工作表「${sheetName}」。\n> 可用工作表：${available || "（无）"}\n\n`;
-          sheetsToConvert = [];
-        } else {
-          sheetsToConvert = [found];
+          markdown += `> ⚠️ 文件「${originalName}」中不存在工作表：${missing.join("、")}\n> 可用工作表：${available || "（无）"}\n\n`;
         }
       }
 
-      for (const worksheet of sheetsToConvert) {
+      for (let sIdx = 0; sIdx < sheetsToConvert.length; sIdx++) {
+        const worksheet = sheetsToConvert[sIdx];
+        if (sIdx > 0) markdown += `\n---\n\n`;
         markdown += `## Sheet: ${worksheet.name}\n\n`;
 
         let allRows: string[][] = [];
@@ -706,16 +718,18 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
           }
         }
 
-        // Images
+        // Images: embed inline as base64 data URLs so the .md is fully self-contained
         const imgs = worksheet.getImages();
         if (imgs.length && workbook.model.media) {
           markdown += `### Images in ${worksheet.name}\n\n`;
           for (const img of imgs) {
             const media = (workbook.model.media as any)[img.imageId];
             if (media) {
-              const imgName = `image_${worksheet.id}_${img.imageId}.${media.extension}`;
-              imagesFolder?.file(imgName, media.buffer);
-              markdown += `![${imgName}](images/${imgName})\n\n`;
+              const ext = (media.extension || "png").toLowerCase();
+              const mime = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+              const b64 = Buffer.from(media.buffer).toString("base64");
+              const altName = `image_${worksheet.id}_${img.imageId}.${ext}`;
+              markdown += `![${altName}](data:${mime};base64,${b64})\n\n`;
             }
           }
         }
@@ -741,15 +755,32 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
         }
       } catch { /* optional */ }
 
-      zip.file("output.md", markdown);
-      const zipBuf = await zip.generateAsync({ type: "nodebuffer" });
-      resultsFolder?.file(originalName.replace(/\.(xlsx|xls)$/i, ".zip"), zipBuf);
+      const mdName = originalName.replace(/\.(xlsx|xls)$/i, ".md");
+      fileMarkdowns.push({ name: mdName, markdown });
     }
 
-    const mainZipBuffer = await mainZip.generateAsync({ type: "nodebuffer" });
+    // Single file → return the .md directly (no zip wrapping).
+    // Multiple files → flat zip with one .md per source workbook.
+    if (fileMarkdowns.length === 1) {
+      const { name, markdown } = fileMarkdowns[0];
+      const safeName = encodeURIComponent(name);
+      res.set("Content-Type", "text/markdown; charset=utf-8");
+      res.set(
+        "Content-Disposition",
+        `attachment; filename="output.md"; filename*=UTF-8''${safeName}`,
+      );
+      res.send(markdown);
+      return;
+    }
+
+    const outZip = new JSZip();
+    for (const { name, markdown } of fileMarkdowns) {
+      outZip.file(name, markdown);
+    }
+    const zipBuffer = await outZip.generateAsync({ type: "nodebuffer" });
     res.set("Content-Type", "application/zip");
     res.set("Content-Disposition", `attachment; filename="excel_conversions.zip"`);
-    res.send(mainZipBuffer);
+    res.send(zipBuffer);
   } catch (error) {
     console.error("Excel convert error:", error);
     res.status(500).json({ error: "Failed to convert Excel file" });
