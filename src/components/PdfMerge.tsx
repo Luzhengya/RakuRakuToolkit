@@ -431,36 +431,42 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
                         ].join(' ')}
                       >
                         {/* Thumbnail */}
-                        <div className="relative bg-neutral-100 flex items-center justify-center overflow-hidden"
+                        <div
+                          className="relative bg-neutral-100 flex items-center justify-center overflow-hidden"
                           style={{ minHeight: 100 }}
+                          onDoubleClick={e => { e.stopPropagation(); openLightbox(page); }}
+                          title="双击放大查看"
                         >
                           {page.thumbnail ? (
                             <img
                               src={page.thumbnail}
                               alt={`${page.fileName} 第 ${page.pageNumber} 页`}
-                              className="w-full object-contain cursor-zoom-in"
+                              className="w-full object-contain"
                               draggable={false}
-                              onDoubleClick={e => { e.stopPropagation(); openLightbox(page); }}
-                              title="双击放大查看"
                             />
                           ) : (
                             <FileText size={32} className="text-neutral-300" />
                           )}
-
-                          {/* Zoom hint (shows on hover, bottom-right) */}
-                          <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/60 text-white text-[10px] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 pointer-events-none">
-                            <ZoomIn size={10} />
-                            双击放大
-                          </div>
 
                           {/* Order badge */}
                           <div className="absolute top-1.5 left-1.5 w-5 h-5 rounded-full bg-indigo-600 text-white text-[10px] font-bold flex items-center justify-center shadow">
                             {index + 1}
                           </div>
 
+                          {/* Zoom button (shows on hover, top-right next to delete) */}
+                          <button
+                            onClick={e => { e.stopPropagation(); openLightbox(page); }}
+                            onMouseDown={e => e.stopPropagation()}
+                            className="absolute top-1.5 right-8 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-indigo-500 transition-all"
+                            title="放大查看（也可双击缩略图）"
+                          >
+                            <ZoomIn size={11} />
+                          </button>
+
                           {/* Delete button (shows on hover) */}
                           <button
                             onClick={e => { e.stopPropagation(); removePage(index); }}
+                            onMouseDown={e => e.stopPropagation()}
                             className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-red-500 transition-all"
                             title="删除此页"
                           >
@@ -468,7 +474,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
                           </button>
 
                           {/* Drag handle overlay (top strip) */}
-                          <div className="absolute inset-x-0 top-0 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="absolute inset-x-0 top-0 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                             <GripVertical size={14} className="text-white drop-shadow" />
                           </div>
                         </div>
