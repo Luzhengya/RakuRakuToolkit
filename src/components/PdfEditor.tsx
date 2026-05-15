@@ -5,6 +5,7 @@ import {
   useEffect,
   type ChangeEvent,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
 } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -43,6 +44,10 @@ interface TextItem {
   w: number;      // width in canvas px
   h: number;      // height in canvas px
   fontSize: number; // font size in canvas px
+  // Resolved CSS-usable family from pdfjs textContent.styles[fontName].fontFamily.
+  // May still be a quoted/exotic name that the browser can't render — fall back
+  // to FONT_STACK in that case.
+  fontFamily?: string;
 }
 
 interface PageData {
@@ -73,6 +78,15 @@ interface Band {
   deleted: boolean;
 }
 
+// Visual style for a single cell — derived from its original text items
+// (mode of fontSize, fontFamily). Used to render the edit-time inline input
+// and the redrawn cell text in the export pipeline.
+interface CellStyle {
+  fontSize: number;       // canvas px
+  fontFamily: string;     // CSS font-family (already includes fallback chain)
+  color: string;          // CSS colour string — phase 1 always #111
+}
+
 interface TableRegion {
   id: string;
   pageNum: number;
@@ -87,6 +101,8 @@ interface TableRegion {
   origCells: string[][];
   // User edits, keyed `${row}_${col}`; only modified cells appear here
   cellEdits: Record<string, string>;
+  // Inferred style per cell (or fallback when cell has no items)
+  cellStyles: Record<string, CellStyle>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -197,10 +213,40 @@ function buildTableFromSelection(
   const origCells: string[][] = Array.from({ length: rows }, () =>
     Array.from({ length: cols }, () => ''),
   );
+  const cellStyles: Record<string, CellStyle> = {};
+
+  // Pick the most common value in an array (mode). Ties resolved by first seen.
+  const modeOf = <T,>(arr: T[]): T | undefined => {
+    if (arr.length === 0) return undefined;
+    const counts = new Map<T, number>();
+    let best: T = arr[0];
+    let bestCount = 0;
+    for (const v of arr) {
+      const n = (counts.get(v) ?? 0) + 1;
+      counts.set(v, n);
+      if (n > bestCount) { bestCount = n; best = v; }
+    }
+    return best;
+  };
+
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       bucket[r][c].sort((a, b) => a.x - b.x);
       origCells[r][c] = bucket[r][c].map(it => it.str).join(' ').trim();
+
+      const cellItems = bucket[r][c];
+      // Round to nearest 0.5px to coalesce near-identical sizes
+      const sizes = cellItems.map(it => Math.round(it.fontSize * 2) / 2);
+      const families = cellItems
+        .map(it => it.fontFamily)
+        .filter((f): f is string => !!f);
+      const fontSize = modeOf(sizes) ?? 12;
+      const inferredFamily = modeOf(families);
+      // Always chain through FONT_STACK so missing glyphs fall back gracefully
+      const fontFamily = inferredFamily
+        ? `${inferredFamily}, ${FONT_STACK}`
+        : FONT_STACK;
+      cellStyles[`${r}_${c}`] = { fontSize, fontFamily, color: '#111111' };
     }
   }
 
@@ -215,6 +261,7 @@ function buildTableFromSelection(
     colBands,
     origCells,
     cellEdits: {},
+    cellStyles,
   };
 }
 
@@ -245,7 +292,8 @@ function paintTablesOnCanvas(
       ctx.fillRect(cb.start, t.y, cb.size, t.h);
     }
 
-    // 3. Edited cells — sample background then redraw new text
+    // 3. Edited cells — sample background then redraw new text using
+    //    the cell's inferred style (font size + family + colour)
     for (const [key, newText] of Object.entries(t.cellEdits)) {
       const [rStr, cStr] = key.split('_');
       const r = Number(rStr);
@@ -276,15 +324,21 @@ function paintTablesOnCanvas(
       ctx.fillRect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
 
       if (!newText) continue;
-      // Draw replacement text — auto-shrink to fit horizontally, clip to cell
-      ctx.fillStyle = '#111111';
+      // Use the cell's inferred style (preserves original size/family/colour
+      // as detected from the underlying PDF text items)
+      const style = t.cellStyles[key] ?? {
+        fontSize: Math.min(Math.max(cellH * 0.55, 9), 16),
+        fontFamily: FONT_STACK,
+        color: '#111111',
+      };
+      ctx.fillStyle = style.color;
       ctx.textBaseline = 'middle';
       const PAD = 4;
-      let fontSize = Math.min(Math.max(cellH * 0.55, 9), 16);
-      ctx.font = `${fontSize}px ${FONT_STACK}`;
+      let fontSize = style.fontSize;
+      ctx.font = `${fontSize}px ${style.fontFamily}`;
       while (ctx.measureText(newText).width > cellW - PAD * 2 && fontSize > 7) {
         fontSize -= 1;
-        ctx.font = `${fontSize}px ${FONT_STACK}`;
+        ctx.font = `${fontSize}px ${style.fontFamily}`;
       }
       ctx.save();
       ctx.beginPath();
@@ -323,6 +377,9 @@ async function renderAndExtract(
   const items: TextItem[] = [];
   let idx = 0;
 
+  // pdfjs styles map: { [fontName]: { fontFamily, ascent, descent, vertical } }
+  const styles = (textContent as { styles?: Record<string, { fontFamily?: string }> }).styles ?? {};
+
   for (const raw of textContent.items) {
     if (!('str' in raw) || !raw.str.trim()) continue;
 
@@ -343,6 +400,12 @@ async function renderAndExtract(
     const ascent = fontSize * 0.82;
     const itemH = fontSize * 1.25; // ascent + descent
 
+    // Resolve fontName → fontFamily via styles map. pdfjs assigns synthetic IDs
+    // like "g_d0_f1" to fontName, and styles[id].fontFamily holds the actual
+    // font family string. May be missing if pdfjs couldn't parse the font.
+    const fontName = (raw as { fontName?: string }).fontName;
+    const fontFamily = fontName && styles[fontName]?.fontFamily;
+
     items.push({
       id: `p${pageNum}i${idx++}`,
       str: raw.str,
@@ -351,6 +414,7 @@ async function renderAndExtract(
       w: Math.round(Math.max(itemW, 10)),
       h: Math.round(itemH),
       fontSize,
+      fontFamily: fontFamily || undefined,
     });
   }
 
@@ -585,6 +649,13 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   // Overlay canvas ref — re-drawn whenever the current page's tables change
   const tableLayerRef = useRef<HTMLCanvasElement>(null);
 
+  // WPS-style in-place editing
+  const [editingCell, setEditingCell] = useState<{ regionId: string; r: number; c: number } | null>(null);
+  const [hoveredCell, setHoveredCell] = useState<{ regionId: string; r: number; c: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number; y: number; regionId: string; r: number; c: number;
+  } | null>(null);
+
   // Count genuinely modified text items
   const textEditCount = Object.entries(editedTexts).filter(([id, v]) => {
     for (const pg of pages) {
@@ -605,6 +676,21 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     totalEditsRef.current = totalEdits;
   }, [totalEdits]);
+
+  // Dismiss the context menu when the user clicks anywhere else or hits Escape
+  useEffect(() => {
+    if (!contextMenu) return;
+    const onDown = () => setContextMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
 
   // Redraw the table overlay layer whenever the current page's tables change.
   // The overlay canvas sits on top of the rendered PDF image; we paint the
@@ -639,6 +725,9 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setPageTables({});
     setPendingRegion(null);
     setDragRect(null);
+    setEditingCell(null);
+    setHoveredCell(null);
+    setContextMenu(null);
     setMode('text');
     setCurrentPageIdx(0);
     setProgress({ current: 0, total: 0 });
@@ -814,6 +903,122 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     });
   };
 
+  // Insertion: keep region.x/y/w/h fixed (so surrounding PDF content stays
+  // untouched). The newly-inserted band gets the median size of existing
+  // active bands; then all bands are uniformly compressed so their total
+  // equals the region dimension. Cell-keyed state shifts to accommodate.
+  const insertRow = (regionId: string, anchorIdx: number, above: boolean) => {
+    updateRegion(regionId, r => {
+      const insertAt = above ? anchorIdx : anchorIdx + 1;
+      const activeSizes = r.rowBands.filter(b => !b.deleted).map(b => b.size);
+      const medianSize = activeSizes.length
+        ? activeSizes.sort((a, b) => a - b)[Math.floor(activeSizes.length / 2)]
+        : r.h / Math.max(1, r.rowBands.length + 1);
+
+      // Build new band list, then scale all sizes so their total == r.h
+      const draft: Band[] = [...r.rowBands];
+      draft.splice(insertAt, 0, { start: 0, size: medianSize, deleted: false });
+      const total = draft.reduce((s, b) => s + b.size, 0);
+      const scale = total > 0 ? r.h / total : 1;
+      let cursor = r.y;
+      const rowBands: Band[] = draft.map(b => {
+        const size = b.size * scale;
+        const band: Band = { start: cursor, size, deleted: b.deleted };
+        cursor += size;
+        return band;
+      });
+
+      // Shift cellEdits / cellStyles / origCells row indices
+      const origCells: string[][] = [
+        ...r.origCells.slice(0, insertAt),
+        Array.from({ length: r.colBands.length }, () => ''),
+        ...r.origCells.slice(insertAt),
+      ];
+      const remapRowKey = (key: string): string => {
+        const [rStr, cStr] = key.split('_');
+        const rr = Number(rStr);
+        return rr >= insertAt ? `${rr + 1}_${cStr}` : key;
+      };
+      const cellEdits: Record<string, string> = {};
+      for (const [k, v] of Object.entries(r.cellEdits)) cellEdits[remapRowKey(k)] = v;
+      const cellStyles: Record<string, CellStyle> = {};
+      for (const [k, v] of Object.entries(r.cellStyles)) cellStyles[remapRowKey(k)] = v;
+      // Seed default style for the new row by copying the anchor row's styles
+      for (let c = 0; c < r.colBands.length; c++) {
+        const anchorStyle = r.cellStyles[`${anchorIdx}_${c}`];
+        cellStyles[`${insertAt}_${c}`] = anchorStyle ?? {
+          fontSize: 12,
+          fontFamily: FONT_STACK,
+          color: '#111111',
+        };
+      }
+
+      return { ...r, rowBands, origCells, cellEdits, cellStyles };
+    });
+  };
+
+  const insertCol = (regionId: string, anchorIdx: number, left: boolean) => {
+    updateRegion(regionId, r => {
+      const insertAt = left ? anchorIdx : anchorIdx + 1;
+      const activeSizes = r.colBands.filter(b => !b.deleted).map(b => b.size);
+      const medianSize = activeSizes.length
+        ? activeSizes.sort((a, b) => a - b)[Math.floor(activeSizes.length / 2)]
+        : r.w / Math.max(1, r.colBands.length + 1);
+
+      const draft: Band[] = [...r.colBands];
+      draft.splice(insertAt, 0, { start: 0, size: medianSize, deleted: false });
+      const total = draft.reduce((s, b) => s + b.size, 0);
+      const scale = total > 0 ? r.w / total : 1;
+      let cursor = r.x;
+      const colBands: Band[] = draft.map(b => {
+        const size = b.size * scale;
+        const band: Band = { start: cursor, size, deleted: b.deleted };
+        cursor += size;
+        return band;
+      });
+
+      // Splice an empty cell into each row of origCells
+      const origCells: string[][] = r.origCells.map(row => [
+        ...row.slice(0, insertAt),
+        '',
+        ...row.slice(insertAt),
+      ]);
+      const remapColKey = (key: string): string => {
+        const [rStr, cStr] = key.split('_');
+        const cc = Number(cStr);
+        return cc >= insertAt ? `${rStr}_${cc + 1}` : key;
+      };
+      const cellEdits: Record<string, string> = {};
+      for (const [k, v] of Object.entries(r.cellEdits)) cellEdits[remapColKey(k)] = v;
+      const cellStyles: Record<string, CellStyle> = {};
+      for (const [k, v] of Object.entries(r.cellStyles)) cellStyles[remapColKey(k)] = v;
+      // Seed default style for the new col
+      for (let rr = 0; rr < r.rowBands.length; rr++) {
+        const anchorStyle = r.cellStyles[`${rr}_${anchorIdx}`];
+        cellStyles[`${rr}_${insertAt}`] = anchorStyle ?? {
+          fontSize: 12,
+          fontFamily: FONT_STACK,
+          color: '#111111',
+        };
+      }
+
+      return { ...r, colBands, origCells, cellEdits, cellStyles };
+    });
+  };
+
+  // Context menu open/close
+  const openContextMenu = (
+    e: ReactMouseEvent,
+    regionId: string,
+    r: number,
+    c: number,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, regionId, r, c });
+  };
+  const closeContextMenu = () => setContextMenu(null);
+
   // ── Save / reset ────────────────────────────────────────────────────
 
   const handleSave = async () => {
@@ -851,6 +1056,9 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setPageTables({});
     setPendingRegion(null);
     setDragRect(null);
+    setEditingCell(null);
+    setHoveredCell(null);
+    setContextMenu(null);
     setMode('text');
     setCurrentPageIdx(0);
     setSaveError(null);
@@ -1070,7 +1278,14 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
                   <button
-                    onClick={() => { setMode('text'); setPendingRegion(null); setDragRect(null); }}
+                    onClick={() => {
+                      setMode('text');
+                      setPendingRegion(null);
+                      setDragRect(null);
+                      setEditingCell(null);
+                      setHoveredCell(null);
+                      setContextMenu(null);
+                    }}
                     className={[
                       'flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors',
                       mode === 'text'
@@ -1174,6 +1389,124 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                         />
                       ))}
                     </div>
+
+                    {/* WPS-style cell grid overlays: in-place double-click
+                        edit, hover highlight, right-click menu. One overlay
+                        per table region on the current page. Lives above the
+                        drag-select layer so single-clicks on cells don't
+                        accidentally start a new selection. */}
+                    {mode === 'table' && !pendingRegion && currentTables.map(t => (
+                      <div
+                        key={`grid-${t.id}`}
+                        style={{
+                          position: 'absolute',
+                          left: t.x,
+                          top: t.y,
+                          width: t.w,
+                          height: t.h,
+                          zIndex: 35,
+                        }}
+                      >
+                        {t.rowBands.map((rb, r) =>
+                          t.colBands.map((cb, c) => {
+                            const key = `${r}_${c}`;
+                            const isDeleted = rb.deleted || cb.deleted;
+                            const isEditing =
+                              editingCell?.regionId === t.id &&
+                              editingCell.r === r &&
+                              editingCell.c === c;
+                            const isHoveredRow =
+                              hoveredCell?.regionId === t.id && hoveredCell.r === r;
+                            const isHoveredCol =
+                              hoveredCell?.regionId === t.id && hoveredCell.c === c;
+                            const style = t.cellStyles[key];
+                            const orig = t.origCells[r]?.[c] ?? '';
+                            const edited = t.cellEdits[key];
+                            const value = edited ?? orig;
+
+                            // Hovered row/col gets a light tint; the exact
+                            // hovered cell additionally gets an outline.
+                            const isThisCell =
+                              hoveredCell?.regionId === t.id &&
+                              hoveredCell.r === r &&
+                              hoveredCell.c === c;
+
+                            return (
+                              <div
+                                key={key}
+                                onMouseEnter={() => setHoveredCell({ regionId: t.id, r, c })}
+                                onMouseLeave={() =>
+                                  setHoveredCell(prev =>
+                                    prev?.regionId === t.id && prev.r === r && prev.c === c
+                                      ? null
+                                      : prev,
+                                  )
+                                }
+                                onMouseDown={e => e.stopPropagation()}
+                                onDoubleClick={e => {
+                                  e.stopPropagation();
+                                  if (!isDeleted) setEditingCell({ regionId: t.id, r, c });
+                                }}
+                                onContextMenu={e => openContextMenu(e, t.id, r, c)}
+                                style={{
+                                  position: 'absolute',
+                                  left: cb.start - t.x,
+                                  top: rb.start - t.y,
+                                  width: cb.size,
+                                  height: rb.size,
+                                  cursor: isDeleted ? 'not-allowed' : 'text',
+                                  background:
+                                    isHoveredRow || isHoveredCol
+                                      ? 'rgba(99,102,241,0.06)'
+                                      : 'transparent',
+                                  outline: isThisCell
+                                    ? '1.5px solid rgba(99,102,241,0.7)'
+                                    : 'none',
+                                  outlineOffset: '-1.5px',
+                                  boxSizing: 'border-box',
+                                }}
+                              >
+                                {isEditing && (
+                                  <input
+                                    autoFocus
+                                    defaultValue={value}
+                                    onMouseDown={e => e.stopPropagation()}
+                                    onDoubleClick={e => e.stopPropagation()}
+                                    onBlur={e => {
+                                      editCell(t.id, r, c, e.target.value);
+                                      setEditingCell(null);
+                                    }}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') {
+                                        (e.target as HTMLInputElement).blur();
+                                      }
+                                      if (e.key === 'Escape') {
+                                        setEditingCell(null);
+                                      }
+                                    }}
+                                    style={{
+                                      position: 'absolute',
+                                      inset: 0,
+                                      width: '100%',
+                                      height: '100%',
+                                      fontSize: style?.fontSize ?? 12,
+                                      fontFamily: style?.fontFamily ?? FONT_STACK,
+                                      color: style?.color ?? '#111',
+                                      background: 'rgba(255,255,255,0.97)',
+                                      border: '1.5px solid #6366f1',
+                                      outline: 'none',
+                                      padding: '0 4px',
+                                      boxSizing: 'border-box',
+                                      lineHeight: 1,
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            );
+                          }),
+                        )}
+                      </div>
+                    ))}
 
                     {/* Table-mode drag-select capture layer */}
                     {mode === 'table' && !pendingRegion && (
@@ -1294,147 +1627,50 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                 </div>
               )}
 
-              {/* Per-table editing panels (below canvas, current page only) */}
+              {/* Per-table summary cards — editing happens on the canvas (WPS-style).
+                  Each card just shows status and lets the user discard the table. */}
               {currentTables.length > 0 && (
-                <div className="space-y-4">
+                <div className="space-y-2">
                   {currentTables.map((t, idx) => {
                     const totalRows = t.rowBands.length;
                     const totalCols = t.colBands.length;
                     const activeRows = t.rowBands.filter(b => !b.deleted).length;
                     const activeCols = t.colBands.filter(b => !b.deleted).length;
+                    const editCount = Object.keys(t.cellEdits).length;
 
                     return (
                       <div
                         key={t.id}
-                        className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4"
+                        className="flex items-center justify-between rounded-lg border border-indigo-100 bg-indigo-50/40 px-3 py-2"
                       >
-                        <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <TableIcon size={14} className="text-indigo-600" />
-                            <span className="text-sm font-bold text-indigo-700">
-                              表格 #{idx + 1}
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <TableIcon size={14} className="text-indigo-600 flex-shrink-0" />
+                          <span className="text-sm font-bold text-indigo-700">
+                            表格 #{idx + 1}
+                          </span>
+                          <span className="text-xs text-neutral-500">
+                            {activeRows}/{totalRows} 行 · {activeCols}/{totalCols} 列
+                          </span>
+                          {editCount > 0 && (
+                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
+                              {editCount} 处编辑
                             </span>
-                            <span className="text-xs text-neutral-500">
-                              {activeRows}/{totalRows} 行 · {activeCols}/{totalCols} 列
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => removeRegion(t.id)}
-                            className="flex items-center gap-1 px-2 py-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-                            title="重新框选(放弃当前表格,恢复原 PDF 这块内容)"
-                          >
-                            <Trash2 size={12} />
-                            重新框选
-                          </button>
+                          )}
                         </div>
-
-                        <div className="overflow-x-auto">
-                          <table className="border-collapse">
-                            <thead>
-                              <tr>
-                                <th className="w-10 h-8 bg-neutral-100" />
-                                {t.colBands.map((cb, c) => (
-                                  <th
-                                    key={c}
-                                    className={[
-                                      'relative min-w-[100px] border border-neutral-200 px-2 py-1 text-[11px] font-semibold',
-                                      cb.deleted
-                                        ? 'bg-neutral-200/60 text-neutral-400 line-through'
-                                        : 'bg-neutral-100 text-neutral-500',
-                                    ].join(' ')}
-                                  >
-                                    <div className="flex items-center justify-between gap-1">
-                                      <span>列 {c + 1}</span>
-                                      <button
-                                        onClick={() => toggleColDeleted(t.id, c)}
-                                        disabled={!cb.deleted && activeCols <= 1}
-                                        className={[
-                                          'p-0.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
-                                          cb.deleted
-                                            ? 'text-indigo-500 hover:text-indigo-700'
-                                            : 'text-neutral-400 hover:text-red-600',
-                                        ].join(' ')}
-                                        title={cb.deleted ? '恢复该列' : '删除该列'}
-                                      >
-                                        <X
-                                          size={11}
-                                          style={cb.deleted ? { transform: 'rotate(45deg)' } : undefined}
-                                        />
-                                      </button>
-                                    </div>
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {t.rowBands.map((rb, r) => (
-                                <tr key={r}>
-                                  <th
-                                    className={[
-                                      'w-10 border border-neutral-200 px-1 text-[11px] font-semibold',
-                                      rb.deleted
-                                        ? 'bg-neutral-200/60 text-neutral-400 line-through'
-                                        : 'bg-neutral-100 text-neutral-500',
-                                    ].join(' ')}
-                                  >
-                                    <div className="flex items-center justify-between gap-1">
-                                      <span>{r + 1}</span>
-                                      <button
-                                        onClick={() => toggleRowDeleted(t.id, r)}
-                                        disabled={!rb.deleted && activeRows <= 1}
-                                        className={[
-                                          'p-0.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
-                                          rb.deleted
-                                            ? 'text-indigo-500 hover:text-indigo-700'
-                                            : 'text-neutral-400 hover:text-red-600',
-                                        ].join(' ')}
-                                        title={rb.deleted ? '恢复该行' : '删除该行'}
-                                      >
-                                        <X
-                                          size={11}
-                                          style={rb.deleted ? { transform: 'rotate(45deg)' } : undefined}
-                                        />
-                                      </button>
-                                    </div>
-                                  </th>
-                                  {t.colBands.map((cb, c) => {
-                                    const orig = t.origCells[r]?.[c] ?? '';
-                                    const edited = t.cellEdits[`${r}_${c}`];
-                                    const value = edited ?? orig;
-                                    const isEdited = edited !== undefined;
-                                    const isMuted = rb.deleted || cb.deleted;
-                                    return (
-                                      <td
-                                        key={c}
-                                        className={[
-                                          'border border-neutral-200 p-0',
-                                          isMuted ? 'bg-neutral-100/70' : 'bg-white',
-                                        ].join(' ')}
-                                      >
-                                        <input
-                                          type="text"
-                                          value={value}
-                                          onChange={e => editCell(t.id, r, c, e.target.value)}
-                                          disabled={isMuted}
-                                          className={[
-                                            'w-full min-w-[100px] px-2 py-1.5 text-sm bg-transparent outline-none transition-colors',
-                                            isMuted
-                                              ? 'text-neutral-400 line-through cursor-not-allowed'
-                                              : 'focus:bg-indigo-50',
-                                            isEdited && !isMuted ? 'text-amber-700 font-medium' : '',
-                                          ].join(' ')}
-                                        />
-                                      </td>
-                                    );
-                                  })}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
+                        <button
+                          onClick={() => removeRegion(t.id)}
+                          className="flex items-center gap-1 px-2 py-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors flex-shrink-0"
+                          title="重新框选(放弃当前表格,恢复原 PDF 这块内容)"
+                        >
+                          <Trash2 size={12} />
+                          重新框选
+                        </button>
                       </div>
                     );
                   })}
+                  <p className="text-xs text-neutral-400 pl-1">
+                    操作:双击单元格编辑文字 · 鼠标右键弹出菜单(删除/插入行列) · 字号字体自动从原 PDF 提取
+                  </p>
                 </div>
               )}
 
@@ -1485,6 +1721,75 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
           )}
         </div>
       </div>
+
+      {/* WPS-style right-click context menu — fixed-positioned at cursor */}
+      {contextMenu && (() => {
+        const region = (currentTables.find(t => t.id === contextMenu.regionId)) ?? null;
+        if (!region) return null;
+        const rb = region.rowBands[contextMenu.r];
+        const cb = region.colBands[contextMenu.c];
+        const activeRows = region.rowBands.filter(b => !b.deleted).length;
+        const activeCols = region.colBands.filter(b => !b.deleted).length;
+        const item = (
+          label: string,
+          onClick: () => void,
+          opts: { disabled?: boolean; danger?: boolean } = {},
+        ) => (
+          <button
+            onClick={() => { if (!opts.disabled) { onClick(); closeContextMenu(); } }}
+            disabled={opts.disabled}
+            className={[
+              'block w-full text-left px-3 py-1.5 text-sm transition-colors',
+              opts.disabled ? 'text-neutral-300 cursor-not-allowed' : 'hover:bg-neutral-100',
+              opts.danger && !opts.disabled ? 'text-red-600' : 'text-neutral-700',
+            ].join(' ')}
+          >
+            {label}
+          </button>
+        );
+        return (
+          <div
+            onMouseDown={e => e.stopPropagation()}
+            onContextMenu={e => e.preventDefault()}
+            style={{
+              position: 'fixed',
+              left: Math.min(contextMenu.x, window.innerWidth - 200),
+              top: Math.min(contextMenu.y, window.innerHeight - 320),
+              background: 'white',
+              border: '1px solid #e5e7eb',
+              borderRadius: 8,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.15)',
+              zIndex: 60,
+              padding: '4px 0',
+              minWidth: 170,
+            }}
+          >
+            {item('编辑文字', () => setEditingCell({
+              regionId: contextMenu.regionId,
+              r: contextMenu.r,
+              c: contextMenu.c,
+            }), { disabled: rb?.deleted || cb?.deleted })}
+            <div style={{ borderTop: '1px solid #f3f4f6', margin: '4px 0' }} />
+            {item('上方插入行', () => insertRow(contextMenu.regionId, contextMenu.r, true))}
+            {item('下方插入行', () => insertRow(contextMenu.regionId, contextMenu.r, false))}
+            {item('左侧插入列', () => insertCol(contextMenu.regionId, contextMenu.c, true))}
+            {item('右侧插入列', () => insertCol(contextMenu.regionId, contextMenu.c, false))}
+            <div style={{ borderTop: '1px solid #f3f4f6', margin: '4px 0' }} />
+            {item(
+              rb?.deleted ? '恢复该行' : '删除该行',
+              () => toggleRowDeleted(contextMenu.regionId, contextMenu.r),
+              { disabled: !rb?.deleted && activeRows <= 1, danger: !rb?.deleted },
+            )}
+            {item(
+              cb?.deleted ? '恢复该列' : '删除该列',
+              () => toggleColDeleted(contextMenu.regionId, contextMenu.c),
+              { disabled: !cb?.deleted && activeCols <= 1, danger: !cb?.deleted },
+            )}
+            <div style={{ borderTop: '1px solid #f3f4f6', margin: '4px 0' }} />
+            {item('移除整张表格', () => removeRegion(contextMenu.regionId), { danger: true })}
+          </div>
+        );
+      })()}
     </div>
   );
 }
