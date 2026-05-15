@@ -1606,7 +1606,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
               {mode === 'table' && extracting && (
                 <div className="flex items-center gap-2 p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-indigo-700 text-sm">
                   <Loader2 size={15} className="animate-spin" />
-                  正在通过 Adobe PDF Extract 识别表格(约 30-60 秒)...
+                  正在识别表格(pdfplumber,通常 1-3 秒)...
                 </div>
               )}
               {mode === 'table' && extractError && !extracting && (

@@ -19,12 +19,12 @@ import {
   ExportPDFParams,
   ExportPDFTargetFormat,
   ExportPDFResult,
-  ExtractPDFJob,
-  ExtractPDFParams,
-  ExtractElementType,
-  ExtractPDFResult,
 } from "@adobe/pdfservices-node-sdk";
 import { PassThrough } from "stream";
+import { spawn } from "child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join as pathJoin } from "path";
 import type { Page, BrowserContext } from "playwright-core";
 
 // Loads .env in local dev; Vercel injects env vars at runtime, dotenv.config() is a no-op there
@@ -566,239 +566,56 @@ type ExtractTablesResponse = {
   tables: ExtractedTable[];
 };
 
-async function extractTablesFromPdf(pdfBuffer: Buffer): Promise<ExtractTablesResponse> {
-  const credentials = new ServicePrincipalCredentials({
-    clientId: process.env.ADOBE_CLIENT_ID!,
-    clientSecret: process.env.ADOBE_CLIENT_SECRET!,
-  });
-  const pdfServices = new PDFServices({ credentials });
+// Spawns the bundled extract_tables.py (pdfplumber) and parses its stdout.
+// Tries `python3` first, falls back to `python` (Windows dev). The script
+// emits the same ExtractTablesResponse shape the front-end consumes, so the
+// implementation can be swapped without touching the client.
+async function extractTablesViaPdfplumber(pdfBuffer: Buffer): Promise<ExtractTablesResponse> {
+  const tmpDir = mkdtempSync(pathJoin(tmpdir(), "pdfextract-"));
+  const tmpPdf = pathJoin(tmpDir, "input.pdf");
+  writeFileSync(tmpPdf, pdfBuffer);
 
-  const passThrough = new PassThrough();
-  passThrough.end(pdfBuffer);
-  const inputAsset = await pdfServices.upload({
-    readStream: passThrough,
-    mimeType: MimeType.PDF,
-  });
-
-  // Ask for both text and table elements, with styling info so we can read
-  // font name + size + bold detection. We don't request renditions (no PNG
-  // dump of each table) — front-end already renders pages itself.
-  const params = new ExtractPDFParams({
-    elementsToExtract: [ExtractElementType.TEXT, ExtractElementType.TABLES],
-    getStylingInfo: true,
-  });
-  const job = new ExtractPDFJob({ inputAsset, params });
-
-  const pollingURL = await pdfServices.submit({ job });
-  const jobResponse = await pdfServices.getJobResult({
-    pollingURL,
-    resultType: ExtractPDFResult,
-  });
-
-  if (!jobResponse.result) throw new Error("Adobe Extract API returned empty result");
-
-  // Adobe returns a zip; the JSON we want is in `content` (extracted JSON file)
-  // or directly as `contentJSON` for internal assets. Fall back to `resource`
-  // and parse the zip manually if needed.
-  let json: ExtractedRawJson | undefined;
-  const result = jobResponse.result;
-  // contentJSON path
-  const rawContentJson = (result as unknown as { contentJSON?: unknown }).contentJSON;
-  if (rawContentJson && typeof rawContentJson === "object") {
-    json = rawContentJson as ExtractedRawJson;
-  }
-  // content asset path
-  if (!json && result.content) {
-    const streamAsset = await pdfServices.getContent({ asset: result.content });
-    const buf = await streamToBuffer(streamAsset.readStream);
-    json = JSON.parse(buf.toString("utf8")) as ExtractedRawJson;
-  }
-  // zip path: parse `structuredData.json` out of the resource zip
-  if (!json && result.resource) {
-    const streamAsset = await pdfServices.getContent({ asset: result.resource });
-    const buf = await streamToBuffer(streamAsset.readStream);
-    const zip = await JSZip.loadAsync(buf);
-    const structFile = zip.file("structuredData.json");
-    if (!structFile) throw new Error("Adobe Extract: structuredData.json not found in result zip");
-    const text = await structFile.async("string");
-    json = JSON.parse(text) as ExtractedRawJson;
-  }
-  if (!json) throw new Error("Adobe Extract: unable to obtain extraction JSON");
-
-  return shapeExtractedJson(json);
-}
-
-// Raw shape of Adobe Extract's structuredData.json (loosely typed; the actual
-// shape varies based on the PDF). We narrow only the bits we need.
-type ExtractedRawJson = {
-  elements?: Array<{
-    Path?: string;
-    Page?: number;
-    Bounds?: number[];
-    Text?: string;
-    TextSize?: number;
-    Font?: { name?: string; weight?: number; family_name?: string };
-    attributes?: { LineHeight?: number };
-  }>;
-  pages?: Array<{ width?: number; height?: number; page_number?: number }>;
-};
-
-function shapeExtractedJson(raw: ExtractedRawJson): ExtractTablesResponse {
-  const pageSizes = (raw.pages ?? []).map(p => ({
-    width: p.width ?? 612,
-    height: p.height ?? 792,
-  }));
-
-  const elements = raw.elements ?? [];
-
-  // Two kinds of "table" we need to recognise:
-  //  • Path ends in something containing "/Table" (the table container)
-  //  • Path contains "/Table" and ends with "/TD" or "/TH" (a cell)
-  //  • Path of a paragraph inside a cell: "...TD/P", "...TD/P/Span", etc.
-  // We group cells by their nearest ancestor "Table" path segment.
-  const tableKey = (path: string): string | null => {
-    // First ".../Table[N]" prefix becomes the key
-    const m = path.match(/^(.*\/Table(?:\[\d+])?)/);
-    return m ? m[1] : null;
-  };
-  const rowKey = (path: string): string | null => {
-    const m = path.match(/^(.*\/TR(?:\[\d+])?)/);
-    return m ? m[1] : null;
-  };
-
-  // Containers: key → first table-level element seen (for bounds + page index)
-  const tableContainers = new Map<string, { pageIdx: number; bounds: number[] }>();
-  // Cells: groupKey -> rowKey -> cellPath -> cell info (we merge multiple paragraphs inside one cell)
-  type CellAccum = {
-    pageIdx: number;
-    bounds: number[];
-    texts: string[];
-    sizes: number[];
-    fonts: string[];
-    bolds: boolean[];
-    rowKey: string;
-    cellPath: string;
-  };
-  const cellsByTable = new Map<string, Map<string, CellAccum>>();
-
-  for (const el of elements) {
-    const path = el.Path ?? "";
-    if (!path.includes("/Table")) continue;
-    const tk = tableKey(path);
-    if (!tk) continue;
-    const page = el.Page ?? 0;
-    const bounds = (el.Bounds && el.Bounds.length >= 4)
-      ? [el.Bounds[0], el.Bounds[1], el.Bounds[2], el.Bounds[3]]
-      : null;
-
-    // Table container itself
-    if (path === tk && bounds) {
-      if (!tableContainers.has(tk)) tableContainers.set(tk, { pageIdx: page, bounds });
-      continue;
-    }
-
-    // Cell-ish element (anything under a TD/TH)
-    const cellMatch = path.match(/^(.*\/T[DH](?:\[\d+])?)/);
-    if (!cellMatch) continue;
-    const cellPath = cellMatch[1];
-    const rk = rowKey(path) ?? cellPath;
-
-    let byCell = cellsByTable.get(tk);
-    if (!byCell) { byCell = new Map(); cellsByTable.set(tk, byCell); }
-    let cell = byCell.get(cellPath);
-    if (!cell) {
-      cell = {
-        pageIdx: page,
-        bounds: bounds ?? [0, 0, 0, 0],
-        texts: [], sizes: [], fonts: [], bolds: [],
-        rowKey: rk,
-        cellPath,
-      };
-      byCell.set(cellPath, cell);
-    } else if (bounds && path === cellPath) {
-      // The TD/TH element itself carries the cell bounds — prefer it over child paragraphs
-      cell.bounds = bounds;
-    }
-    if (el.Text) cell.texts.push(el.Text);
-    const size = el.TextSize ?? (el.Font as { size?: number } | undefined)?.size;
-    if (typeof size === "number") cell.sizes.push(size);
-    const fname = el.Font?.name ?? el.Font?.family_name;
-    if (fname) {
-      cell.fonts.push(fname);
-      // Crude bold detection from font name; weight >= 600 also implies bold
-      const isBold =
-        /Bold|Black|Heavy|Semibold|Demibold/i.test(fname) ||
-        (typeof el.Font?.weight === "number" && el.Font.weight >= 600);
-      cell.bolds.push(isBold);
-    }
-  }
-
-  // Build the final response
-  const tables: ExtractedTable[] = [];
-  for (const [tk, container] of tableContainers.entries()) {
-    const byCell = cellsByTable.get(tk);
-    if (!byCell) continue;
-
-    // Group cells by row
-    const rowsMap = new Map<string, CellAccum[]>();
-    for (const c of byCell.values()) {
-      let arr = rowsMap.get(c.rowKey);
-      if (!arr) { arr = []; rowsMap.set(c.rowKey, arr); }
-      arr.push(c);
-    }
-    // Sort rows top→bottom (PDF user space y is bottom-left origin, so larger y = top)
-    const rowAccums = Array.from(rowsMap.values()).sort((a, b) => {
-      const ay = Math.max(...a.map(c => c.bounds[3] || 0));
-      const by = Math.max(...b.map(c => c.bounds[3] || 0));
-      return by - ay;
+  const tryPython = (cmd: string): Promise<ExtractTablesResponse> => new Promise((resolve, reject) => {
+    const proc = spawn(cmd, ["extract_tables.py", tmpPdf], { cwd: process.cwd() });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", c => { stdout += c.toString("utf8"); });
+    proc.stderr.on("data", c => { stderr += c.toString("utf8"); });
+    proc.on("error", err => reject(err));
+    proc.on("close", code => {
+      if (code !== 0) {
+        reject(new Error(`pdfplumber exited ${code}: ${stderr.trim()}`));
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as ExtractTablesResponse);
+      } catch (e) {
+        reject(new Error(
+          `Failed to parse pdfplumber JSON output: ${(e as Error).message}\nstdout preview: ${stdout.slice(0, 200)}`,
+        ));
+      }
     });
+  });
 
-    const rows: ExtractedRow[] = rowAccums.map(rowCells => {
-      // Sort cells left→right
-      rowCells.sort((a, b) => (a.bounds[0] ?? 0) - (b.bounds[0] ?? 0));
-      const cells: ExtractedCell[] = rowCells.map(c => ({
-        bounds: [c.bounds[0], c.bounds[1], c.bounds[2], c.bounds[3]] as [number, number, number, number],
-        text: c.texts.join(" ").trim(),
-        fontSize: c.sizes.length ? c.sizes[0] : undefined,
-        fontName: c.fonts.length ? c.fonts[0] : undefined,
-        bold: c.bolds.length ? c.bolds.some(Boolean) : undefined,
-      }));
-      const xs = cells.map(c => c.bounds[0]);
-      const ys = cells.map(c => c.bounds[1]);
-      const xs2 = cells.map(c => c.bounds[2]);
-      const ys2 = cells.map(c => c.bounds[3]);
-      const rowBounds: [number, number, number, number] = [
-        Math.min(...xs),
-        Math.min(...ys),
-        Math.max(...xs2),
-        Math.max(...ys2),
-      ];
-      return { bounds: rowBounds, cells };
-    });
-
-    tables.push({
-      pageIdx: container.pageIdx,
-      bounds: [
-        container.bounds[0],
-        container.bounds[1],
-        container.bounds[2],
-        container.bounds[3],
-      ] as [number, number, number, number],
-      rows,
-    });
+  try {
+    return await tryPython("python3");
+  } catch (firstErr) {
+    // python3 missing on some Windows installs — retry with `python`
+    const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    if (msg.includes("ENOENT") || msg.toLowerCase().includes("not found")) {
+      return await tryPython("python");
+    }
+    throw firstErr;
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore cleanup errors */ }
   }
-
-  return { pageSizes, tables };
 }
 
 app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ error: "No file provided" });
-  if (!process.env.ADOBE_CLIENT_ID || !process.env.ADOBE_CLIENT_SECRET) {
-    return res.status(503).json({ error: "Adobe PDF Services credentials not configured" });
-  }
   try {
-    const result = await extractTablesFromPdf(file.buffer);
+    const result = await extractTablesViaPdfplumber(file.buffer);
     res.json(result);
   } catch (err) {
     console.error("pdf-extract-tables error:", err);

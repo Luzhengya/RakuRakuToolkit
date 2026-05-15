@@ -1,2 +1,3 @@
 pdf2docx==0.5.8
 opencv-python-headless
+pdfplumber>=0.11.0
