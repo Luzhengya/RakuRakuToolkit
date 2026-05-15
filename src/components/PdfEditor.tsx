@@ -57,117 +57,234 @@ interface PageData {
 // Editor mode: standard text editing vs. table region editing
 type EditorMode = 'text' | 'table';
 
+// A row or column "band" — a strip of the original table that the user
+// can mark deleted. Deletion is non-destructive: we keep the band's original
+// position/size so untouched bands remain perfectly aligned with the PDF.
+interface Band {
+  start: number; // canvas px (y for rowBand, x for colBand)
+  size: number;  // canvas px (h for rowBand, w for colBand)
+  deleted: boolean;
+}
+
 interface TableRegion {
   id: string;
   pageNum: number;
-  // Rectangle in canvas px (top-left origin)
+  // Original drag-selected rectangle in canvas px (never mutated)
   x: number;
   y: number;
   w: number;
   h: number;
-  rows: number;
-  cols: number;
-  cells: string[][]; // [rowIdx][colIdx]
+  rowBands: Band[];
+  colBands: Band[];
+  // Original cell text extracted from PDF — read-only baseline
+  origCells: string[][];
+  // User edits, keyed `${row}_${col}`; only modified cells appear here
+  cellEdits: Record<string, string>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /**
- * For a freshly-drawn table region, assign each original text item to a cell
- * based on its centre point. Items in the same cell are joined left-to-right
- * with a single space.
+ * Detect `count` band boundaries along an axis by clustering text-item centres.
+ *
+ * Strategy: project each item that lies inside `region` onto the chosen axis,
+ * sort the centres, and pick the `count - 1` largest gaps as splits. Each gap's
+ * midpoint becomes a boundary, yielding `count` bands. Falls back to equal
+ * subdivision if there aren't enough items to cluster on (e.g. empty region).
  */
-function autoFillCells(region: TableRegion, items: TextItem[]): string[][] {
-  const cellW = region.w / region.cols;
-  const cellH = region.h / region.rows;
-  const cells: string[][] = Array.from({ length: region.rows }, () =>
-    Array.from({ length: region.cols }, () => ''),
-  );
-  const bucket: TextItem[][][] = Array.from({ length: region.rows }, () =>
-    Array.from({ length: region.cols }, () => [] as TextItem[]),
-  );
+function detectBands(
+  items: TextItem[],
+  region: { x: number; y: number; w: number; h: number },
+  axis: 'y' | 'x',
+  count: number,
+): Band[] {
+  const start = axis === 'y' ? region.y : region.x;
+  const total = axis === 'y' ? region.h : region.w;
 
+  // Equal-subdivision fallback used when clustering can't be performed
+  const equalBands = (): Band[] => {
+    const size = total / count;
+    return Array.from({ length: count }, (_, i) => ({
+      start: start + i * size,
+      size,
+      deleted: false,
+    }));
+  };
+
+  if (count <= 1) return equalBands();
+
+  const centres: number[] = [];
   for (const it of items) {
     const cx = it.x + it.w / 2;
     const cy = it.y + it.h / 2;
     if (cx < region.x || cx >= region.x + region.w) continue;
     if (cy < region.y || cy >= region.y + region.h) continue;
-    const col = Math.min(region.cols - 1, Math.floor((cx - region.x) / cellW));
-    const row = Math.min(region.rows - 1, Math.floor((cy - region.y) / cellH));
-    bucket[row][col].push(it);
+    centres.push(axis === 'y' ? cy : cx);
   }
+  if (centres.length < count) return equalBands();
+  centres.sort((a, b) => a - b);
 
-  for (let r = 0; r < region.rows; r++) {
-    for (let c = 0; c < region.cols; c++) {
-      bucket[r][c].sort((a, b) => a.x - b.x);
-      cells[r][c] = bucket[r][c].map(it => it.str).join(' ').trim();
-    }
+  // Largest `count - 1` gaps in the sorted centre list become band boundaries
+  const gaps: { idx: number; gap: number }[] = [];
+  for (let i = 1; i < centres.length; i++) {
+    gaps.push({ idx: i, gap: centres[i] - centres[i - 1] });
   }
-  return cells;
+  gaps.sort((a, b) => b.gap - a.gap);
+  const splits = gaps
+    .slice(0, count - 1)
+    .map(g => (centres[g.idx - 1] + centres[g.idx]) / 2)
+    .sort((a, b) => a - b);
+
+  const bounds = [start, ...splits, start + total];
+  const bands: Band[] = [];
+  for (let i = 0; i < count; i++) {
+    bands.push({
+      start: bounds[i],
+      size: bounds[i + 1] - bounds[i],
+      deleted: false,
+    });
+  }
+  return bands;
 }
 
 /**
- * Paint all table regions for a page onto a 2D context.
- * For each region: fill white over the original area, then draw black gridlines
- * and the (edited) cell text. Works in canvas px space.
+ * Build a fresh TableRegion from the user's drag-selection plus row/column
+ * hints. Bands are detected by clustering item centres; cells are populated
+ * by assigning each item to the (row, col) its centre falls into.
+ */
+function buildTableFromSelection(
+  id: string,
+  pageNum: number,
+  items: TextItem[],
+  rect: { x: number; y: number; w: number; h: number },
+  rows: number,
+  cols: number,
+): TableRegion {
+  const rowBands = detectBands(items, rect, 'y', rows);
+  const colBands = detectBands(items, rect, 'x', cols);
+
+  // Find which row/col band a point falls into; -1 if outside
+  const locate = (bands: Band[], value: number): number => {
+    for (let i = 0; i < bands.length; i++) {
+      const b = bands[i];
+      if (value >= b.start && value < b.start + b.size) return i;
+    }
+    return -1;
+  };
+
+  const bucket: TextItem[][][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => [] as TextItem[]),
+  );
+
+  for (const it of items) {
+    const cx = it.x + it.w / 2;
+    const cy = it.y + it.h / 2;
+    if (cx < rect.x || cx >= rect.x + rect.w) continue;
+    if (cy < rect.y || cy >= rect.y + rect.h) continue;
+    const r = locate(rowBands, cy);
+    const c = locate(colBands, cx);
+    if (r < 0 || c < 0) continue;
+    bucket[r][c].push(it);
+  }
+
+  const origCells: string[][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => ''),
+  );
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      bucket[r][c].sort((a, b) => a.x - b.x);
+      origCells[r][c] = bucket[r][c].map(it => it.str).join(' ').trim();
+    }
+  }
+
+  return {
+    id,
+    pageNum,
+    x: rect.x,
+    y: rect.y,
+    w: rect.w,
+    h: rect.h,
+    rowBands,
+    colBands,
+    origCells,
+    cellEdits: {},
+  };
+}
+
+/**
+ * Paint table modifications onto a 2D context with INCREMENTAL changes only:
+ *   - Deleted row bands → fill that single strip white (other rows untouched)
+ *   - Deleted col bands → same, vertical strip
+ *   - Edited cells → sample neighbouring bg colour, fill cell, draw new text
+ *
+ * Untouched cells inherit the underlying PDF pixels (background colours, borders,
+ * fonts, etc.) since we don't repaint them. This is what gives us visual parity
+ * with the source PDF.
  */
 function paintTablesOnCanvas(
   ctx: CanvasRenderingContext2D,
   tables: TableRegion[],
 ) {
   for (const t of tables) {
-    // White out the original area (covers original glyphs and rules)
+    // 1. White-out deleted rows
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(t.x, t.y, t.w, t.h);
-
-    const cellW = t.w / t.cols;
-    const cellH = t.h / t.rows;
-
-    // Gridlines
-    ctx.strokeStyle = '#222222';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let r = 0; r <= t.rows; r++) {
-      const y = t.y + r * cellH;
-      ctx.moveTo(t.x, y);
-      ctx.lineTo(t.x + t.w, y);
+    for (const rb of t.rowBands) {
+      if (!rb.deleted) continue;
+      ctx.fillRect(t.x, rb.start, t.w, rb.size);
     }
-    for (let c = 0; c <= t.cols; c++) {
-      const x = t.x + c * cellW;
-      ctx.moveTo(x, t.y);
-      ctx.lineTo(x, t.y + t.h);
+    // 2. White-out deleted columns
+    for (const cb of t.colBands) {
+      if (!cb.deleted) continue;
+      ctx.fillRect(cb.start, t.y, cb.size, t.h);
     }
-    ctx.stroke();
 
-    // Cell text — auto-shrink to fit, fall back to clipping
-    ctx.fillStyle = '#111111';
-    ctx.textBaseline = 'middle';
-    const PAD = 4;
-    for (let r = 0; r < t.rows; r++) {
-      for (let c = 0; c < t.cols; c++) {
-        const text = (t.cells[r]?.[c] ?? '').trim();
-        if (!text) continue;
-        const cellX = t.x + c * cellW;
-        const cellY = t.y + r * cellH;
-        const innerW = cellW - PAD * 2;
-        const innerH = cellH - PAD * 2;
-        // Start from cell-height-based font, but clamp so it fits horizontally
-        let fontSize = Math.min(Math.max(innerH * 0.6, 9), 18);
-        ctx.font = `${fontSize}px sans-serif`;
-        let metrics = ctx.measureText(text);
-        while (metrics.width > innerW && fontSize > 7) {
-          fontSize -= 1;
-          ctx.font = `${fontSize}px sans-serif`;
-          metrics = ctx.measureText(text);
-        }
-        // Clip to cell bounds so overflow doesn't bleed
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
-        ctx.clip();
-        ctx.fillText(text, cellX + PAD, cellY + cellH / 2);
-        ctx.restore();
+    // 3. Edited cells — sample background then redraw new text
+    for (const [key, newText] of Object.entries(t.cellEdits)) {
+      const [rStr, cStr] = key.split('_');
+      const r = Number(rStr);
+      const c = Number(cStr);
+      const rb = t.rowBands[r];
+      const cb = t.colBands[c];
+      if (!rb || !cb) continue;
+      if (rb.deleted || cb.deleted) continue;
+      const cellX = cb.start;
+      const cellY = rb.start;
+      const cellW = cb.size;
+      const cellH = rb.size;
+      if (cellW < 2 || cellH < 2) continue;
+
+      // Sample from cell's inner top-left corner (less likely to hit glyphs)
+      const sampleX = Math.max(0, Math.min(ctx.canvas.width - 1, Math.round(cellX + 2)));
+      const sampleY = Math.max(0, Math.min(ctx.canvas.height - 1, Math.round(cellY + 2)));
+      let bgColor = '#ffffff';
+      try {
+        const px = ctx.getImageData(sampleX, sampleY, 1, 1).data;
+        bgColor = `rgb(${px[0]},${px[1]},${px[2]})`;
+      } catch {
+        /* tainted canvas — keep white fallback */
       }
+
+      // Cover the cell interior (leave 1px border to not nick neighbour rules)
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
+
+      if (!newText) continue;
+      // Draw replacement text — auto-shrink to fit horizontally, clip to cell
+      ctx.fillStyle = '#111111';
+      ctx.textBaseline = 'middle';
+      const PAD = 4;
+      let fontSize = Math.min(Math.max(cellH * 0.55, 9), 16);
+      ctx.font = `${fontSize}px sans-serif`;
+      while (ctx.measureText(newText).width > cellW - PAD * 2 && fontSize > 7) {
+        fontSize -= 1;
+        ctx.font = `${fontSize}px sans-serif`;
+      }
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
+      ctx.clip();
+      ctx.fillText(newText, cellX + PAD, cellY + cellH / 2);
+      ctx.restore();
     }
   }
 }
@@ -483,10 +600,11 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   }, [totalEdits]);
 
   // Redraw the table overlay layer whenever the current page's tables change.
-  // The overlay canvas sits on top of the rendered PDF image but below the
-  // contenteditable text layer; it shows the live white-out + grid + cell text
-  // so the user sees the result in real time.
+  // The overlay canvas sits on top of the rendered PDF image; we paint the
+  // full page background onto it first so paintTablesOnCanvas can sample real
+  // pixel colours for edited cells (the underlying <img> is purely a fallback).
   useEffect(() => {
+    let cancelled = false;
     const canvas = tableLayerRef.current;
     const page = pages[currentPageIdx];
     if (!canvas || !page) return;
@@ -494,9 +612,17 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     if (canvas.height !== page.canvasH) canvas.height = page.canvasH;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const tables = page.pageNum != null ? pageTables[page.pageNum] ?? [] : [];
-    paintTablesOnCanvas(ctx, tables);
+
+    const img = new Image();
+    img.onload = () => {
+      if (cancelled) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const tables = page.pageNum != null ? pageTables[page.pageNum] ?? [] : [];
+      paintTablesOnCanvas(ctx, tables);
+    };
+    img.src = page.dataUrl;
+    return () => { cancelled = true; };
   }, [pages, currentPageIdx, pageTables]);
 
   const loadPdf = useCallback(async (f: File) => {
@@ -614,18 +740,16 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const confirmPendingRegion = () => {
     if (!pendingRegion || currentPageNum == null) return;
     const page = pages[currentPageIdx];
-    const region: TableRegion = {
-      id: `t-${currentPageNum}-${Date.now()}`,
-      pageNum: currentPageNum,
-      x: pendingRegion.x,
-      y: pendingRegion.y,
-      w: pendingRegion.w,
-      h: pendingRegion.h,
-      rows: Math.max(1, Math.min(50, pendingRows | 0)),
-      cols: Math.max(1, Math.min(20, pendingCols | 0)),
-      cells: [],
-    };
-    region.cells = autoFillCells(region, page.items);
+    const rows = Math.max(1, Math.min(50, pendingRows | 0));
+    const cols = Math.max(1, Math.min(20, pendingCols | 0));
+    const region = buildTableFromSelection(
+      `t-${currentPageNum}-${Date.now()}`,
+      currentPageNum,
+      page.items,
+      pendingRegion,
+      rows,
+      cols,
+    );
     setPageTables(prev => ({
       ...prev,
       [currentPageNum]: [...(prev[currentPageNum] ?? []), region],
@@ -649,38 +773,37 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     }));
   };
 
+  // Edits: stored in cellEdits keyed `${r}_${c}`. Reverting to the original
+  // value (or empty when origCells is empty) drops the override.
   const editCell = (regionId: string, rowIdx: number, colIdx: number, value: string) => {
     updateRegion(regionId, r => {
-      const cells = r.cells.map((row, i) =>
-        i === rowIdx ? row.map((c, j) => (j === colIdx ? value : c)) : row,
+      const key = `${rowIdx}_${colIdx}`;
+      const orig = r.origCells[rowIdx]?.[colIdx] ?? '';
+      const nextEdits = { ...r.cellEdits };
+      if (value === orig) delete nextEdits[key];
+      else nextEdits[key] = value;
+      return { ...r, cellEdits: nextEdits };
+    });
+  };
+
+  // Deletion is non-destructive: flip the band's deleted flag. The band's
+  // start/size stay intact so undelete is a single state flip and untouched
+  // bands continue to line up with the original PDF.
+  const toggleRowDeleted = (regionId: string, rowIdx: number) => {
+    updateRegion(regionId, r => {
+      const rowBands = r.rowBands.map((b, i) =>
+        i === rowIdx ? { ...b, deleted: !b.deleted } : b,
       );
-      return { ...r, cells };
+      return { ...r, rowBands };
     });
   };
 
-  const deleteRow = (regionId: string, rowIdx: number) => {
+  const toggleColDeleted = (regionId: string, colIdx: number) => {
     updateRegion(regionId, r => {
-      if (r.rows <= 1) return r;
-      const cellH = r.h / r.rows;
-      return {
-        ...r,
-        rows: r.rows - 1,
-        h: r.h - cellH,
-        cells: r.cells.filter((_, i) => i !== rowIdx),
-      };
-    });
-  };
-
-  const deleteCol = (regionId: string, colIdx: number) => {
-    updateRegion(regionId, r => {
-      if (r.cols <= 1) return r;
-      const cellW = r.w / r.cols;
-      return {
-        ...r,
-        cols: r.cols - 1,
-        w: r.w - cellW,
-        cells: r.cells.map(row => row.filter((_, j) => j !== colIdx)),
-      };
+      const colBands = r.colBands.map((b, i) =>
+        i === colIdx ? { ...b, deleted: !b.deleted } : b,
+      );
+      return { ...r, colBands };
     });
   };
 
@@ -1167,93 +1290,144 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
               {/* Per-table editing panels (below canvas, current page only) */}
               {currentTables.length > 0 && (
                 <div className="space-y-4">
-                  {currentTables.map((t, idx) => (
-                    <div
-                      key={t.id}
-                      className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4"
-                    >
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <TableIcon size={14} className="text-indigo-600" />
-                          <span className="text-sm font-bold text-indigo-700">
-                            表格 #{idx + 1}
-                          </span>
-                          <span className="text-xs text-neutral-500">
-                            {t.rows} 行 × {t.cols} 列
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => removeRegion(t.id)}
-                          className="flex items-center gap-1 px-2 py-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
-                          title="移除该表格(恢复原 PDF 这块内容)"
-                        >
-                          <Trash2 size={12} />
-                          移除表格
-                        </button>
-                      </div>
+                  {currentTables.map((t, idx) => {
+                    const totalRows = t.rowBands.length;
+                    const totalCols = t.colBands.length;
+                    const activeRows = t.rowBands.filter(b => !b.deleted).length;
+                    const activeCols = t.colBands.filter(b => !b.deleted).length;
 
-                      <div className="overflow-x-auto">
-                        <table className="border-collapse">
-                          <thead>
-                            <tr>
-                              {/* Top-left empty corner */}
-                              <th className="w-8 h-8 bg-neutral-100" />
-                              {Array.from({ length: t.cols }, (_, c) => (
-                                <th
-                                  key={c}
-                                  className="relative min-w-[100px] bg-neutral-100 border border-neutral-200 px-2 py-1 text-[11px] font-semibold text-neutral-500"
-                                >
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span>列 {c + 1}</span>
-                                    <button
-                                      onClick={() => deleteCol(t.id, c)}
-                                      disabled={t.cols <= 1}
-                                      className="p-0.5 text-neutral-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                                      title="删除该列"
-                                    >
-                                      <X size={11} />
-                                    </button>
-                                  </div>
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {t.cells.map((row, r) => (
-                              <tr key={r}>
-                                <th className="w-8 bg-neutral-100 border border-neutral-200 px-1 text-[11px] font-semibold text-neutral-500">
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span>{r + 1}</span>
-                                    <button
-                                      onClick={() => deleteRow(t.id, r)}
-                                      disabled={t.rows <= 1}
-                                      className="p-0.5 text-neutral-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                                      title="删除该行"
-                                    >
-                                      <X size={11} />
-                                    </button>
-                                  </div>
-                                </th>
-                                {row.map((cell, c) => (
-                                  <td
+                    return (
+                      <div
+                        key={t.id}
+                        className="rounded-xl border border-indigo-100 bg-indigo-50/40 p-4"
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <TableIcon size={14} className="text-indigo-600" />
+                            <span className="text-sm font-bold text-indigo-700">
+                              表格 #{idx + 1}
+                            </span>
+                            <span className="text-xs text-neutral-500">
+                              {activeRows}/{totalRows} 行 · {activeCols}/{totalCols} 列
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => removeRegion(t.id)}
+                            className="flex items-center gap-1 px-2 py-1 text-xs text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                            title="重新框选(放弃当前表格,恢复原 PDF 这块内容)"
+                          >
+                            <Trash2 size={12} />
+                            重新框选
+                          </button>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="border-collapse">
+                            <thead>
+                              <tr>
+                                <th className="w-10 h-8 bg-neutral-100" />
+                                {t.colBands.map((cb, c) => (
+                                  <th
                                     key={c}
-                                    className="border border-neutral-200 bg-white p-0"
+                                    className={[
+                                      'relative min-w-[100px] border border-neutral-200 px-2 py-1 text-[11px] font-semibold',
+                                      cb.deleted
+                                        ? 'bg-neutral-200/60 text-neutral-400 line-through'
+                                        : 'bg-neutral-100 text-neutral-500',
+                                    ].join(' ')}
                                   >
-                                    <input
-                                      type="text"
-                                      value={cell}
-                                      onChange={e => editCell(t.id, r, c, e.target.value)}
-                                      className="w-full min-w-[100px] px-2 py-1.5 text-sm bg-transparent outline-none focus:bg-indigo-50 transition-colors"
-                                    />
-                                  </td>
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span>列 {c + 1}</span>
+                                      <button
+                                        onClick={() => toggleColDeleted(t.id, c)}
+                                        disabled={!cb.deleted && activeCols <= 1}
+                                        className={[
+                                          'p-0.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
+                                          cb.deleted
+                                            ? 'text-indigo-500 hover:text-indigo-700'
+                                            : 'text-neutral-400 hover:text-red-600',
+                                        ].join(' ')}
+                                        title={cb.deleted ? '恢复该列' : '删除该列'}
+                                      >
+                                        <X
+                                          size={11}
+                                          style={cb.deleted ? { transform: 'rotate(45deg)' } : undefined}
+                                        />
+                                      </button>
+                                    </div>
+                                  </th>
                                 ))}
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {t.rowBands.map((rb, r) => (
+                                <tr key={r}>
+                                  <th
+                                    className={[
+                                      'w-10 border border-neutral-200 px-1 text-[11px] font-semibold',
+                                      rb.deleted
+                                        ? 'bg-neutral-200/60 text-neutral-400 line-through'
+                                        : 'bg-neutral-100 text-neutral-500',
+                                    ].join(' ')}
+                                  >
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span>{r + 1}</span>
+                                      <button
+                                        onClick={() => toggleRowDeleted(t.id, r)}
+                                        disabled={!rb.deleted && activeRows <= 1}
+                                        className={[
+                                          'p-0.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed',
+                                          rb.deleted
+                                            ? 'text-indigo-500 hover:text-indigo-700'
+                                            : 'text-neutral-400 hover:text-red-600',
+                                        ].join(' ')}
+                                        title={rb.deleted ? '恢复该行' : '删除该行'}
+                                      >
+                                        <X
+                                          size={11}
+                                          style={rb.deleted ? { transform: 'rotate(45deg)' } : undefined}
+                                        />
+                                      </button>
+                                    </div>
+                                  </th>
+                                  {t.colBands.map((cb, c) => {
+                                    const orig = t.origCells[r]?.[c] ?? '';
+                                    const edited = t.cellEdits[`${r}_${c}`];
+                                    const value = edited ?? orig;
+                                    const isEdited = edited !== undefined;
+                                    const isMuted = rb.deleted || cb.deleted;
+                                    return (
+                                      <td
+                                        key={c}
+                                        className={[
+                                          'border border-neutral-200 p-0',
+                                          isMuted ? 'bg-neutral-100/70' : 'bg-white',
+                                        ].join(' ')}
+                                      >
+                                        <input
+                                          type="text"
+                                          value={value}
+                                          onChange={e => editCell(t.id, r, c, e.target.value)}
+                                          disabled={isMuted}
+                                          className={[
+                                            'w-full min-w-[100px] px-2 py-1.5 text-sm bg-transparent outline-none transition-colors',
+                                            isMuted
+                                              ? 'text-neutral-400 line-through cursor-not-allowed'
+                                              : 'focus:bg-indigo-50',
+                                            isEdited && !isMuted ? 'text-amber-700 font-medium' : '',
+                                          ].join(' ')}
+                                        />
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 
