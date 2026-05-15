@@ -567,47 +567,78 @@ type ExtractTablesResponse = {
 };
 
 // Spawns the bundled extract_tables.py (pdfplumber) and parses its stdout.
-// Tries `python3` first, falls back to `python` (Windows dev). The script
-// emits the same ExtractTablesResponse shape the front-end consumes, so the
-// implementation can be swapped without touching the client.
+// The script emits the same ExtractTablesResponse shape the front-end consumes,
+// so the implementation can be swapped without touching the client.
 async function extractTablesViaPdfplumber(pdfBuffer: Buffer): Promise<ExtractTablesResponse> {
   const tmpDir = mkdtempSync(pathJoin(tmpdir(), "pdfextract-"));
   const tmpPdf = pathJoin(tmpDir, "input.pdf");
   writeFileSync(tmpPdf, pdfBuffer);
 
-  const tryPython = (cmd: string): Promise<ExtractTablesResponse> => new Promise((resolve, reject) => {
-    const proc = spawn(cmd, ["extract_tables.py", tmpPdf], { cwd: process.cwd() });
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", c => { stdout += c.toString("utf8"); });
-    proc.stderr.on("data", c => { stderr += c.toString("utf8"); });
-    proc.on("error", err => reject(err));
-    proc.on("close", code => {
-      if (code !== 0) {
-        reject(new Error(`pdfplumber exited ${code}: ${stderr.trim()}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout) as ExtractTablesResponse);
-      } catch (e) {
-        reject(new Error(
-          `Failed to parse pdfplumber JSON output: ${(e as Error).message}\nstdout preview: ${stdout.slice(0, 200)}`,
-        ));
-      }
+  const tryPython = (cmd: string, args: string[]): Promise<ExtractTablesResponse> =>
+    new Promise((resolve, reject) => {
+      const proc = spawn(cmd, args, { cwd: process.cwd() });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", c => { stdout += c.toString("utf8"); });
+      proc.stderr.on("data", c => { stderr += c.toString("utf8"); });
+      proc.on("error", err => reject(err));
+      proc.on("close", code => {
+        if (code !== 0) {
+          reject(new Error(`pdfplumber [${cmd}] exited ${code}: ${stderr.trim()}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout) as ExtractTablesResponse);
+        } catch (e) {
+          reject(new Error(
+            `Failed to parse pdfplumber JSON output: ${(e as Error).message}\nstdout preview: ${stdout.slice(0, 200)}`,
+          ));
+        }
+      });
     });
-  });
 
+  // Candidate interpreters in preferred order. On Windows the `python3` alias
+  // usually isn't present — `python` (Python.org installer) and `py -3`
+  // (PEP 397 launcher) are the standard entry points.
+  const candidates: Array<[string, string[]]> = process.platform === "win32"
+    ? [
+        ["python", ["extract_tables.py", tmpPdf]],
+        ["py", ["-3", "extract_tables.py", tmpPdf]],
+        ["python3", ["extract_tables.py", tmpPdf]],
+      ]
+    : [
+        ["python3", ["extract_tables.py", tmpPdf]],
+        ["python", ["extract_tables.py", tmpPdf]],
+      ];
+
+  // "Command not found" can surface in many ways depending on shell, Python
+  // Microsoft Store stubs, etc. Treat any of these as "try next interpreter".
+  const isMissingCmd = (msg: string): boolean =>
+    /\bENOENT\b/i.test(msg) ||
+    /exited\s+(9009|127)\b/.test(msg) ||
+    /is not recognized as an internal/i.test(msg) ||
+    /command not found/i.test(msg) ||
+    /no\s+python\s+at/i.test(msg) ||
+    /python\s+is\s+not\s+installed/i.test(msg);
+
+  let lastErr: Error | null = null;
   try {
-    return await tryPython("python3");
-  } catch (firstErr) {
-    // python3 missing on some Windows installs — retry with `python`
-    const msg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-    if (msg.includes("ENOENT") || msg.toLowerCase().includes("not found")) {
-      return await tryPython("python");
+    for (const [cmd, args] of candidates) {
+      try {
+        return await tryPython(cmd, args);
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        if (isMissingCmd(lastErr.message)) continue;
+        // A genuine Python-side error (missing module, traceback, etc.) — don't
+        // mask it by trying other interpreters.
+        throw lastErr;
+      }
     }
-    throw firstErr;
+    throw lastErr ?? new Error(
+      "No working Python interpreter found (tried: " + candidates.map(c => c[0]).join(", ") + ")",
+    );
   } finally {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore cleanup errors */ }
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
