@@ -21,6 +21,10 @@ import {
   ExportPDFResult,
 } from "@adobe/pdfservices-node-sdk";
 import { PassThrough } from "stream";
+import { spawn } from "child_process";
+import { mkdtempSync, writeFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join as pathJoin } from "path";
 import type { Page, BrowserContext } from "playwright-core";
 
 // Loads .env in local dev; Vercel injects env vars at runtime, dotenv.config() is a no-op there
@@ -534,6 +538,121 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
   } catch (error) {
     console.error("PDF convert error:", error);
     res.status(500).json({ error: "Failed to convert PDF files" });
+  }
+});
+
+// ── Extract tables from a PDF ─────────────────────────────────────────
+// Uses Adobe PDF Extract API. Returns a simplified table-per-page structure
+// for the front-end PdfEditor to consume. Output coordinates are in PDF user
+// space (origin = bottom-left). The front-end converts these to canvas px.
+type ExtractedCell = {
+  bounds: [number, number, number, number]; // [x1, y1, x2, y2] PDF user space
+  text: string;
+  fontSize?: number;
+  fontName?: string;
+  bold?: boolean;
+};
+type ExtractedRow = {
+  bounds: [number, number, number, number];
+  cells: ExtractedCell[];
+};
+type ExtractedTable = {
+  pageIdx: number; // 0-based
+  bounds: [number, number, number, number];
+  rows: ExtractedRow[];
+};
+type ExtractTablesResponse = {
+  pageSizes: { width: number; height: number }[];
+  tables: ExtractedTable[];
+};
+
+// Spawns the bundled extract_tables.py (pdfplumber) and parses its stdout.
+// The script emits the same ExtractTablesResponse shape the front-end consumes,
+// so the implementation can be swapped without touching the client.
+async function extractTablesViaPdfplumber(pdfBuffer: Buffer): Promise<ExtractTablesResponse> {
+  const tmpDir = mkdtempSync(pathJoin(tmpdir(), "pdfextract-"));
+  const tmpPdf = pathJoin(tmpDir, "input.pdf");
+  writeFileSync(tmpPdf, pdfBuffer);
+
+  const tryPython = (cmd: string, args: string[]): Promise<ExtractTablesResponse> =>
+    new Promise((resolve, reject) => {
+      const proc = spawn(cmd, args, { cwd: process.cwd() });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", c => { stdout += c.toString("utf8"); });
+      proc.stderr.on("data", c => { stderr += c.toString("utf8"); });
+      proc.on("error", err => reject(err));
+      proc.on("close", code => {
+        if (code !== 0) {
+          reject(new Error(`pdfplumber [${cmd}] exited ${code}: ${stderr.trim()}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout) as ExtractTablesResponse);
+        } catch (e) {
+          reject(new Error(
+            `Failed to parse pdfplumber JSON output: ${(e as Error).message}\nstdout preview: ${stdout.slice(0, 200)}`,
+          ));
+        }
+      });
+    });
+
+  // Candidate interpreters in preferred order. On Windows the `python3` alias
+  // usually isn't present — `python` (Python.org installer) and `py -3`
+  // (PEP 397 launcher) are the standard entry points.
+  const candidates: Array<[string, string[]]> = process.platform === "win32"
+    ? [
+        ["python", ["extract_tables.py", tmpPdf]],
+        ["py", ["-3", "extract_tables.py", tmpPdf]],
+        ["python3", ["extract_tables.py", tmpPdf]],
+      ]
+    : [
+        ["python3", ["extract_tables.py", tmpPdf]],
+        ["python", ["extract_tables.py", tmpPdf]],
+      ];
+
+  // "Command not found" can surface in many ways depending on shell, Python
+  // Microsoft Store stubs, etc. Treat any of these as "try next interpreter".
+  const isMissingCmd = (msg: string): boolean =>
+    /\bENOENT\b/i.test(msg) ||
+    /exited\s+(9009|127)\b/.test(msg) ||
+    /is not recognized as an internal/i.test(msg) ||
+    /command not found/i.test(msg) ||
+    /no\s+python\s+at/i.test(msg) ||
+    /python\s+is\s+not\s+installed/i.test(msg);
+
+  let lastErr: Error | null = null;
+  try {
+    for (const [cmd, args] of candidates) {
+      try {
+        return await tryPython(cmd, args);
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        if (isMissingCmd(lastErr.message)) continue;
+        // A genuine Python-side error (missing module, traceback, etc.) — don't
+        // mask it by trying other interpreters.
+        throw lastErr;
+      }
+    }
+    throw lastErr ?? new Error(
+      "No working Python interpreter found (tried: " + candidates.map(c => c[0]).join(", ") + ")",
+    );
+  } finally {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "No file provided" });
+  try {
+    const result = await extractTablesViaPdfplumber(file.buffer);
+    res.json(result);
+  } catch (err) {
+    console.error("pdf-extract-tables error:", err);
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to extract tables",
+    });
   }
 });
 
