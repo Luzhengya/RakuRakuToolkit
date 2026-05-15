@@ -54,6 +54,13 @@ interface PageData {
   items: TextItem[];
 }
 
+// Font stack for redrawn text — prefers Japanese MS Gothic, then Chinese SimHei,
+// then generic sans-serif as a fallback. The export pipeline rasterises the
+// page to PNG before embedding into the PDF, so these fonts only need to be
+// installed on the machine generating the file; the resulting PDF is
+// self-contained and renders identically anywhere.
+const FONT_STACK = '"MS Gothic", "ＭＳ ゴシック", "MS ゴシック", "MS-Gothic", MSGothic, SimHei, sans-serif';
+
 // Editor mode: standard text editing vs. table region editing
 type EditorMode = 'text' | 'table';
 
@@ -274,10 +281,10 @@ function paintTablesOnCanvas(
       ctx.textBaseline = 'middle';
       const PAD = 4;
       let fontSize = Math.min(Math.max(cellH * 0.55, 9), 16);
-      ctx.font = `${fontSize}px sans-serif`;
+      ctx.font = `${fontSize}px ${FONT_STACK}`;
       while (ctx.measureText(newText).width > cellW - PAD * 2 && fontSize > 7) {
         fontSize -= 1;
-        ctx.font = `${fontSize}px sans-serif`;
+        ctx.font = `${fontSize}px ${FONT_STACK}`;
       }
       ctx.save();
       ctx.beginPath();
@@ -402,7 +409,7 @@ async function buildModifiedPdf(
       const newText = edits[item.id];
 
       // Measure new text width to ensure the erase region is wide enough
-      ctx.font = `${item.fontSize}px sans-serif`;
+      ctx.font = `${item.fontSize}px ${FONT_STACK}`;
       const measuredW = ctx.measureText(newText).width;
       const eraseW = Math.max(item.w, measuredW);
 
@@ -511,7 +518,7 @@ function EditableTextItem({
         minHeight: item.h,
         fontSize: item.fontSize,
         lineHeight: '1.25',
-        fontFamily: 'sans-serif',
+        fontFamily: FONT_STACK,
         // Normal: transparent so PDF text shows through
         // Hover: subtle indigo tint
         // Modified: amber highlight
