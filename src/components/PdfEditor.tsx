@@ -26,6 +26,11 @@ import {
   Table as TableIcon,
   Trash2,
   X,
+  Undo2,
+  Redo2,
+  PaintBucket,
+  Square,
+  RefreshCw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -69,28 +74,32 @@ const FONT_STACK = '"MS Gothic", "ＭＳ ゴシック", "MS ゴシック", "MS-G
 // Editor mode: standard text editing vs. table region editing
 type EditorMode = 'text' | 'table';
 
-// A row or column "band" — a strip of the original table that the user
-// can mark deleted. Deletion is non-destructive: we keep the band's original
-// position/size so untouched bands remain perfectly aligned with the PDF.
+// A row or column "band" — describes the position and size of a row/column
+// inside a table. Deletion is destructive: removed bands are spliced out and
+// subsequent bands shift to fill the gap. The cumulative size of all bands
+// is allowed to differ from region.w/h after insert/delete; the renderer
+// uses band positions directly, not the region bounds.
 interface Band {
   start: number; // canvas px (y for rowBand, x for colBand)
   size: number;  // canvas px (h for rowBand, w for colBand)
-  deleted: boolean;
 }
 
-// Visual style for a single cell — derived from its original text items
-// (mode of fontSize, fontFamily). Used to render the edit-time inline input
-// and the redrawn cell text in the export pipeline.
+// Visual style for a single cell. Phase 1 inferred from Adobe Extract API
+// (fontSize / fontName / bold) plus defaults (color #111, bgColor transparent).
+// All fields user-editable via the top toolbar.
 interface CellStyle {
   fontSize: number;       // canvas px
   fontFamily: string;     // CSS font-family (already includes fallback chain)
-  color: string;          // CSS colour string — phase 1 always #111
+  color: string;          // CSS colour string — text colour
+  bold: boolean;          // Bold weight
+  bgColor: string;        // CSS colour or 'transparent' for cell background
 }
 
 interface TableRegion {
   id: string;
   pageNum: number;
-  // Original drag-selected rectangle in canvas px (never mutated)
+  // Outer table bounding box in canvas px (origin: top-left). Used as the
+  // erase mask when redrawing — entire area is whited out before redrawing.
   x: number;
   y: number;
   w: number;
@@ -101,251 +110,263 @@ interface TableRegion {
   origCells: string[][];
   // User edits, keyed `${row}_${col}`; only modified cells appear here
   cellEdits: Record<string, string>;
-  // Inferred style per cell (or fallback when cell has no items)
+  // Per-cell visual style
   cellStyles: Record<string, CellStyle>;
+  // Table-wide border style (toolbar adjusts these)
+  borderColor: string;
+  borderWidth: number;     // canvas px
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-/**
- * Detect `count` band boundaries along an axis by clustering text-item centres.
- *
- * Strategy: project each item that lies inside `region` onto the chosen axis,
- * sort the centres, and pick the `count - 1` largest gaps as splits. Each gap's
- * midpoint becomes a boundary, yielding `count` bands. Falls back to equal
- * subdivision if there aren't enough items to cluster on (e.g. empty region).
- */
-function detectBands(
-  items: TextItem[],
-  region: { x: number; y: number; w: number; h: number },
-  axis: 'y' | 'x',
-  count: number,
-): Band[] {
-  const start = axis === 'y' ? region.y : region.x;
-  const total = axis === 'y' ? region.h : region.w;
+// Raw shape returned by /api/pdf-extract-tables
+interface ExtractedTablePayload {
+  pageIdx: number;
+  bounds: [number, number, number, number]; // PDF user space: [x1, y1, x2, y2]
+  rows: {
+    bounds: [number, number, number, number];
+    cells: {
+      bounds: [number, number, number, number];
+      text: string;
+      fontSize?: number;
+      fontName?: string;
+      bold?: boolean;
+    }[];
+  }[];
+}
 
-  // Equal-subdivision fallback used when clustering can't be performed
-  const equalBands = (): Band[] => {
-    const size = total / count;
-    return Array.from({ length: count }, (_, i) => ({
-      start: start + i * size,
-      size,
-      deleted: false,
-    }));
-  };
-
-  if (count <= 1) return equalBands();
-
-  const centres: number[] = [];
-  for (const it of items) {
-    const cx = it.x + it.w / 2;
-    const cy = it.y + it.h / 2;
-    if (cx < region.x || cx >= region.x + region.w) continue;
-    if (cy < region.y || cy >= region.y + region.h) continue;
-    centres.push(axis === 'y' ? cy : cx);
-  }
-  if (centres.length < count) return equalBands();
-  centres.sort((a, b) => a - b);
-
-  // Largest `count - 1` gaps in the sorted centre list become band boundaries
-  const gaps: { idx: number; gap: number }[] = [];
-  for (let i = 1; i < centres.length; i++) {
-    gaps.push({ idx: i, gap: centres[i] - centres[i - 1] });
-  }
-  gaps.sort((a, b) => b.gap - a.gap);
-  const splits = gaps
-    .slice(0, count - 1)
-    .map(g => (centres[g.idx - 1] + centres[g.idx]) / 2)
-    .sort((a, b) => a - b);
-
-  const bounds = [start, ...splits, start + total];
-  const bands: Band[] = [];
-  for (let i = 0; i < count; i++) {
-    bands.push({
-      start: bounds[i],
-      size: bounds[i + 1] - bounds[i],
-      deleted: false,
-    });
-  }
-  return bands;
+interface ExtractTablesPayload {
+  pageSizes: { width: number; height: number }[];
+  tables: ExtractedTablePayload[];
 }
 
 /**
- * Build a fresh TableRegion from the user's drag-selection plus row/column
- * hints. Bands are detected by clustering item centres; cells are populated
- * by assigning each item to the (row, col) its centre falls into.
+ * Convert an extracted-table payload (PDF user space) into a TableRegion
+ * positioned in canvas px space (top-left origin). The provided `pageScale`
+ * tells us canvas_px = pdf_user_unit * pageScale; `pageHeight` (PDF user
+ * units) lets us flip the y-axis since PDF user space has bottom-left origin.
+ *
+ * Assumes Adobe's bounds are [x1, y1, x2, y2] with bottom-left origin.
+ * Rows are expected ordered top→bottom by the backend.
  */
-function buildTableFromSelection(
+function buildTableFromExtracted(
   id: string,
+  extracted: ExtractedTablePayload,
+  pageHeight: number,
+  pageScale: number,
   pageNum: number,
-  items: TextItem[],
-  rect: { x: number; y: number; w: number; h: number },
-  rows: number,
-  cols: number,
 ): TableRegion {
-  const rowBands = detectBands(items, rect, 'y', rows);
-  const colBands = detectBands(items, rect, 'x', cols);
+  const toCanvasX = (x: number) => x * pageScale;
+  const toCanvasY = (y: number) => (pageHeight - y) * pageScale;
 
-  // Find which row/col band a point falls into; -1 if outside
-  const locate = (bands: Band[], value: number): number => {
-    for (let i = 0; i < bands.length; i++) {
-      const b = bands[i];
-      if (value >= b.start && value < b.start + b.size) return i;
-    }
-    return -1;
-  };
+  const [bx1, by1, bx2, by2] = extracted.bounds;
+  const x = toCanvasX(Math.min(bx1, bx2));
+  const y = toCanvasY(Math.max(by1, by2));
+  const w = Math.abs(bx2 - bx1) * pageScale;
+  const h = Math.abs(by2 - by1) * pageScale;
 
-  const bucket: TextItem[][][] = Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => [] as TextItem[]),
-  );
+  // Build row bands from row bounds (sorted top→bottom in canvas px)
+  const rowEntries = extracted.rows.map(rw => {
+    const [, ry1, , ry2] = rw.bounds;
+    const top = toCanvasY(Math.max(ry1, ry2));
+    const bottom = toCanvasY(Math.min(ry1, ry2));
+    return { row: rw, top, bottom };
+  });
+  rowEntries.sort((a, b) => a.top - b.top);
+  const rowBands: Band[] = rowEntries.map(e => ({
+    start: e.top,
+    size: Math.max(1, e.bottom - e.top),
+  }));
 
-  for (const it of items) {
-    const cx = it.x + it.w / 2;
-    const cy = it.y + it.h / 2;
-    if (cx < rect.x || cx >= rect.x + rect.w) continue;
-    if (cy < rect.y || cy >= rect.y + rect.h) continue;
-    const r = locate(rowBands, cy);
-    const c = locate(colBands, cx);
-    if (r < 0 || c < 0) continue;
-    bucket[r][c].push(it);
-  }
+  // Build col bands from the FIRST row's cell bounds (all rows assumed aligned)
+  const firstRowCells = rowEntries[0]?.row.cells ?? [];
+  const colEntries = firstRowCells.map(cell => {
+    const [cx1, , cx2] = cell.bounds;
+    return { left: toCanvasX(Math.min(cx1, cx2)), right: toCanvasX(Math.max(cx1, cx2)) };
+  });
+  colEntries.sort((a, b) => a.left - b.left);
+  const colBands: Band[] = colEntries.length
+    ? colEntries.map(c => ({ start: c.left, size: Math.max(1, c.right - c.left) }))
+    : [{ start: x, size: w }];
 
+  // Populate cell text + style by matching each cell's centre to (r, c) bands
+  const rows = rowBands.length;
+  const cols = colBands.length;
   const origCells: string[][] = Array.from({ length: rows }, () =>
     Array.from({ length: cols }, () => ''),
   );
   const cellStyles: Record<string, CellStyle> = {};
 
-  // Pick the most common value in an array (mode). Ties resolved by first seen.
-  const modeOf = <T,>(arr: T[]): T | undefined => {
-    if (arr.length === 0) return undefined;
-    const counts = new Map<T, number>();
-    let best: T = arr[0];
-    let bestCount = 0;
-    for (const v of arr) {
-      const n = (counts.get(v) ?? 0) + 1;
-      counts.set(v, n);
-      if (n > bestCount) { bestCount = n; best = v; }
+  const findBand = (bands: Band[], v: number): number => {
+    for (let i = 0; i < bands.length; i++) {
+      const b = bands[i];
+      if (v >= b.start && v < b.start + b.size) return i;
     }
-    return best;
+    // If v falls past the last band but within tolerance, snap to the last
+    if (bands.length && v >= bands[bands.length - 1].start) return bands.length - 1;
+    return v < (bands[0]?.start ?? 0) ? 0 : -1;
   };
 
+  for (const rw of extracted.rows) {
+    for (const cell of rw.cells) {
+      const [cx1, cy1, cx2, cy2] = cell.bounds;
+      const cx = toCanvasX((cx1 + cx2) / 2);
+      const cy = toCanvasY((cy1 + cy2) / 2);
+      const r = findBand(rowBands, cy);
+      const c = findBand(colBands, cx);
+      if (r < 0 || c < 0) continue;
+      // Concatenate when multiple cells map to the same bucket
+      if (origCells[r][c]) {
+        origCells[r][c] = `${origCells[r][c]} ${cell.text}`.trim();
+      } else {
+        origCells[r][c] = cell.text;
+      }
+      // Style: take the first reported font for that cell
+      if (!cellStyles[`${r}_${c}`]) {
+        const fontSize = (cell.fontSize ?? 12) * pageScale; // pdf points → canvas px
+        const fontFamily = cell.fontName
+          ? `"${cell.fontName.replace(/[+\\,/]/g, '_')}", ${FONT_STACK}`
+          : FONT_STACK;
+        cellStyles[`${r}_${c}`] = {
+          fontSize: Math.max(8, fontSize),
+          fontFamily,
+          color: '#111111',
+          bold: cell.bold === true,
+          bgColor: 'transparent',
+        };
+      }
+    }
+  }
+
+  // Default style for cells with no extracted text
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      bucket[r][c].sort((a, b) => a.x - b.x);
-      origCells[r][c] = bucket[r][c].map(it => it.str).join(' ').trim();
-
-      const cellItems = bucket[r][c];
-      // Round to nearest 0.5px to coalesce near-identical sizes
-      const sizes = cellItems.map(it => Math.round(it.fontSize * 2) / 2);
-      const families = cellItems
-        .map(it => it.fontFamily)
-        .filter((f): f is string => !!f);
-      const fontSize = modeOf(sizes) ?? 12;
-      const inferredFamily = modeOf(families);
-      // Always chain through FONT_STACK so missing glyphs fall back gracefully
-      const fontFamily = inferredFamily
-        ? `${inferredFamily}, ${FONT_STACK}`
-        : FONT_STACK;
-      cellStyles[`${r}_${c}`] = { fontSize, fontFamily, color: '#111111' };
+      if (!cellStyles[`${r}_${c}`]) {
+        cellStyles[`${r}_${c}`] = {
+          fontSize: 12,
+          fontFamily: FONT_STACK,
+          color: '#111111',
+          bold: false,
+          bgColor: 'transparent',
+        };
+      }
     }
   }
 
   return {
     id,
     pageNum,
-    x: rect.x,
-    y: rect.y,
-    w: rect.w,
-    h: rect.h,
+    x, y, w, h,
     rowBands,
     colBands,
     origCells,
     cellEdits: {},
     cellStyles,
+    borderColor: '#000000',
+    borderWidth: 1,
   };
 }
 
 /**
- * Paint table modifications onto a 2D context with INCREMENTAL changes only:
- *   - Deleted row bands → fill that single strip white (other rows untouched)
- *   - Deleted col bands → same, vertical strip
- *   - Edited cells → sample neighbouring bg colour, fill cell, draw new text
+ * Paint each table by FULL REDRAW (WPS-style): erase the original table area,
+ * then redraw the grid and every cell using user-controlled styles. The
+ * underlying PDF pixels for the table region are entirely replaced — only
+ * surrounding non-table content remains.
  *
- * Untouched cells inherit the underlying PDF pixels (background colours, borders,
- * fonts, etc.) since we don't repaint them. This is what gives us visual parity
- * with the source PDF.
+ *   1. Fill region with white (covers original glyphs + rules)
+ *   2. Per-cell background colour (skip if 'transparent')
+ *   3. Grid lines using region.borderColor + borderWidth
+ *   4. Every cell's text (origCells[r][c] or cellEdits[r_c]) using cellStyles
  */
 function paintTablesOnCanvas(
   ctx: CanvasRenderingContext2D,
   tables: TableRegion[],
 ) {
   for (const t of tables) {
-    // 1. White-out deleted rows
+    // 1. White-out the entire table region
     ctx.fillStyle = '#ffffff';
-    for (const rb of t.rowBands) {
-      if (!rb.deleted) continue;
-      ctx.fillRect(t.x, rb.start, t.w, rb.size);
-    }
-    // 2. White-out deleted columns
-    for (const cb of t.colBands) {
-      if (!cb.deleted) continue;
-      ctx.fillRect(cb.start, t.y, cb.size, t.h);
-    }
+    ctx.fillRect(t.x, t.y, t.w, t.h);
 
-    // 3. Edited cells — sample background then redraw new text using
-    //    the cell's inferred style (font size + family + colour)
-    for (const [key, newText] of Object.entries(t.cellEdits)) {
-      const [rStr, cStr] = key.split('_');
-      const r = Number(rStr);
-      const c = Number(cStr);
+    // 2. Cell backgrounds
+    for (let r = 0; r < t.rowBands.length; r++) {
       const rb = t.rowBands[r];
-      const cb = t.colBands[c];
-      if (!rb || !cb) continue;
-      if (rb.deleted || cb.deleted) continue;
-      const cellX = cb.start;
-      const cellY = rb.start;
-      const cellW = cb.size;
-      const cellH = rb.size;
-      if (cellW < 2 || cellH < 2) continue;
-
-      // Sample from cell's inner top-left corner (less likely to hit glyphs)
-      const sampleX = Math.max(0, Math.min(ctx.canvas.width - 1, Math.round(cellX + 2)));
-      const sampleY = Math.max(0, Math.min(ctx.canvas.height - 1, Math.round(cellY + 2)));
-      let bgColor = '#ffffff';
-      try {
-        const px = ctx.getImageData(sampleX, sampleY, 1, 1).data;
-        bgColor = `rgb(${px[0]},${px[1]},${px[2]})`;
-      } catch {
-        /* tainted canvas — keep white fallback */
+      for (let c = 0; c < t.colBands.length; c++) {
+        const cb = t.colBands[c];
+        const style = t.cellStyles[`${r}_${c}`];
+        if (!style || !style.bgColor || style.bgColor === 'transparent') continue;
+        ctx.fillStyle = style.bgColor;
+        ctx.fillRect(cb.start, rb.start, cb.size, rb.size);
       }
+    }
 
-      // Cover the cell interior (leave 1px border to not nick neighbour rules)
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
+    // Total grid extents (sum of band sizes — may differ from t.w/h after insert/delete)
+    const totalH = t.rowBands.reduce((s, b) => s + b.size, 0);
+    const totalW = t.colBands.reduce((s, b) => s + b.size, 0);
 
-      if (!newText) continue;
-      // Use the cell's inferred style (preserves original size/family/colour
-      // as detected from the underlying PDF text items)
-      const style = t.cellStyles[key] ?? {
-        fontSize: Math.min(Math.max(cellH * 0.55, 9), 16),
-        fontFamily: FONT_STACK,
-        color: '#111111',
-      };
-      ctx.fillStyle = style.color;
-      ctx.textBaseline = 'middle';
-      const PAD = 4;
-      let fontSize = style.fontSize;
-      ctx.font = `${fontSize}px ${style.fontFamily}`;
-      while (ctx.measureText(newText).width > cellW - PAD * 2 && fontSize > 7) {
-        fontSize -= 1;
-        ctx.font = `${fontSize}px ${style.fontFamily}`;
-      }
-      ctx.save();
+    // 3. Grid lines
+    if (t.borderWidth > 0) {
+      ctx.strokeStyle = t.borderColor;
+      ctx.lineWidth = t.borderWidth;
       ctx.beginPath();
-      ctx.rect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
-      ctx.clip();
-      ctx.fillText(newText, cellX + PAD, cellY + cellH / 2);
-      ctx.restore();
+      // Horizontal lines: top edge of each row, plus bottom of last row
+      for (let r = 0; r <= t.rowBands.length; r++) {
+        const y = r < t.rowBands.length
+          ? t.rowBands[r].start
+          : (t.rowBands[t.rowBands.length - 1]?.start ?? t.y) +
+            (t.rowBands[t.rowBands.length - 1]?.size ?? 0);
+        ctx.moveTo(t.x, y);
+        ctx.lineTo(t.x + totalW, y);
+      }
+      // Vertical lines
+      for (let c = 0; c <= t.colBands.length; c++) {
+        const x = c < t.colBands.length
+          ? t.colBands[c].start
+          : (t.colBands[t.colBands.length - 1]?.start ?? t.x) +
+            (t.colBands[t.colBands.length - 1]?.size ?? 0);
+        ctx.moveTo(x, t.y);
+        ctx.lineTo(x, t.y + totalH);
+      }
+      ctx.stroke();
+    }
+
+    // 4. Cell text — draw every cell (not just edited ones, since we wiped the region)
+    ctx.textBaseline = 'middle';
+    const PAD = 4;
+    for (let r = 0; r < t.rowBands.length; r++) {
+      const rb = t.rowBands[r];
+      for (let c = 0; c < t.colBands.length; c++) {
+        const cb = t.colBands[c];
+        const key = `${r}_${c}`;
+        const text = t.cellEdits[key] ?? t.origCells[r]?.[c] ?? '';
+        if (!text) continue;
+        const cellX = cb.start;
+        const cellY = rb.start;
+        const cellW = cb.size;
+        const cellH = rb.size;
+        if (cellW < 2 || cellH < 2) continue;
+
+        const style = t.cellStyles[key] ?? {
+          fontSize: Math.min(Math.max(cellH * 0.55, 9), 16),
+          fontFamily: FONT_STACK,
+          color: '#111111',
+          bold: false,
+          bgColor: 'transparent',
+        };
+        ctx.fillStyle = style.color;
+        const weight = style.bold ? 'bold ' : '';
+        let fontSize = style.fontSize;
+        ctx.font = `${weight}${fontSize}px ${style.fontFamily}`;
+        while (ctx.measureText(text).width > cellW - PAD * 2 && fontSize > 7) {
+          fontSize -= 1;
+          ctx.font = `${weight}${fontSize}px ${style.fontFamily}`;
+        }
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cellX + 1, cellY + 1, cellW - 2, cellH - 2);
+        ctx.clip();
+        ctx.fillText(text, cellX + PAD, cellY + cellH / 2);
+        ctx.restore();
+      }
     }
   }
 }
@@ -639,15 +660,15 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const [mode, setMode] = useState<EditorMode>('text');
   // Tables keyed by 1-based page number
   const [pageTables, setPageTables] = useState<Record<number, TableRegion[]>>({});
-  // In-progress rectangle selection (canvas px, top-left origin)
-  const [dragRect, setDragRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
-  // Pending region: selection finished, awaiting rows/cols input
-  const [pendingRegion, setPendingRegion] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [pendingRows, setPendingRows] = useState(3);
-  const [pendingCols, setPendingCols] = useState(3);
+  // Per-page PDF user-space size (for converting Adobe coords to canvas px).
+  // Lives alongside `pages` but addressed by 1-based pageNum.
+  const [pdfPageSizes, setPdfPageSizes] = useState<Record<number, { width: number; height: number }>>({});
   // Overlay canvas ref — re-drawn whenever the current page's tables change
   const tableLayerRef = useRef<HTMLCanvasElement>(null);
+
+  // Auto-recognition state
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
 
   // WPS-style in-place editing
   const [editingCell, setEditingCell] = useState<{ regionId: string; r: number; c: number } | null>(null);
@@ -655,6 +676,13 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const [contextMenu, setContextMenu] = useState<{
     x: number; y: number; regionId: string; r: number; c: number;
   } | null>(null);
+  // Currently selected cell (drives toolbar — single click selects, double-click edits)
+  const [selectedCell, setSelectedCell] = useState<{ regionId: string; r: number; c: number } | null>(null);
+
+  // Undo/redo: history of pageTables snapshots. Capped to 50 entries to keep memory bounded.
+  const HISTORY_LIMIT = 50;
+  const [history, setHistory] = useState<Record<number, TableRegion[]>[]>([]);
+  const [future, setFuture] = useState<Record<number, TableRegion[]>[]>([]);
 
   // Count genuinely modified text items
   const textEditCount = Object.entries(editedTexts).filter(([id, v]) => {
@@ -723,11 +751,14 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setUploadError(null);
     setEditedTexts({});
     setPageTables({});
-    setPendingRegion(null);
-    setDragRect(null);
+    setPdfPageSizes({});
     setEditingCell(null);
     setHoveredCell(null);
     setContextMenu(null);
+    setSelectedCell(null);
+    setHistory([]);
+    setFuture([]);
+    setExtractError(null);
     setMode('text');
     setCurrentPageIdx(0);
     setProgress({ current: 0, total: 0 });
@@ -804,57 +835,45 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const currentTables: TableRegion[] =
     currentPageNum != null ? pageTables[currentPageNum] ?? [] : [];
 
-  const beginDragSelect = (canvasX: number, canvasY: number) => {
-    dragStartRef.current = { x: canvasX, y: canvasY };
-    setDragRect({ x: canvasX, y: canvasY, w: 0, h: 0 });
+  // Push the current pageTables snapshot onto the undo stack before mutating.
+  // Always clears the redo stack — a fresh user action invalidates the future.
+  const pushHistory = () => {
+    setHistory(prev => {
+      const next = [...prev, pageTables];
+      if (next.length > HISTORY_LIMIT) next.shift();
+      return next;
+    });
+    setFuture([]);
   };
 
-  const updateDragSelect = (canvasX: number, canvasY: number) => {
-    const start = dragStartRef.current;
-    if (!start) return;
-    const x = Math.min(start.x, canvasX);
-    const y = Math.min(start.y, canvasY);
-    const w = Math.abs(canvasX - start.x);
-    const h = Math.abs(canvasY - start.y);
-    setDragRect({ x, y, w, h });
+  const undo = () => {
+    setHistory(prev => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      setFuture(f => [pageTables, ...f]);
+      setPageTables(last);
+      return prev.slice(0, -1);
+    });
   };
 
-  const finishDragSelect = () => {
-    const r = dragRect;
-    dragStartRef.current = null;
-    setDragRect(null);
-    if (!r || r.w < 24 || r.h < 24) return; // ignore tiny accidental drags
-    setPendingRegion(r);
-    setPendingRows(3);
-    setPendingCols(3);
+  const redo = () => {
+    setFuture(prev => {
+      if (prev.length === 0) return prev;
+      const next = prev[0];
+      setHistory(h => [...h, pageTables]);
+      setPageTables(next);
+      return prev.slice(1);
+    });
   };
 
-  const cancelPendingRegion = () => {
-    setPendingRegion(null);
-  };
-
-  const confirmPendingRegion = () => {
-    if (!pendingRegion || currentPageNum == null) return;
-    const page = pages[currentPageIdx];
-    const rows = Math.max(1, Math.min(50, pendingRows | 0));
-    const cols = Math.max(1, Math.min(20, pendingCols | 0));
-    const region = buildTableFromSelection(
-      `t-${currentPageNum}-${Date.now()}`,
-      currentPageNum,
-      page.items,
-      pendingRegion,
-      rows,
-      cols,
-    );
-    setPageTables(prev => ({
-      ...prev,
-      [currentPageNum]: [...(prev[currentPageNum] ?? []), region],
-    }));
-    setPendingRegion(null);
-  };
-
-  const updateRegion = (regionId: string, updater: (r: TableRegion) => TableRegion) => {
+  // Generic region updater. `recordHistory=true` snapshots state for undo.
+  const updateRegion = (
+    regionId: string,
+    updater: (r: TableRegion) => TableRegion,
+    recordHistory = true,
+  ) => {
     if (currentPageNum == null) return;
+    if (recordHistory) pushHistory();
     setPageTables(prev => ({
       ...prev,
       [currentPageNum]: (prev[currentPageNum] ?? []).map(r => (r.id === regionId ? updater(r) : r)),
@@ -863,14 +882,14 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
 
   const removeRegion = (regionId: string) => {
     if (currentPageNum == null) return;
+    pushHistory();
     setPageTables(prev => ({
       ...prev,
       [currentPageNum]: (prev[currentPageNum] ?? []).filter(r => r.id !== regionId),
     }));
   };
 
-  // Edits: stored in cellEdits keyed `${r}_${c}`. Reverting to the original
-  // value (or empty when origCells is empty) drops the override.
+  // Edit cell text. Reverting to the original value drops the override.
   const editCell = (regionId: string, rowIdx: number, colIdx: number, value: string) => {
     updateRegion(regionId, r => {
       const key = `${rowIdx}_${colIdx}`;
@@ -882,129 +901,224 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     });
   };
 
-  // Deletion is non-destructive: flip the band's deleted flag. The band's
-  // start/size stay intact so undelete is a single state flip and untouched
-  // bands continue to line up with the original PDF.
-  const toggleRowDeleted = (regionId: string, rowIdx: number) => {
+  // Update one cell's visual style (toolbar uses this)
+  const updateCellStyle = (
+    regionId: string,
+    rowIdx: number,
+    colIdx: number,
+    patch: Partial<CellStyle>,
+  ) => {
     updateRegion(regionId, r => {
-      const rowBands = r.rowBands.map((b, i) =>
-        i === rowIdx ? { ...b, deleted: !b.deleted } : b,
-      );
-      return { ...r, rowBands };
+      const key = `${rowIdx}_${colIdx}`;
+      const cur = r.cellStyles[key] ?? {
+        fontSize: 12, fontFamily: FONT_STACK, color: '#111111', bold: false, bgColor: 'transparent',
+      };
+      return {
+        ...r,
+        cellStyles: { ...r.cellStyles, [key]: { ...cur, ...patch } },
+      };
     });
   };
 
-  const toggleColDeleted = (regionId: string, colIdx: number) => {
-    updateRegion(regionId, r => {
-      const colBands = r.colBands.map((b, i) =>
-        i === colIdx ? { ...b, deleted: !b.deleted } : b,
-      );
-      return { ...r, colBands };
+  // Update region-level fields (toolbar border colour / width)
+  const updateRegionFields = (regionId: string, patch: Partial<TableRegion>) => {
+    updateRegion(regionId, r => ({ ...r, ...patch }));
+  };
+
+  // Re-pack bands so they tile contiguously from a starting position. Sets each
+  // band's `start` to the cumulative offset of preceding bands.
+  const repackBands = (bands: Band[], origin: number): Band[] => {
+    let cursor = origin;
+    return bands.map(b => {
+      const out: Band = { start: cursor, size: b.size };
+      cursor += b.size;
+      return out;
     });
   };
 
-  // Insertion: keep region.x/y/w/h fixed (so surrounding PDF content stays
-  // untouched). The newly-inserted band gets the median size of existing
-  // active bands; then all bands are uniformly compressed so their total
-  // equals the region dimension. Cell-keyed state shifts to accommodate.
+  // True deletion of a row: removes the band, re-packs subsequent rows upward
+  // by the deleted height, and shifts cellEdits / cellStyles / origCells.
+  const deleteRow = (regionId: string, rowIdx: number) => {
+    updateRegion(regionId, r => {
+      if (r.rowBands.length <= 1) return r; // refuse to delete the last row
+      const newBands = repackBands(
+        r.rowBands.filter((_, i) => i !== rowIdx),
+        r.rowBands[0]?.start ?? r.y,
+      );
+      const origCells = r.origCells.filter((_, i) => i !== rowIdx);
+      const remapKey = (key: string): string | null => {
+        const [rStr, cStr] = key.split('_');
+        const rr = Number(rStr);
+        if (rr === rowIdx) return null;
+        return rr > rowIdx ? `${rr - 1}_${cStr}` : key;
+      };
+      const cellEdits: Record<string, string> = {};
+      for (const [k, v] of Object.entries(r.cellEdits)) {
+        const nk = remapKey(k);
+        if (nk !== null) cellEdits[nk] = v;
+      }
+      const cellStyles: Record<string, CellStyle> = {};
+      for (const [k, v] of Object.entries(r.cellStyles)) {
+        const nk = remapKey(k);
+        if (nk !== null) cellStyles[nk] = v;
+      }
+      return { ...r, rowBands: newBands, origCells, cellEdits, cellStyles };
+    });
+  };
+
+  const deleteCol = (regionId: string, colIdx: number) => {
+    updateRegion(regionId, r => {
+      if (r.colBands.length <= 1) return r;
+      const newBands = repackBands(
+        r.colBands.filter((_, i) => i !== colIdx),
+        r.colBands[0]?.start ?? r.x,
+      );
+      const origCells = r.origCells.map(row => row.filter((_, j) => j !== colIdx));
+      const remapKey = (key: string): string | null => {
+        const [rStr, cStr] = key.split('_');
+        const cc = Number(cStr);
+        if (cc === colIdx) return null;
+        return cc > colIdx ? `${rStr}_${cc - 1}` : key;
+      };
+      const cellEdits: Record<string, string> = {};
+      for (const [k, v] of Object.entries(r.cellEdits)) {
+        const nk = remapKey(k);
+        if (nk !== null) cellEdits[nk] = v;
+      }
+      const cellStyles: Record<string, CellStyle> = {};
+      for (const [k, v] of Object.entries(r.cellStyles)) {
+        const nk = remapKey(k);
+        if (nk !== null) cellStyles[nk] = v;
+      }
+      return { ...r, colBands: newBands, origCells, cellEdits, cellStyles };
+    });
+  };
+
+  // Insert a new row at anchorIdx (above) or anchorIdx+1 (below). Existing
+  // rows shift down by the new row's height; the table grows downward.
   const insertRow = (regionId: string, anchorIdx: number, above: boolean) => {
     updateRegion(regionId, r => {
       const insertAt = above ? anchorIdx : anchorIdx + 1;
-      const activeSizes = r.rowBands.filter(b => !b.deleted).map(b => b.size);
-      const medianSize = activeSizes.length
-        ? activeSizes.sort((a, b) => a - b)[Math.floor(activeSizes.length / 2)]
-        : r.h / Math.max(1, r.rowBands.length + 1);
+      const anchorBand = r.rowBands[anchorIdx];
+      const newSize = anchorBand?.size ?? (r.h / Math.max(1, r.rowBands.length));
+      const newBand: Band = { start: 0, size: newSize };
+      const draftBands = [...r.rowBands];
+      draftBands.splice(insertAt, 0, newBand);
+      const rowBands = repackBands(draftBands, r.rowBands[0]?.start ?? r.y);
 
-      // Build new band list, then scale all sizes so their total == r.h
-      const draft: Band[] = [...r.rowBands];
-      draft.splice(insertAt, 0, { start: 0, size: medianSize, deleted: false });
-      const total = draft.reduce((s, b) => s + b.size, 0);
-      const scale = total > 0 ? r.h / total : 1;
-      let cursor = r.y;
-      const rowBands: Band[] = draft.map(b => {
-        const size = b.size * scale;
-        const band: Band = { start: cursor, size, deleted: b.deleted };
-        cursor += size;
-        return band;
-      });
-
-      // Shift cellEdits / cellStyles / origCells row indices
-      const origCells: string[][] = [
+      const newRow = Array.from({ length: r.colBands.length }, () => '');
+      const origCells = [
         ...r.origCells.slice(0, insertAt),
-        Array.from({ length: r.colBands.length }, () => ''),
+        newRow,
         ...r.origCells.slice(insertAt),
       ];
-      const remapRowKey = (key: string): string => {
+      const remap = (key: string): string => {
         const [rStr, cStr] = key.split('_');
         const rr = Number(rStr);
         return rr >= insertAt ? `${rr + 1}_${cStr}` : key;
       };
       const cellEdits: Record<string, string> = {};
-      for (const [k, v] of Object.entries(r.cellEdits)) cellEdits[remapRowKey(k)] = v;
+      for (const [k, v] of Object.entries(r.cellEdits)) cellEdits[remap(k)] = v;
       const cellStyles: Record<string, CellStyle> = {};
-      for (const [k, v] of Object.entries(r.cellStyles)) cellStyles[remapRowKey(k)] = v;
-      // Seed default style for the new row by copying the anchor row's styles
+      for (const [k, v] of Object.entries(r.cellStyles)) cellStyles[remap(k)] = v;
+      // New row inherits the anchor row's per-cell style
       for (let c = 0; c < r.colBands.length; c++) {
         const anchorStyle = r.cellStyles[`${anchorIdx}_${c}`];
         cellStyles[`${insertAt}_${c}`] = anchorStyle ?? {
-          fontSize: 12,
-          fontFamily: FONT_STACK,
-          color: '#111111',
+          fontSize: 12, fontFamily: FONT_STACK, color: '#111111',
+          bold: false, bgColor: 'transparent',
         };
       }
 
-      return { ...r, rowBands, origCells, cellEdits, cellStyles };
+      // Extend region.h by the new band size
+      const newH = r.h + newSize;
+      return { ...r, rowBands, origCells, cellEdits, cellStyles, h: newH };
     });
   };
 
   const insertCol = (regionId: string, anchorIdx: number, left: boolean) => {
     updateRegion(regionId, r => {
       const insertAt = left ? anchorIdx : anchorIdx + 1;
-      const activeSizes = r.colBands.filter(b => !b.deleted).map(b => b.size);
-      const medianSize = activeSizes.length
-        ? activeSizes.sort((a, b) => a - b)[Math.floor(activeSizes.length / 2)]
-        : r.w / Math.max(1, r.colBands.length + 1);
+      const anchorBand = r.colBands[anchorIdx];
+      const newSize = anchorBand?.size ?? (r.w / Math.max(1, r.colBands.length));
+      const newBand: Band = { start: 0, size: newSize };
+      const draftBands = [...r.colBands];
+      draftBands.splice(insertAt, 0, newBand);
+      const colBands = repackBands(draftBands, r.colBands[0]?.start ?? r.x);
 
-      const draft: Band[] = [...r.colBands];
-      draft.splice(insertAt, 0, { start: 0, size: medianSize, deleted: false });
-      const total = draft.reduce((s, b) => s + b.size, 0);
-      const scale = total > 0 ? r.w / total : 1;
-      let cursor = r.x;
-      const colBands: Band[] = draft.map(b => {
-        const size = b.size * scale;
-        const band: Band = { start: cursor, size, deleted: b.deleted };
-        cursor += size;
-        return band;
-      });
-
-      // Splice an empty cell into each row of origCells
-      const origCells: string[][] = r.origCells.map(row => [
+      const origCells = r.origCells.map(row => [
         ...row.slice(0, insertAt),
         '',
         ...row.slice(insertAt),
       ]);
-      const remapColKey = (key: string): string => {
+      const remap = (key: string): string => {
         const [rStr, cStr] = key.split('_');
         const cc = Number(cStr);
         return cc >= insertAt ? `${rStr}_${cc + 1}` : key;
       };
       const cellEdits: Record<string, string> = {};
-      for (const [k, v] of Object.entries(r.cellEdits)) cellEdits[remapColKey(k)] = v;
+      for (const [k, v] of Object.entries(r.cellEdits)) cellEdits[remap(k)] = v;
       const cellStyles: Record<string, CellStyle> = {};
-      for (const [k, v] of Object.entries(r.cellStyles)) cellStyles[remapColKey(k)] = v;
-      // Seed default style for the new col
+      for (const [k, v] of Object.entries(r.cellStyles)) cellStyles[remap(k)] = v;
       for (let rr = 0; rr < r.rowBands.length; rr++) {
         const anchorStyle = r.cellStyles[`${rr}_${anchorIdx}`];
         cellStyles[`${rr}_${insertAt}`] = anchorStyle ?? {
-          fontSize: 12,
-          fontFamily: FONT_STACK,
-          color: '#111111',
+          fontSize: 12, fontFamily: FONT_STACK, color: '#111111',
+          bold: false, bgColor: 'transparent',
         };
       }
 
-      return { ...r, colBands, origCells, cellEdits, cellStyles };
+      const newW = r.w + newSize;
+      return { ...r, colBands, origCells, cellEdits, cellStyles, w: newW };
     });
   };
+
+  // Auto-recognise tables via Adobe Extract API. Called when entering table mode
+  // for the first time, or via the "重新识别" button.
+  const fetchAndPopulateTables = useCallback(async () => {
+    if (!file) return;
+    setExtracting(true);
+    setExtractError(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const resp = await fetch('/api/pdf-extract-tables', { method: 'POST', body: formData });
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || '识别失败');
+      }
+      const payload = (await resp.json()) as ExtractTablesPayload;
+      // Build pdfPageSizes map (1-based pageNum)
+      const sizes: Record<number, { width: number; height: number }> = {};
+      payload.pageSizes.forEach((sz, i) => { sizes[i + 1] = sz; });
+      setPdfPageSizes(sizes);
+
+      // Group extracted tables by 1-based pageNum and build TableRegions
+      const out: Record<number, TableRegion[]> = {};
+      for (const t of payload.tables) {
+        const pageNum = t.pageIdx + 1;
+        const page = pages.find(p => p.pageNum === pageNum);
+        const pageSize = payload.pageSizes[t.pageIdx];
+        if (!page || !pageSize) continue;
+        const region = buildTableFromExtracted(
+          `t-${pageNum}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          t,
+          pageSize.height,
+          page.scale,
+          pageNum,
+        );
+        (out[pageNum] ??= []).push(region);
+      }
+      setPageTables(out);
+      setHistory([]);
+      setFuture([]);
+    } catch (err) {
+      console.error('extract tables failed', err);
+      setExtractError(err instanceof Error ? err.message : '识别失败');
+    } finally {
+      setExtracting(false);
+    }
+  }, [file, pages]);
 
   // Context menu open/close
   const openContextMenu = (
@@ -1054,11 +1168,14 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setPages([]);
     setEditedTexts({});
     setPageTables({});
-    setPendingRegion(null);
-    setDragRect(null);
+    setPdfPageSizes({});
     setEditingCell(null);
     setHoveredCell(null);
     setContextMenu(null);
+    setSelectedCell(null);
+    setHistory([]);
+    setFuture([]);
+    setExtractError(null);
     setMode('text');
     setCurrentPageIdx(0);
     setSaveError(null);
@@ -1274,14 +1391,12 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                 </button>
               </div>
 
-              {/* Mode switch + contextual legend */}
+              {/* Mode switch */}
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5">
                   <button
                     onClick={() => {
                       setMode('text');
-                      setPendingRegion(null);
-                      setDragRect(null);
                       setEditingCell(null);
                       setHoveredCell(null);
                       setContextMenu(null);
@@ -1297,7 +1412,13 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                     文本模式
                   </button>
                   <button
-                    onClick={() => setMode('table')}
+                    onClick={() => {
+                      setMode('table');
+                      // Auto-detect on first entry if no tables yet
+                      if (Object.keys(pageTables).length === 0 && !extracting) {
+                        void fetchAndPopulateTables();
+                      }
+                    }}
                     className={[
                       'flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md transition-colors',
                       mode === 'table'
@@ -1310,7 +1431,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                   </button>
                 </div>
 
-                {mode === 'text' ? (
+                {mode === 'text' && (
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-neutral-400">
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-4 h-3 border border-dashed border-amber-400 rounded-sm bg-amber-50" />
@@ -1324,12 +1445,181 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                       • 点击文字编辑 · Enter 或点击空白处确认 · Esc 还原
                     </span>
                   </div>
-                ) : (
-                  <div className="text-xs text-neutral-400">
-                    在 PDF 上拖框 → 输入行/列数 → 自动识别为表格,可编辑单元格 / 删除行 / 删除列
-                  </div>
                 )}
               </div>
+
+              {/* Table mode: top toolbar — drives selected cell's style and region border */}
+              {mode === 'table' && (() => {
+                const sel = selectedCell;
+                const selRegion = sel ? currentTables.find(t => t.id === sel.regionId) : null;
+                const selStyle = sel && selRegion
+                  ? selRegion.cellStyles[`${sel.r}_${sel.c}`]
+                  : null;
+                const disabled = !sel || !selRegion;
+                return (
+                  <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-white rounded-lg border border-neutral-200 shadow-sm">
+                    {/* Undo / Redo */}
+                    <button
+                      onClick={undo}
+                      disabled={history.length === 0}
+                      title="撤销 (Ctrl+Z)"
+                      className="p-1.5 rounded text-neutral-600 hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Undo2 size={15} />
+                    </button>
+                    <button
+                      onClick={redo}
+                      disabled={future.length === 0}
+                      title="重做 (Ctrl+Y)"
+                      className="p-1.5 rounded text-neutral-600 hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <Redo2 size={15} />
+                    </button>
+                    <div className="w-px h-5 bg-neutral-200" />
+
+                    {/* Font size */}
+                    <label className="flex items-center gap-1.5 text-xs">
+                      <span className="text-neutral-500">字号</span>
+                      <input
+                        type="number"
+                        min={6}
+                        max={48}
+                        value={selStyle ? Math.round(selStyle.fontSize) : ''}
+                        disabled={disabled}
+                        onChange={e => {
+                          if (!sel) return;
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v) && v >= 6 && v <= 48) {
+                            updateCellStyle(sel.regionId, sel.r, sel.c, { fontSize: v });
+                          }
+                        }}
+                        className="w-14 px-2 py-1 border border-neutral-200 rounded text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-neutral-50 disabled:text-neutral-400"
+                      />
+                    </label>
+
+                    {/* Bold */}
+                    <button
+                      onClick={() => sel && selStyle && updateCellStyle(sel.regionId, sel.r, sel.c, { bold: !selStyle.bold })}
+                      disabled={disabled}
+                      title="加粗 (Ctrl+B)"
+                      className={[
+                        'p-1.5 rounded text-sm font-bold transition-colors',
+                        disabled ? 'text-neutral-300 cursor-not-allowed' :
+                          selStyle?.bold ? 'bg-indigo-600 text-white' : 'text-neutral-600 hover:bg-neutral-100',
+                      ].join(' ')}
+                      style={{ minWidth: 28 }}
+                    >
+                      B
+                    </button>
+
+                    {/* Font color */}
+                    <label className="flex items-center gap-1 text-xs" title="字体颜色">
+                      <Type size={13} className="text-neutral-500" />
+                      <input
+                        type="color"
+                        value={selStyle?.color ?? '#111111'}
+                        disabled={disabled}
+                        onChange={e => sel && updateCellStyle(sel.regionId, sel.r, sel.c, { color: e.target.value })}
+                        className="w-7 h-7 rounded cursor-pointer border border-neutral-200 disabled:cursor-not-allowed disabled:opacity-30"
+                      />
+                    </label>
+
+                    {/* Cell background */}
+                    <label className="flex items-center gap-1 text-xs" title="单元格背景色">
+                      <PaintBucket size={13} className="text-neutral-500" />
+                      <input
+                        type="color"
+                        value={selStyle?.bgColor && selStyle.bgColor !== 'transparent' ? selStyle.bgColor : '#ffffff'}
+                        disabled={disabled}
+                        onChange={e => sel && updateCellStyle(sel.regionId, sel.r, sel.c, { bgColor: e.target.value })}
+                        className="w-7 h-7 rounded cursor-pointer border border-neutral-200 disabled:cursor-not-allowed disabled:opacity-30"
+                      />
+                      <button
+                        onClick={() => sel && updateCellStyle(sel.regionId, sel.r, sel.c, { bgColor: 'transparent' })}
+                        disabled={disabled}
+                        title="清除背景"
+                        className="text-[10px] px-1 py-0.5 rounded text-neutral-500 hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                      >
+                        ✕
+                      </button>
+                    </label>
+
+                    <div className="w-px h-5 bg-neutral-200" />
+
+                    {/* Border color + width (region-level) */}
+                    <label className="flex items-center gap-1 text-xs" title="表格边框颜色">
+                      <Square size={13} className="text-neutral-500" />
+                      <input
+                        type="color"
+                        value={selRegion?.borderColor ?? '#000000'}
+                        disabled={!selRegion}
+                        onChange={e => selRegion && updateRegionFields(selRegion.id, { borderColor: e.target.value })}
+                        className="w-7 h-7 rounded cursor-pointer border border-neutral-200 disabled:cursor-not-allowed disabled:opacity-30"
+                      />
+                    </label>
+                    <label className="flex items-center gap-1 text-xs" title="边框粗细 (0 = 无边框)">
+                      <span className="text-neutral-500">粗</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={5}
+                        step={0.5}
+                        value={selRegion?.borderWidth ?? 1}
+                        disabled={!selRegion}
+                        onChange={e => {
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v) && v >= 0 && v <= 5 && selRegion) {
+                            updateRegionFields(selRegion.id, { borderWidth: v });
+                          }
+                        }}
+                        className="w-12 px-1.5 py-1 border border-neutral-200 rounded text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400 disabled:bg-neutral-50 disabled:text-neutral-400"
+                      />
+                    </label>
+
+                    <div className="flex-1" />
+
+                    {/* Re-detect button */}
+                    <button
+                      onClick={() => { if (!extracting) void fetchAndPopulateTables(); }}
+                      disabled={extracting || !file}
+                      title="重新识别表格"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {extracting ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <RefreshCw size={13} />
+                      )}
+                      重新识别
+                    </button>
+
+                    <span className="text-[11px] text-neutral-400 ml-1">
+                      {selRegion ? (
+                        sel ? `选中 #${currentTables.indexOf(selRegion) + 1} (R${sel.r + 1}/C${sel.c + 1})` : `选中 #${currentTables.indexOf(selRegion) + 1}`
+                      ) : '点击单元格选中后调样式'}
+                    </span>
+                  </div>
+                );
+              })()}
+
+              {/* Table mode loading state */}
+              {mode === 'table' && extracting && (
+                <div className="flex items-center gap-2 p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-indigo-700 text-sm">
+                  <Loader2 size={15} className="animate-spin" />
+                  正在通过 Adobe PDF Extract 识别表格(约 30-60 秒)...
+                </div>
+              )}
+              {mode === 'table' && extractError && !extracting && (
+                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-100 rounded-lg text-red-600 text-sm">
+                  <AlertCircle size={15} />
+                  识别失败:{extractError}
+                </div>
+              )}
+              {mode === 'table' && !extracting && !extractError && currentTables.length === 0 && (
+                <div className="text-xs text-neutral-400 px-3 py-2">
+                  当前页未识别到表格。可点击"重新识别"重试,或翻页查看其他页面。
+                </div>
+              )}
 
               {/* Page view: canvas background + table overlay + text overlay */}
               {currentPage && (
@@ -1395,7 +1685,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                         per table region on the current page. Lives above the
                         drag-select layer so single-clicks on cells don't
                         accidentally start a new selection. */}
-                    {mode === 'table' && !pendingRegion && currentTables.map(t => (
+                    {mode === 'table' && currentTables.map(t => (
                       <div
                         key={`grid-${t.id}`}
                         style={{
@@ -1410,7 +1700,6 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                         {t.rowBands.map((rb, r) =>
                           t.colBands.map((cb, c) => {
                             const key = `${r}_${c}`;
-                            const isDeleted = rb.deleted || cb.deleted;
                             const isEditing =
                               editingCell?.regionId === t.id &&
                               editingCell.r === r &&
@@ -1424,12 +1713,12 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                             const edited = t.cellEdits[key];
                             const value = edited ?? orig;
 
-                            // Hovered row/col gets a light tint; the exact
-                            // hovered cell additionally gets an outline.
-                            const isThisCell =
-                              hoveredCell?.regionId === t.id &&
-                              hoveredCell.r === r &&
-                              hoveredCell.c === c;
+                            // Hovered row/col gets a light tint. Selected cell
+                            // gets a stronger highlight (drives the toolbar).
+                            const isSelected =
+                              selectedCell?.regionId === t.id &&
+                              selectedCell.r === r &&
+                              selectedCell.c === c;
 
                             return (
                               <div
@@ -1443,26 +1732,34 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                                   )
                                 }
                                 onMouseDown={e => e.stopPropagation()}
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  setSelectedCell({ regionId: t.id, r, c });
+                                }}
                                 onDoubleClick={e => {
                                   e.stopPropagation();
-                                  if (!isDeleted) setEditingCell({ regionId: t.id, r, c });
+                                  setSelectedCell({ regionId: t.id, r, c });
+                                  setEditingCell({ regionId: t.id, r, c });
                                 }}
-                                onContextMenu={e => openContextMenu(e, t.id, r, c)}
+                                onContextMenu={e => {
+                                  setSelectedCell({ regionId: t.id, r, c });
+                                  openContextMenu(e, t.id, r, c);
+                                }}
                                 style={{
                                   position: 'absolute',
                                   left: cb.start - t.x,
                                   top: rb.start - t.y,
                                   width: cb.size,
                                   height: rb.size,
-                                  cursor: isDeleted ? 'not-allowed' : 'text',
+                                  cursor: 'text',
                                   background:
                                     isHoveredRow || isHoveredCol
                                       ? 'rgba(99,102,241,0.06)'
                                       : 'transparent',
-                                  outline: isThisCell
-                                    ? '1.5px solid rgba(99,102,241,0.7)'
+                                  outline: isSelected
+                                    ? '2px solid #6366f1'
                                     : 'none',
-                                  outlineOffset: '-1.5px',
+                                  outlineOffset: '-2px',
                                   boxSizing: 'border-box',
                                 }}
                               >
@@ -1508,121 +1805,6 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                       </div>
                     ))}
 
-                    {/* Table-mode drag-select capture layer */}
-                    {mode === 'table' && !pendingRegion && (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          cursor: 'crosshair',
-                          zIndex: 30,
-                        }}
-                        onMouseDown={e => {
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          beginDragSelect(
-                            e.clientX - rect.left,
-                            e.clientY - rect.top,
-                          );
-                        }}
-                        onMouseMove={e => {
-                          if (!dragStartRef.current) return;
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          updateDragSelect(
-                            e.clientX - rect.left,
-                            e.clientY - rect.top,
-                          );
-                        }}
-                        onMouseUp={finishDragSelect}
-                        onMouseLeave={() => {
-                          if (dragStartRef.current) finishDragSelect();
-                        }}
-                      >
-                        {/* In-progress selection rectangle */}
-                        {dragRect && (
-                          <div
-                            style={{
-                              position: 'absolute',
-                              left: dragRect.x,
-                              top: dragRect.y,
-                              width: dragRect.w,
-                              height: dragRect.h,
-                              background: 'rgba(99,102,241,0.18)',
-                              border: '1.5px dashed #6366f1',
-                              pointerEvents: 'none',
-                            }}
-                          />
-                        )}
-                      </div>
-                    )}
-
-                    {/* Pending region: rows/cols input popover */}
-                    {mode === 'table' && pendingRegion && (
-                      <>
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: pendingRegion.x,
-                            top: pendingRegion.y,
-                            width: pendingRegion.w,
-                            height: pendingRegion.h,
-                            background: 'rgba(99,102,241,0.12)',
-                            border: '1.5px solid #6366f1',
-                            pointerEvents: 'none',
-                            zIndex: 25,
-                          }}
-                        />
-                        <div
-                          className="absolute bg-white rounded-lg shadow-xl border border-neutral-200 p-3 flex items-center gap-3"
-                          style={{
-                            left: Math.min(
-                              pendingRegion.x,
-                              currentPage.canvasW - 280,
-                            ),
-                            top: Math.min(
-                              pendingRegion.y + pendingRegion.h + 8,
-                              currentPage.canvasH - 60,
-                            ),
-                            zIndex: 40,
-                          }}
-                        >
-                          <label className="flex items-center gap-1.5 text-xs">
-                            <span className="text-neutral-500 font-medium">行</span>
-                            <input
-                              type="number"
-                              min={1}
-                              max={50}
-                              value={pendingRows}
-                              onChange={e => setPendingRows(Number(e.target.value) || 1)}
-                              className="w-14 px-2 py-1 border border-neutral-200 rounded text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            />
-                          </label>
-                          <label className="flex items-center gap-1.5 text-xs">
-                            <span className="text-neutral-500 font-medium">列</span>
-                            <input
-                              type="number"
-                              min={1}
-                              max={20}
-                              value={pendingCols}
-                              onChange={e => setPendingCols(Number(e.target.value) || 1)}
-                              className="w-14 px-2 py-1 border border-neutral-200 rounded text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            />
-                          </label>
-                          <button
-                            onClick={confirmPendingRegion}
-                            className="px-3 py-1.5 bg-indigo-600 text-white text-xs font-bold rounded hover:bg-indigo-700 transition-colors"
-                          >
-                            创建表格
-                          </button>
-                          <button
-                            onClick={cancelPendingRegion}
-                            className="p-1 text-neutral-400 hover:text-neutral-700 transition-colors"
-                            title="取消"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      </>
-                    )}
                   </div>
                 </div>
               )}
@@ -1634,8 +1816,6 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                   {currentTables.map((t, idx) => {
                     const totalRows = t.rowBands.length;
                     const totalCols = t.colBands.length;
-                    const activeRows = t.rowBands.filter(b => !b.deleted).length;
-                    const activeCols = t.colBands.filter(b => !b.deleted).length;
                     const editCount = Object.keys(t.cellEdits).length;
 
                     return (
@@ -1649,7 +1829,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                             表格 #{idx + 1}
                           </span>
                           <span className="text-xs text-neutral-500">
-                            {activeRows}/{totalRows} 行 · {activeCols}/{totalCols} 列
+                            {totalRows} 行 × {totalCols} 列
                           </span>
                           {editCount > 0 && (
                             <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
@@ -1726,10 +1906,8 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
       {contextMenu && (() => {
         const region = (currentTables.find(t => t.id === contextMenu.regionId)) ?? null;
         if (!region) return null;
-        const rb = region.rowBands[contextMenu.r];
-        const cb = region.colBands[contextMenu.c];
-        const activeRows = region.rowBands.filter(b => !b.deleted).length;
-        const activeCols = region.colBands.filter(b => !b.deleted).length;
+        const canDeleteRow = region.rowBands.length > 1;
+        const canDeleteCol = region.colBands.length > 1;
         const item = (
           label: string,
           onClick: () => void,
@@ -1768,23 +1946,19 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
               regionId: contextMenu.regionId,
               r: contextMenu.r,
               c: contextMenu.c,
-            }), { disabled: rb?.deleted || cb?.deleted })}
+            }))}
             <div style={{ borderTop: '1px solid #f3f4f6', margin: '4px 0' }} />
             {item('上方插入行', () => insertRow(contextMenu.regionId, contextMenu.r, true))}
             {item('下方插入行', () => insertRow(contextMenu.regionId, contextMenu.r, false))}
             {item('左侧插入列', () => insertCol(contextMenu.regionId, contextMenu.c, true))}
             {item('右侧插入列', () => insertCol(contextMenu.regionId, contextMenu.c, false))}
             <div style={{ borderTop: '1px solid #f3f4f6', margin: '4px 0' }} />
-            {item(
-              rb?.deleted ? '恢复该行' : '删除该行',
-              () => toggleRowDeleted(contextMenu.regionId, contextMenu.r),
-              { disabled: !rb?.deleted && activeRows <= 1, danger: !rb?.deleted },
-            )}
-            {item(
-              cb?.deleted ? '恢复该列' : '删除该列',
-              () => toggleColDeleted(contextMenu.regionId, contextMenu.c),
-              { disabled: !cb?.deleted && activeCols <= 1, danger: !cb?.deleted },
-            )}
+            {item('删除该行', () => deleteRow(contextMenu.regionId, contextMenu.r), {
+              disabled: !canDeleteRow, danger: canDeleteRow,
+            })}
+            {item('删除该列', () => deleteCol(contextMenu.regionId, contextMenu.c), {
+              disabled: !canDeleteCol, danger: canDeleteCol,
+            })}
             <div style={{ borderTop: '1px solid #f3f4f6', margin: '4px 0' }} />
             {item('移除整张表格', () => removeRegion(contextMenu.regionId), { danger: true })}
           </div>
