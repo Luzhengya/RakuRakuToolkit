@@ -598,7 +598,7 @@ function buildResultReportHtml(
   return html;
 }
 
-// ---- HTML 保存履歴 ----
+// ---- HTML 保存履歴 (Notion 后端持久化) ----
 
 type HtmlHistory = {
   id: string;
@@ -606,46 +606,55 @@ type HtmlHistory = {
   areaId: string;
   monthKey: string;
   title: string;
-  htmlContent: string;
+  htmlContent?: string; // 列表接口不返回；预览/打印前按需懒加载
   savedAt: string;
 };
 
-const HISTORY_STORAGE_KEY = 'testcenter-html-history';
-const MAX_HISTORY_ITEMS = 30;
+// 旧版本本地存储 key，仅用于一次性迁移到后端
+const LEGACY_HISTORY_STORAGE_KEY = 'testcenter-html-history';
 
-function loadHistory(): HtmlHistory[] {
+function loadLegacyLocalHistory(): HtmlHistory[] {
   try {
-    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    const raw = localStorage.getItem(LEGACY_HISTORY_STORAGE_KEY);
     return raw ? (JSON.parse(raw) as HtmlHistory[]) : [];
   } catch {
     return [];
   }
 }
 
-function addToHistory(entry: Omit<HtmlHistory, 'id' | 'savedAt'>): HtmlHistory[] {
-  const history = loadHistory();
-  const newEntry: HtmlHistory = {
-    ...entry,
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    savedAt: new Date().toISOString(),
-  };
-  const updated = [newEntry, ...history].slice(0, MAX_HISTORY_ITEMS);
-  try {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(updated));
-  } catch {
-    const trimmed = [newEntry, ...history].slice(0, 10);
-    try { localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(trimmed)); } catch { /* ignore */ }
-    return trimmed;
-  }
-  return updated;
+function clearLegacyLocalHistory(): void {
+  try { localStorage.removeItem(LEGACY_HISTORY_STORAGE_KEY); } catch { /* ignore */ }
 }
 
-function deleteFromHistory(id: string): HtmlHistory[] {
-  const history = loadHistory().filter((e) => e.id !== id);
-  try {
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
-  } catch { /* ignore */ }
-  return history;
+async function apiFetchHistory(): Promise<HtmlHistory[]> {
+  const res = await fetch('/api/test-center/history');
+  if (!res.ok) throw new Error(`Failed to load history (${res.status})`);
+  const data = await res.json();
+  return (data.items ?? []) as HtmlHistory[];
+}
+
+async function apiFetchHistoryEntry(id: string): Promise<HtmlHistory> {
+  const res = await fetch(`/api/test-center/history/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`Failed to load entry (${res.status})`);
+  return (await res.json()) as HtmlHistory;
+}
+
+async function apiCreateHistory(entry: HtmlHistory): Promise<void> {
+  const res = await fetch('/api/test-center/history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry),
+  });
+  if (!res.ok) throw new Error(`Failed to save history (${res.status})`);
+}
+
+async function apiDeleteHistory(id: string): Promise<void> {
+  const res = await fetch(`/api/test-center/history/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`Failed to delete history (${res.status})`);
+}
+
+function newEntryId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 function KpiInline({ label, value, suffix }: { label: string; value: number; suffix?: string }) {
@@ -818,10 +827,15 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [savingResultMap, setSavingResultMap] = useState<Record<string, boolean>>({});
   const [resultSaveNoticeMap, setResultSaveNoticeMap] = useState<Record<string, SaveNotice>>({});
   const [editingResultItemId, setEditingResultItemId] = useState<string | null>(null);
-  const [htmlHistory, setHtmlHistory] = useState<HtmlHistory[]>(() => loadHistory());
+  const [htmlHistory, setHtmlHistory] = useState<HtmlHistory[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyShowAll, setHistoryShowAll] = useState(false);
   const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [migrating, setMigrating] = useState(false);
+  // 仅在挂载时检查一次本地是否还有旧履历（迁移按钮的可见条件）
+  const [hasLegacyHistory, setHasLegacyHistory] = useState<boolean>(() => loadLegacyLocalHistory().length > 0);
   const initialOverview = useMemo(() => loadOverviewCache(), []);
   const [overviewItems, setOverviewItems] = useState<OverviewItem[]>(initialOverview?.items ?? []);
   const [overviewUpdatedAt, setOverviewUpdatedAt] = useState<number | null>(initialOverview?.updatedAt ?? null);
@@ -849,6 +863,21 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     () => htmlHistory.find((e) => e.type === 'plan' && e.areaId === selectedAreaId) ?? null,
     [htmlHistory, selectedAreaId]
   );
+
+  // 履歴の HTML 本体を必要なタイミングで懶加载
+  useEffect(() => {
+    if (latestPlanEntry && latestPlanEntry.htmlContent === undefined) {
+      ensureHistoryBody(latestPlanEntry.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [latestPlanEntry?.id]);
+
+  useEffect(() => {
+    if (historyPreviewId) {
+      ensureHistoryBody(historyPreviewId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyPreviewId]);
 
   // 履歴モーダル用フィルタ済みリスト
   const filteredHistory = useMemo(
@@ -990,6 +1019,69 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     fetchOverview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 履歴：首次挂载时从后端拉取元数据列表
+  const loadHistoryList = async () => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const items = await apiFetchHistory();
+      setHtmlHistory(items);
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadHistoryList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 履歴：懒加载某条记录的 HTML body（用于预览/打印/参考面板）
+  const ensureHistoryBody = async (entryId: string) => {
+    const target = htmlHistory.find((e) => e.id === entryId);
+    if (!target || target.htmlContent !== undefined) return;
+    try {
+      const full = await apiFetchHistoryEntry(entryId);
+      setHtmlHistory((prev) => prev.map((e) => (e.id === entryId ? { ...e, htmlContent: full.htmlContent ?? '' } : e)));
+    } catch (err) {
+      console.error('Failed to load history body:', err);
+    }
+  };
+
+  // 履歴：把旧版本 localStorage 履历一次性上传到云端
+  const handleMigrateLocalHistory = async () => {
+    const legacy = loadLegacyLocalHistory();
+    if (legacy.length === 0) {
+      alert(t('migrateNothingToDo'));
+      return;
+    }
+    setMigrating(true);
+    try {
+      for (const entry of legacy) {
+        await apiCreateHistory({
+          id: entry.id || newEntryId(),
+          type: entry.type,
+          areaId: entry.areaId,
+          monthKey: entry.monthKey,
+          title: entry.title,
+          htmlContent: entry.htmlContent ?? '',
+          savedAt: entry.savedAt || new Date().toISOString(),
+        });
+      }
+      clearLegacyLocalHistory();
+      setHasLegacyHistory(false);
+      await loadHistoryList();
+      alert(t('migrateSuccess'));
+    } catch (err) {
+      console.error('Migration failed:', err);
+      alert(t('migrateFailed'));
+    } finally {
+      setMigrating(false);
+    }
+  };
 
   const availableYears = useMemo(() => {
     const years = new Set<number>();
@@ -1264,14 +1356,20 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const htmlToPrint = liveRoot
       ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
       : planHtml;
-    const updated = addToHistory({
+    const newEntry: HtmlHistory = {
+      id: newEntryId(),
       type: 'plan',
       areaId: selectedAreaId,
       monthKey: currentMonthKey,
       title: getPlanPdfFilename(currentMonthKey, selectedAreaId),
       htmlContent: htmlToPrint,
+      savedAt: new Date().toISOString(),
+    };
+    setHtmlHistory((prev) => [newEntry, ...prev]);
+    apiCreateHistory(newEntry).catch((err) => {
+      console.error('Save plan history failed:', err);
+      setPlanError(err instanceof Error ? err.message : 'Save failed');
     });
-    setHtmlHistory(updated);
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
       setPlanError(t('popupBlocked'));
@@ -1321,14 +1419,20 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const htmlToPrint = liveRoot
       ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
       : reportHtml;
-    const updated = addToHistory({
+    const newEntry: HtmlHistory = {
+      id: newEntryId(),
       type: 'report',
       areaId: selectedAreaId,
       monthKey: currentMonthKey,
       title: getReportPdfFilename(currentMonthKey, selectedAreaId),
       htmlContent: htmlToPrint,
+      savedAt: new Date().toISOString(),
+    };
+    setHtmlHistory((prev) => [newEntry, ...prev]);
+    apiCreateHistory(newEntry).catch((err) => {
+      console.error('Save report history failed:', err);
+      setReportError(err instanceof Error ? err.message : 'Save failed');
     });
-    setHtmlHistory(updated);
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
       setReportError(t('popupBlocked'));
@@ -1913,7 +2017,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 {latestPlanEntry ? (
                   <iframe
                     title="plan-reference"
-                    srcDoc={latestPlanEntry.htmlContent}
+                    srcDoc={latestPlanEntry.htmlContent ?? ''}
                     className="w-full h-full bg-white border-0"
                   />
                 ) : (
@@ -1960,6 +2064,16 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               )}
             </div>
             <div className="flex items-center gap-2">
+              {hasLegacyHistory && (
+                <button
+                  type="button"
+                  onClick={handleMigrateLocalHistory}
+                  disabled={migrating}
+                  className="px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  {migrating ? t('migrating') : t('migrateLocal')}
+                </button>
+              )}
               {selectedAreaId && (
                 <button
                   type="button"
@@ -1983,7 +2097,15 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4">
-            {filteredHistory.length === 0 ? (
+            {historyLoading && htmlHistory.length === 0 ? (
+              <div className="text-center py-12 text-neutral-400 text-sm">
+                {t('historyLoading')}
+              </div>
+            ) : historyError ? (
+              <div className="text-center py-12 text-red-500 text-sm">
+                {t('historyLoadError')}: {historyError}
+              </div>
+            ) : filteredHistory.length === 0 ? (
               <div className="text-center py-12 text-neutral-400 text-sm">
                 {htmlHistory.length === 0
                   ? t('historyEmpty')
@@ -2033,7 +2155,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setHtmlHistory(deleteFromHistory(entry.id))}
+                          onClick={() => {
+                            setHtmlHistory((prev) => prev.filter((e) => e.id !== entry.id));
+                            apiDeleteHistory(entry.id).catch((err) => console.error('Delete history failed:', err));
+                          }}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-100 text-xs text-red-500 hover:bg-red-50 transition-colors"
                         >
                           <Trash2 size={13} />
@@ -2072,7 +2197,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     const liveRoot = historyPreviewIframeRef.current?.contentDocument?.documentElement;
                     const htmlToPrint = liveRoot
                       ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
-                      : entry.htmlContent;
+                      : (entry.htmlContent ?? '');
                     const win = window.open('', '_blank');
                     if (win) {
                       win.document.open();
@@ -2100,7 +2225,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               <iframe
                 ref={historyPreviewIframeRef}
                 title="history-preview"
-                srcDoc={entry.htmlContent}
+                srcDoc={entry.htmlContent ?? ''}
                 className="w-full h-full bg-white border-0"
               />
             </div>

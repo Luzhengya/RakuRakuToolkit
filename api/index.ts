@@ -330,6 +330,179 @@ async function retrievePagesByIds(pageIds: string[]): Promise<ProgressItem[]> {
   return pages.filter((page): page is ProgressItem => !!page);
 }
 
+// ── History storage (Notion-backed) ───────────────────────────────────
+// Stores TestCenter HTML history (plan / report PDFs). A child database
+// named HISTORY_DB_NAME is created under NOTION_HISTORY_PARENT_PAGE_ID on
+// first use. HTML body is split into <= 1900-char code blocks because
+// each Notion rich_text segment is capped at 2000 chars.
+
+const HISTORY_DB_NAME = "TestCenter History";
+const HISTORY_CHUNK_SIZE = 1900;
+const HISTORY_BLOCKS_PER_APPEND = 90; // Notion accepts up to 100 children per call
+let cachedHistoryDatabaseId: string | null = null;
+
+type HistoryEntry = {
+  id: string;
+  type: "plan" | "report";
+  areaId: string;
+  monthKey: string;
+  title: string;
+  savedAt: string; // ISO
+};
+
+type HistoryEntryWithBody = HistoryEntry & { htmlContent: string };
+
+async function findChildDatabase(parentPageId: string, name: string): Promise<string | null> {
+  if (!notion) return null;
+  let cursor: string | undefined = undefined;
+  do {
+    const res: any = await notion.blocks.children.list({
+      block_id: parentPageId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    for (const block of res.results as any[]) {
+      if (block.type === "child_database" && block.child_database?.title === name) {
+        return block.id as string;
+      }
+    }
+    cursor = res.has_more ? res.next_cursor : undefined;
+  } while (cursor);
+  return null;
+}
+
+async function ensureHistoryDatabase(): Promise<string> {
+  if (!notion) throw new Error("Notion client not configured");
+  if (cachedHistoryDatabaseId) return cachedHistoryDatabaseId;
+
+  const parentPageId = process.env.NOTION_HISTORY_PARENT_PAGE_ID;
+  if (!parentPageId) {
+    throw new Error("NOTION_HISTORY_PARENT_PAGE_ID is not set");
+  }
+
+  const existing = await findChildDatabase(parentPageId, HISTORY_DB_NAME);
+  if (existing) {
+    cachedHistoryDatabaseId = existing;
+    return existing;
+  }
+
+  const created: any = await notion.databases.create({
+    parent: { type: "page_id", page_id: parentPageId },
+    title: [{ type: "text", text: { content: HISTORY_DB_NAME } }],
+    initial_data_source: {
+      properties: {
+        title: { title: {} },
+        type: {
+          select: {
+            options: [
+              { name: "plan", color: "gray" },
+              { name: "report", color: "blue" },
+            ],
+          },
+        },
+        areaId: { select: { options: [] } },
+        monthKey: { rich_text: {} },
+        entryId: { rich_text: {} },
+        savedAt: { date: {} },
+      },
+    } as any,
+  });
+
+  cachedHistoryDatabaseId = created.id as string;
+  return cachedHistoryDatabaseId!;
+}
+
+async function getHistoryDataSourceId(): Promise<string> {
+  if (!notion) throw new Error("Notion client not configured");
+  const dbId = await ensureHistoryDatabase();
+  const database: any = await notion.databases.retrieve({ database_id: dbId });
+  const dsId = database?.data_sources?.[0]?.id as string | undefined;
+  if (!dsId) throw new Error("History database has no data source");
+  return dsId;
+}
+
+function chunkHtml(html: string, size = HISTORY_CHUNK_SIZE): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < html.length; i += size) {
+    chunks.push(html.slice(i, i + size));
+  }
+  return chunks.length > 0 ? chunks : [""];
+}
+
+function parseHistoryProps(page: any): HistoryEntry {
+  const props = page?.properties ?? {};
+  const titleArr = props.title?.title ?? [];
+  const title = titleArr.map((t: any) => t.plain_text ?? "").join("");
+  const typeVal = props.type?.select?.name === "report" ? "report" : "plan";
+  const areaId = props.areaId?.select?.name ?? "";
+  const monthArr = props.monthKey?.rich_text ?? [];
+  const monthKey = monthArr.map((t: any) => t.plain_text ?? "").join("");
+  const entryArr = props.entryId?.rich_text ?? [];
+  const entryId = entryArr.map((t: any) => t.plain_text ?? "").join("");
+  const savedAt = props.savedAt?.date?.start ?? new Date().toISOString();
+  return {
+    id: entryId || page.id,
+    type: typeVal,
+    areaId,
+    monthKey,
+    title,
+    savedAt,
+  };
+}
+
+async function readHistoryBody(pageId: string): Promise<string> {
+  if (!notion) return "";
+  let cursor: string | undefined = undefined;
+  const parts: string[] = [];
+  do {
+    const res: any = await notion.blocks.children.list({
+      block_id: pageId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    for (const block of res.results as any[]) {
+      if (block.type === "code") {
+        const rt = block.code?.rich_text ?? [];
+        for (const t of rt) parts.push(t.plain_text ?? "");
+      }
+    }
+    cursor = res.has_more ? res.next_cursor : undefined;
+  } while (cursor);
+  return parts.join("");
+}
+
+async function appendHtmlBlocks(pageId: string, html: string): Promise<void> {
+  if (!notion) return;
+  const chunks = chunkHtml(html);
+  for (let i = 0; i < chunks.length; i += HISTORY_BLOCKS_PER_APPEND) {
+    const batch = chunks.slice(i, i + HISTORY_BLOCKS_PER_APPEND).map((chunk) => ({
+      object: "block" as const,
+      type: "code" as const,
+      code: {
+        language: "html" as const,
+        rich_text: [{ type: "text" as const, text: { content: chunk } }],
+      },
+    }));
+    await notion.blocks.children.append({
+      block_id: pageId,
+      children: batch as any,
+    });
+  }
+}
+
+// Look up a Notion page in the history DB by our internal entry id (rich_text "entryId")
+async function findHistoryPageByEntryId(entryId: string): Promise<string | null> {
+  if (!notion) return null;
+  const dsId = await getHistoryDataSourceId();
+  const res: any = await notion.dataSources.query({
+    data_source_id: dsId,
+    filter: { property: "entryId", rich_text: { equals: entryId } } as any,
+    page_size: 1,
+  });
+  const page = res.results?.[0];
+  return page ? (page.id as string) : null;
+}
+
 // ── Routes ────────────────────────────────────────────────────────────
 
 app.get("/api/pdf-status", (_req, res) => {
@@ -505,6 +678,136 @@ app.post("/api/test-center/results", async (req, res) => {
   const ok = failed.length === 0;
   const payload = { ok, updated: results.length - failed.length, failed: failed.length, results };
   return res.status(ok ? 200 : 207).json(payload);
+});
+
+// ── History endpoints (Notion-backed) ────────────────────────────────
+
+function historyConfigGuard(res: express.Response): boolean {
+  if (!notion) {
+    res.status(503).json({ error: "Notion API credentials not configured" });
+    return false;
+  }
+  if (!process.env.NOTION_HISTORY_PARENT_PAGE_ID) {
+    res.status(503).json({
+      error: "NOTION_HISTORY_PARENT_PAGE_ID is not set",
+      detail: "Create a Notion page, share it with the integration, and set its ID in .env",
+    });
+    return false;
+  }
+  return true;
+}
+
+// List all history entries (metadata only — no HTML body)
+app.get("/api/test-center/history", async (_req, res) => {
+  if (!historyConfigGuard(res)) return;
+  try {
+    const dsId = await getHistoryDataSourceId();
+    const items: HistoryEntry[] = [];
+    let cursor: string | undefined = undefined;
+    do {
+      const r: any = await notion!.dataSources.query({
+        data_source_id: dsId,
+        sorts: [{ property: "savedAt", direction: "descending" }],
+        start_cursor: cursor,
+        page_size: 100,
+      });
+      for (const page of r.results as any[]) items.push(parseHistoryProps(page));
+      cursor = r.has_more ? r.next_cursor : undefined;
+    } while (cursor);
+    return res.json({ items });
+  } catch (error) {
+    console.error("History list error:", error);
+    return res.status(500).json({
+      error: "Failed to load history",
+      detail: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// Fetch a single entry by our internal entryId (includes HTML body)
+app.get("/api/test-center/history/:id", async (req, res) => {
+  if (!historyConfigGuard(res)) return;
+  try {
+    const entryId = req.params.id;
+    const pageId = await findHistoryPageByEntryId(entryId);
+    if (!pageId) return res.status(404).json({ error: "Entry not found" });
+
+    const page: any = await notion!.pages.retrieve({ page_id: pageId });
+    const meta = parseHistoryProps(page);
+    const htmlContent = await readHistoryBody(pageId);
+    const payload: HistoryEntryWithBody = { ...meta, htmlContent };
+    return res.json(payload);
+  } catch (error) {
+    console.error("History fetch error:", error);
+    return res.status(500).json({
+      error: "Failed to load history entry",
+      detail: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// Create a new entry. Body: { id, type, areaId, monthKey, title, savedAt, htmlContent }
+app.post("/api/test-center/history", async (req, res) => {
+  if (!historyConfigGuard(res)) return;
+  try {
+    const body = req.body ?? {};
+    const entryId = String(body.id ?? "").trim();
+    const type = body.type === "report" ? "report" : "plan";
+    const areaId = String(body.areaId ?? "").trim();
+    const monthKey = String(body.monthKey ?? "").trim();
+    const title = String(body.title ?? "").trim();
+    const savedAt = body.savedAt ? new Date(body.savedAt).toISOString() : new Date().toISOString();
+    const htmlContent = String(body.htmlContent ?? "");
+
+    if (!entryId || !areaId || !title) {
+      return res.status(400).json({ error: "id, areaId, and title are required" });
+    }
+
+    const dsId = await getHistoryDataSourceId();
+
+    // Create the page (metadata only first; HTML appended as children below)
+    const created: any = await notion!.pages.create({
+      parent: { type: "data_source_id", data_source_id: dsId } as any,
+      properties: {
+        title: { title: [{ type: "text", text: { content: title } }] },
+        type: { select: { name: type } },
+        areaId: { select: { name: areaId } },
+        monthKey: { rich_text: [{ type: "text", text: { content: monthKey } }] },
+        entryId: { rich_text: [{ type: "text", text: { content: entryId } }] },
+        savedAt: { date: { start: savedAt } },
+      } as any,
+    });
+
+    if (htmlContent) {
+      await appendHtmlBlocks(created.id, htmlContent);
+    }
+
+    return res.json({ ok: true, id: entryId });
+  } catch (error) {
+    console.error("History create error:", error);
+    return res.status(500).json({
+      error: "Failed to save history entry",
+      detail: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// Delete (archive) an entry by entryId
+app.delete("/api/test-center/history/:id", async (req, res) => {
+  if (!historyConfigGuard(res)) return;
+  try {
+    const entryId = req.params.id;
+    const pageId = await findHistoryPageByEntryId(entryId);
+    if (!pageId) return res.status(404).json({ error: "Entry not found" });
+    await notion!.pages.update({ page_id: pageId, archived: true } as any);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("History delete error:", error);
+    return res.status(500).json({
+      error: "Failed to delete history entry",
+      detail: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
 });
 
 // Upload: parse file metadata (sheet names for Excel) — file bytes are NOT stored server-side.
