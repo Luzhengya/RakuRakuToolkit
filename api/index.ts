@@ -410,6 +410,53 @@ app.get("/api/test-center", async (req, res) => {
   }
 });
 
+app.get("/api/test-center/overview", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_PROGRESS_DATABASE_ID",
+    });
+  }
+
+  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros"];
+
+  try {
+    const allItems = await queryAllProgressItems(databaseId);
+
+    const childAreaMap = new Map<string, TestCenterArea>();
+    for (const area of allAreas) {
+      const parents = allItems.filter((item) => isItemInArea(area, item.system) && item.childProjectIds.length > 0);
+      for (const parent of parents) {
+        for (const childId of parent.childProjectIds) {
+          if (!childAreaMap.has(childId)) childAreaMap.set(childId, area);
+        }
+      }
+    }
+
+    const childIds = Array.from(childAreaMap.keys());
+    const childItems = await retrievePagesByIds(childIds);
+
+    const overviewItems = childItems
+      .filter((item) => item.childProjectIds.length === 0)
+      .map((item) => ({
+        id: item.id,
+        areaId: childAreaMap.get(item.id) ?? null,
+        month: item.month,
+        status: item.status,
+        projectName: item.projectName,
+        bugCount: item.bugCount,
+        testTotalCount: item.testTotalCount,
+      }))
+      .filter((item) => !!item.areaId);
+
+    return res.json({ items: overviewItems, total: overviewItems.length });
+  } catch (error) {
+    console.error("Test center overview error:", error);
+    return res.status(500).json({ error: "Failed to query Notion progress overview" });
+  }
+});
+
 app.post("/api/test-center/results", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });

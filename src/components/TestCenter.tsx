@@ -1,20 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   Building2,
+  ChevronDown,
   Eye,
   Globe2,
   History,
   Landmark,
   Loader2,
   FileText,
+  RefreshCw,
   School,
   Smartphone,
   BookOpen,
   Trash2,
   Users,
   Briefcase,
+  Calendar,
+  Languages,
 } from 'lucide-react';
+import { type Lang, createT } from '../i18n/testcenter';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  LineChart,
+  Line,
+} from 'recharts';
 
 type TestCenterProps = {
   onBack: () => void;
@@ -48,6 +66,81 @@ type ApiResponse = {
   total: number;
   items: ProgressItem[];
 };
+
+type OverviewItem = {
+  id: string;
+  areaId: AreaId;
+  month: string;
+  status: string;
+  projectName: string;
+  bugCount: string;
+  testTotalCount: string;
+};
+
+const OVERVIEW_CACHE_KEY = 'testcenter:overview:v1';
+
+type OverviewCache = {
+  items: OverviewItem[];
+  updatedAt: number;
+};
+
+function loadOverviewCache(): OverviewCache | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(OVERVIEW_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items) || typeof parsed.updatedAt !== 'number') return null;
+    return parsed as OverviewCache;
+  } catch {
+    return null;
+  }
+}
+
+function saveOverviewCache(cache: OverviewCache) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(OVERVIEW_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // localStorage 不可用时静默失败，保留内存状态
+  }
+}
+
+const AREA_CACHE_KEY_PREFIX = 'testcenter:area:';
+const AREA_CACHE_KEY_SUFFIX = ':v1';
+
+type AreaCache = {
+  items: ProgressItem[];
+  updatedAt: number;
+};
+
+function loadAreaCache(areaId: AreaId): AreaCache | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${AREA_CACHE_KEY_PREFIX}${areaId}${AREA_CACHE_KEY_SUFFIX}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.items) || typeof parsed.updatedAt !== 'number') return null;
+    return parsed as AreaCache;
+  } catch {
+    return null;
+  }
+}
+
+function saveAreaCache(areaId: AreaId, cache: AreaCache) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(`${AREA_CACHE_KEY_PREFIX}${areaId}${AREA_CACHE_KEY_SUFFIX}`, JSON.stringify(cache));
+  } catch {
+    // 配额满/隐私模式静默失败
+  }
+}
+
+function formatUpdatedAt(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 type ResultDraft = {
   testTotalCount: string;
@@ -555,65 +648,148 @@ function deleteFromHistory(id: string): HtmlHistory[] {
   return history;
 }
 
+function KpiInline({ label, value, suffix }: { label: string; value: number; suffix?: string }) {
+  return (
+    <div className="flex flex-col items-end leading-tight">
+      <span className="text-[11px] text-neutral-500">{label}</span>
+      <span className="text-base font-bold text-neutral-900">
+        {value.toLocaleString()}{suffix ? <span className="text-xs font-normal text-neutral-500 ml-0.5">{suffix}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+function DashboardCard({ title, iconColor, badge, children }: { title: string; iconColor: string; badge?: string; children: ReactNode }) {
+  return (
+    <section className="bg-white border border-neutral-200 rounded-xl p-4 shadow-sm">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-sm ${iconColor}`} />
+          <h3 className="text-sm font-semibold text-neutral-800">{title}</h3>
+        </div>
+        {badge && <span className="text-[11px] text-neutral-400 font-medium">{badge}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const STATUS_PALETTE: Record<string, string> = {
+  '完了': '#10b981',
+  '進行中': '#3b82f6',
+  'ブロック': '#ef4444',
+  '未着手': '#cbd5e1',
+};
+
+function getStatusColor(status: string, fallbackIdx: number): string {
+  if (STATUS_PALETTE[status]) return STATUS_PALETTE[status];
+  const fallback = ['#a855f7', '#f59e0b', '#14b8a6', '#f43f5e', '#64748b'];
+  return fallback[fallbackIdx % fallback.length];
+}
+
+function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string; count: number }[]; noDataLabel: string; caseLabel: string }) {
+  const total = data.reduce((sum, row) => sum + row.count, 0);
+  if (total === 0) {
+    return <p className="text-xs text-neutral-400 py-10 text-center">{noDataLabel}</p>;
+  }
+  return (
+    <div className="flex items-center gap-3">
+      <div className="relative w-28 h-28 flex-shrink-0">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="count"
+              nameKey="status"
+              innerRadius={36}
+              outerRadius={52}
+              paddingAngle={2}
+              startAngle={90}
+              endAngle={-270}
+            >
+              {data.map((row, idx) => (
+                <Cell key={row.status} fill={getStatusColor(row.status, idx)} />
+              ))}
+            </Pie>
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <span className="text-lg font-bold text-neutral-900 leading-none">{total}</span>
+          <span className="text-[10px] text-neutral-400 mt-0.5">{caseLabel}</span>
+        </div>
+      </div>
+      <div className="flex-1 space-y-1.5 text-xs">
+        {data.map((row, idx) => (
+          <div key={row.status} className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: getStatusColor(row.status, idx) }} />
+            <span className="text-neutral-600 flex-1 truncate">{row.status}</span>
+            <span className="font-semibold text-neutral-800">{row.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const AREAS = [
   {
     id: 'jmotto' as AreaId,
-    title: 'jmottoエリア',
-    description: '用于 jmotto 相关测试项的统一管理。',
+    title: { zh: 'jmotto区域', ja: 'jmottoエリア' },
+    description: { zh: '用于 jmotto 相关测试项的统一管理。', ja: 'jmotto関連テスト項目の統一管理。' },
     icon: <School className="text-blue-600" size={22} />
   },
   {
     id: 'univ' as AreaId,
-    title: 'UNIVエリア',
-    description: '用于 UNIV 相关测试项的统一管理。',
+    title: { zh: 'UNIV区域', ja: 'UNIVエリア' },
+    description: { zh: '用于 UNIV 相关测试项的统一管理。', ja: 'UNIV関連テスト項目の統一管理。' },
     icon: <Landmark className="text-violet-600" size={22} />
   },
   {
     id: 'credit' as AreaId,
-    title: '企業信用情報エリア',
-    description: '用于企業信用情報测试任务的统一管理。',
+    title: { zh: '企業信用情報区域', ja: '企業信用情報エリア' },
+    description: { zh: '用于企業信用情報测试任务的统一管理。', ja: '企業信用情報関連テスト項目の統一管理。' },
     icon: <Building2 className="text-amber-600" size={22} />
   },
   {
     id: 'overseas' as AreaId,
-    title: '海外調書エリア',
-    description: '用于海外調書测试任务的统一管理。',
+    title: { zh: '海外調書区域', ja: '海外調書エリア' },
+    description: { zh: '用于海外調書测试任务的统一管理。', ja: '海外調書関連テスト項目の統一管理。' },
     icon: <Globe2 className="text-emerald-600" size={22} />
   },
   {
     id: 'jmotto-app' as AreaId,
-    title: 'jmottoアプリエリア',
-    description: 'jmottoアプリ関連のテスト項目を統一管理する。',
+    title: { zh: 'jmottoアプリ区域', ja: 'jmottoアプリエリア' },
+    description: { zh: 'jmottoアプリ相关测试项的统一管理。', ja: 'jmottoアプリ関連のテスト項目を統一管理する。' },
     icon: <Smartphone className="text-blue-500" size={22} />
   },
   {
     id: 'univ-app' as AreaId,
-    title: 'Univアプリエリア',
-    description: 'Univアプリ関連のテスト項目を統一管理する。',
+    title: { zh: 'Univアプリ区域', ja: 'Univアプリエリア' },
+    description: { zh: 'Univアプリ相关测试项的统一管理。', ja: 'Univアプリ関連のテスト項目を統一管理する。' },
     icon: <Smartphone className="text-violet-500" size={22} />
   },
   {
     id: 'univ-contents' as AreaId,
-    title: 'UnivContentsエリア',
-    description: 'UnivContents関連のテスト項目を統一管理する。',
+    title: { zh: 'UnivContents区域', ja: 'UnivContentsエリア' },
+    description: { zh: 'UnivContents相关测试项的统一管理。', ja: 'UnivContents関連のテスト項目を統一管理する。' },
     icon: <BookOpen className="text-teal-600" size={22} />
   },
   {
     id: 'nayose' as AreaId,
-    title: '名寄せアプリエリア',
-    description: '名寄せアプリ関連のテスト項目を統一管理する。',
+    title: { zh: '名寄せアプリ区域', ja: '名寄せアプリエリア' },
+    description: { zh: '名寄せアプリ相关测试项的统一管理。', ja: '名寄せアプリ関連のテスト項目を統一管理する。' },
     icon: <Users className="text-orange-500" size={22} />
   },
   {
     id: 'gyoshu' as AreaId,
-    title: '業種別エリア',
-    description: '業種別審査ノート関連のテスト項目を統一管理する。',
+    title: { zh: '業種別区域', ja: '業種別エリア' },
+    description: { zh: '業種別審査ノート相关测试项的统一管理。', ja: '業種別審査ノート関連のテスト項目を統一管理する。' },
     icon: <Briefcase className="text-rose-500" size={22} />
   },
   {
     id: 'ros' as AreaId,
-    title: '与信ROSエリア',
-    description: '与信ROS関連のテスト項目を統一管理する。',
+    title: { zh: '与信ROS区域', ja: '与信ROSエリア' },
+    description: { zh: '与信ROS相关测试项的统一管理。', ja: '与信ROS関連のテスト項目を統一管理する。' },
     icon: <FileText className="text-cyan-600" size={22} />
   },
 ];
@@ -646,6 +822,25 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyShowAll, setHistoryShowAll] = useState(false);
   const [historyPreviewId, setHistoryPreviewId] = useState<string | null>(null);
+  const initialOverview = useMemo(() => loadOverviewCache(), []);
+  const [overviewItems, setOverviewItems] = useState<OverviewItem[]>(initialOverview?.items ?? []);
+  const [overviewUpdatedAt, setOverviewUpdatedAt] = useState<number | null>(initialOverview?.updatedAt ?? null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const initialAreaUpdatedAtMap = useMemo<Record<string, number>>(() => {
+    const map: Record<string, number> = {};
+    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros'];
+    for (const id of allAreaIds) {
+      const cache = loadAreaCache(id);
+      if (cache) map[id] = cache.updatedAt;
+    }
+    return map;
+  }, []);
+  const [areaUpdatedAtMap, setAreaUpdatedAtMap] = useState<Record<string, number>>(initialAreaUpdatedAtMap);
+  const [filterYear, setFilterYear] = useState<number>(() => new Date().getFullYear());
+  const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
+  const [lang, setLang] = useState<Lang>('zh');
+  const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
 
@@ -669,9 +864,31 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   );
   const isAreaSelected = !!selectedAreaId;
 
+  const fetchAreaFromNotion = async (areaId: AreaId) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/test-center?area=${areaId}`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || t('fetchFailed'));
+      }
+      const data = (await response.json()) as ApiResponse;
+      const fetchedItems = data.items ?? [];
+      const updatedAt = Date.now();
+      setItems(fetchedItems);
+      saveAreaCache(areaId, { items: fetchedItems, updatedAt });
+      setAreaUpdatedAtMap((prev) => ({ ...prev, [areaId]: updatedAt }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('fetchFailed');
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const loadAreaData = async (areaId: AreaId) => {
     setSelectedAreaId(areaId);
-    setLoading(true);
     setError(null);
     setItems([]);
     setActiveMonthTab('');
@@ -683,20 +900,19 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setResultSaveNoticeMap({});
     setEditingResultItemId(null);
 
-    try {
-      const response = await fetch(`/api/test-center?area=${areaId}`);
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || '获取测试中心数据失败');
-      }
-      const data = (await response.json()) as ApiResponse;
-      setItems(data.items ?? []);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '获取测试中心数据失败';
-      setError(message);
-    } finally {
-      setLoading(false);
+    const cache = loadAreaCache(areaId);
+    if (cache) {
+      setItems(cache.items);
+      // 缓存里的 updatedAt 已经在 initialAreaUpdatedAtMap 里，无需再同步
+      return;
     }
+
+    await fetchAreaFromNotion(areaId);
+  };
+
+  const reloadAreaData = async () => {
+    if (!selectedAreaId) return;
+    await fetchAreaFromNotion(selectedAreaId);
   };
 
   const renderField = (label: string, value: string) => (
@@ -745,6 +961,124 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       return next;
     });
   }, [currentItems]);
+
+  const fetchOverview = async () => {
+    setOverviewLoading(true);
+    setOverviewError(null);
+    try {
+      const response = await fetch('/api/test-center/overview');
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body?.error || `${t('requestFailed')} (${response.status})`);
+      }
+      const data: { items: OverviewItem[] } = await response.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      const updatedAt = Date.now();
+      setOverviewItems(items);
+      setOverviewUpdatedAt(updatedAt);
+      saveOverviewCache({ items, updatedAt });
+    } catch (err) {
+      setOverviewError((err as Error)?.message ?? t('overviewFetchFailed'));
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // 首次进入：若 localStorage 已有缓存，直接用；否则才拉
+    if (overviewUpdatedAt !== null) return;
+    fetchOverview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const availableYears = useMemo(() => {
+    const years = new Set<number>();
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (key) years.add(Number(key.slice(0, 4)));
+    }
+    years.add(new Date().getFullYear());
+    return Array.from(years).sort((a, b) => b - a);
+  }, [overviewItems]);
+
+  const filteredOverview = useMemo(() => {
+    return overviewItems.filter((item) => {
+      const key = toMonthKey(item.month);
+      if (!key) return false;
+      const y = Number(key.slice(0, 4));
+      const m = Number(key.slice(4, 6));
+      if (y !== filterYear) return false;
+      if (filterMonth !== 'all' && m !== filterMonth) return false;
+      return true;
+    });
+  }, [overviewItems, filterYear, filterMonth]);
+
+  const overviewKpi = useMemo(() => {
+    const caseCount = filteredOverview.length;
+    const bugTotal = filteredOverview.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
+    const systemSet = new Set(filteredOverview.map((item) => item.areaId));
+    return { caseCount, bugTotal, systemCount: systemSet.size };
+  }, [filteredOverview]);
+
+  const monthlyBugSeries = useMemo(() => {
+    const buckets = new Map<number, number>();
+    for (let m = 1; m <= 12; m++) buckets.set(m, 0);
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key) continue;
+      const y = Number(key.slice(0, 4));
+      if (y !== filterYear) continue;
+      const m = Number(key.slice(4, 6));
+      buckets.set(m, (buckets.get(m) ?? 0) + parseNumber(item.bugCount));
+    }
+    return Array.from(buckets.entries()).map(([month, bug]) => ({ month, bug }));
+  }, [overviewItems, filterYear]);
+
+  const systemDistribution = useMemo(() => {
+    const counts = new Map<AreaId, number>();
+    for (const item of filteredOverview) counts.set(item.areaId, (counts.get(item.areaId) ?? 0) + 1);
+    return AREAS
+      .map((area) => ({
+        areaId: area.id,
+        label: area.title[lang].replace(/エリア$|区域$/, ''),
+        count: counts.get(area.id) ?? 0,
+      }))
+      .filter((row) => row.count > 0)
+      .sort((a, b) => b.count - a.count);
+  }, [filteredOverview, lang]);
+
+  const statusDistribution = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of filteredOverview) {
+      const status = (item.status || '未着手').trim() || '未着手';
+      counts.set(status, (counts.get(status) ?? 0) + 1);
+    }
+    return Array.from(counts.entries()).map(([status, count]) => ({ status, count }));
+  }, [filteredOverview]);
+
+  const areaStats = useMemo(() => {
+    const map = new Map<AreaId, { caseCount: number; bugTotal: number; series: number[]; bugSeries: number[] }>();
+    for (const area of AREAS) {
+      map.set(area.id, { caseCount: 0, bugTotal: 0, series: Array(12).fill(0), bugSeries: Array(12).fill(0) });
+    }
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key) continue;
+      const y = Number(key.slice(0, 4));
+      if (y !== filterYear) continue;
+      const m = Number(key.slice(4, 6));
+      const slot = map.get(item.areaId);
+      if (!slot) continue;
+      const bug = parseNumber(item.bugCount);
+      if (filterMonth === 'all' || m === filterMonth) {
+        slot.caseCount += 1;
+        slot.bugTotal += bug;
+      }
+      slot.series[m - 1] += 1;
+      slot.bugSeries[m - 1] += bug;
+    }
+    return map;
+  }, [overviewItems, filterYear, filterMonth]);
 
   useEffect(() => {
     if (!isAreaSelected) return;
@@ -847,7 +1181,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setSavingResultMap((prev) => ({ ...prev, [item.id]: true }));
     setResultSaveNoticeMap((prev) => ({
       ...prev,
-      [item.id]: { type: 'success', message: '保存中...' },
+      [item.id]: { type: 'success', message: t('saving') },
     }));
 
     try {
@@ -866,7 +1200,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       const data = await response.json().catch(() => ({}));
       const result = Array.isArray(data.results) ? data.results[0] : null;
       if (!response.ok || !result?.success) {
-        throw new Error(result?.error || data.error || '保存到 Notion 失败');
+        throw new Error(result?.error || data.error || t('saveToNotionFailed'));
       }
 
       setItems((prev) =>
@@ -881,10 +1215,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       );
       setResultSaveNoticeMap((prev) => ({
         ...prev,
-        [item.id]: { type: 'success', message: '已保存到 Notion' },
+        [item.id]: { type: 'success', message: t('savedToNotion') },
       }));
     } catch (err) {
-      const message = err instanceof Error ? err.message : '保存到 Notion 失败';
+      const message = err instanceof Error ? err.message : t('saveToNotionFailed');
       setResultSaveNoticeMap((prev) => ({
         ...prev,
         [item.id]: { type: 'error', message },
@@ -897,7 +1231,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const handleCreatePlan = async () => {
     if (!selectedAreaId) return;
     if (selectedItems.length === 0) {
-      setPlanError('请至少选择一条记录后再生成計画資料。');
+      setPlanError(t('planSelectRequired'));
       return;
     }
 
@@ -907,7 +1241,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       let template = templateHtml;
       if (!template) {
         const response = await fetch('/plan-template.html');
-        if (!response.ok) throw new Error('读取模板失败');
+        if (!response.ok) throw new Error(t('templateReadFailed'));
         template = await response.text();
         setTemplateHtml(template);
       }
@@ -916,7 +1250,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       setPlanHtml(html);
       setPlanOpen(true);
     } catch (e) {
-      const message = e instanceof Error ? e.message : '生成計画資料失败';
+      const message = e instanceof Error ? e.message : t('planGenerateFailed');
       setPlanError(message);
     } finally {
       setCreatingPlan(false);
@@ -940,7 +1274,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setHtmlHistory(updated);
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
-      setPlanError('浏览器阻止了弹窗，请允许后重试。');
+      setPlanError(t('popupBlocked'));
       return;
     }
     previewWindow.document.open();
@@ -954,7 +1288,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const handleCreateReport = async () => {
     if (!selectedAreaId) return;
     if (selectedItems.length === 0) {
-      setReportError('请至少选择一条记录后再生成结果报告。');
+      setReportError(t('reportSelectRequired'));
       return;
     }
 
@@ -964,7 +1298,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       let template = reportTemplateHtml;
       if (!template) {
         const response = await fetch('/report-template.html');
-        if (!response.ok) throw new Error('读取报告模板失败');
+        if (!response.ok) throw new Error(t('reportTemplateReadFailed'));
         template = await response.text();
         setReportTemplateHtml(template);
       }
@@ -973,7 +1307,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       setReportHtml(html);
       setReportOpen(true);
     } catch (e) {
-      const message = e instanceof Error ? e.message : '生成结果报告失败';
+      const message = e instanceof Error ? e.message : t('reportGenerateFailed');
       setReportError(message);
     } finally {
       setCreatingReport(false);
@@ -997,7 +1331,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setHtmlHistory(updated);
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
-      setReportError('浏览器阻止了弹窗，请允许后重试。');
+      setReportError(t('popupBlocked'));
       return;
     }
     previewWindow.document.open();
@@ -1029,7 +1363,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         onClick={onBack}
         className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
       >
-        首页
+        {t('home')}
       </button>
       <span className="text-neutral-400">{'>>'}</span>
       {selectedArea ? (
@@ -1038,10 +1372,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           onClick={goToAreaList}
           className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
         >
-          测试中心
+          TestCenter
         </button>
       ) : (
-        <span className="text-neutral-900 font-medium">测试中心</span>
+        <span className="text-neutral-900 font-medium">TestCenter</span>
       )}
       {selectedArea && (
         <>
@@ -1052,11 +1386,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               onClick={() => setEditingResultItemId(null)}
               className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
             >
-              {selectedArea.title.replace(/エリア$/, '')}
+              {selectedArea.title[lang].replace(/エリア$|区域$/, '')}
             </button>
           ) : (
             <span className="text-neutral-900 font-medium">
-              {selectedArea.title.replace(/エリア$/, '')}
+              {selectedArea.title[lang].replace(/エリア$|区域$/, '')}
             </span>
           )}
         </>
@@ -1086,30 +1420,59 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-neutral-900">
-            {editingResultItem ? '案件詳細' : '测试中心管理画面'}
+            {editingResultItem ? t('caseDetail') : t('pageTitle')}
           </h2>
-          {selectedAreaId && (
+          <div className="flex items-center gap-2">
+            {/* 语言切换 */}
             <button
               type="button"
-              onClick={() => { setHistoryShowAll(false); setHistoryOpen(true); }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
+              onClick={() => setLang((l) => l === 'zh' ? 'ja' : 'zh')}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs font-medium text-neutral-600 hover:bg-neutral-50 transition-colors select-none"
+              title={lang === 'zh' ? '日本語に切替' : '切换为中文'}
             >
-              <History size={15} />
-              履歴
-              {historyBadgeCount > 0 && (
-                <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-neutral-900 text-white text-[10px] font-bold w-4 h-4">
-                  {historyBadgeCount > 9 ? '9+' : historyBadgeCount}
-                </span>
-              )}
+              <Languages size={13} />
+              {lang === 'zh' ? '日本語' : '中文'}
             </button>
-          )}
+            {selectedAreaId && (
+              <>
+                {areaUpdatedAtMap[selectedAreaId] && (
+                  <span className="text-[11px] text-neutral-400 leading-tight">
+                    {t('lastUpdated')}<br />{formatUpdatedAt(areaUpdatedAtMap[selectedAreaId])}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={reloadAreaData}
+                  disabled={loading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  title={lang === 'zh' ? '从 Notion 重新拉取最新数据' : 'Notionから最新データを再取得'}
+                >
+                  <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+                  {t('update')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setHistoryShowAll(false); setHistoryOpen(true); }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
+                >
+                  <History size={15} />
+                  {t('btnHistory')}
+                  {historyBadgeCount > 0 && (
+                    <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-neutral-900 text-white text-[10px] font-bold w-4 h-4">
+                      {historyBadgeCount > 9 ? '9+' : historyBadgeCount}
+                    </span>
+                  )}
+                </button>
+              </>
+            )}
+          </div>
         </div>
         <p className="text-neutral-500">
           {editingResultItem
             ? editingResultItem.projectName || '-'
             : selectedArea
-              ? `${selectedArea.title} - 进捗列表`
-              : '请按区域进入对应测试管理模块。'}
+              ? `${selectedArea.title[lang]} - ${t('progressList')}`
+              : t('pageSubtitle')}
         </p>
       </div>
 
@@ -1118,7 +1481,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           {loading && (
             <div className="bg-white border border-neutral-200 rounded-xl p-8 flex items-center justify-center gap-2 text-neutral-500">
               <Loader2 size={18} className="animate-spin" />
-              正在加载 Notion 数据...
+              {t('loadingNotion')}
             </div>
           )}
 
@@ -1131,7 +1494,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {!loading && !error && items.length === 0 && (
             <div className="bg-white border border-neutral-200 rounded-xl p-8 text-sm text-neutral-500">
-              暂无符合条件的数据。
+              {t('noMatchingData')}
             </div>
           )}
 
@@ -1140,49 +1503,49 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               <div className="space-y-4">
                 <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-5">
                   <div>
-                    <p className="text-xs uppercase tracking-wider text-neutral-400 font-semibold">案件名</p>
+                    <p className="text-xs uppercase tracking-wider text-neutral-400 font-semibold">{t('fieldCaseName')}</p>
                     <p className="text-base font-semibold text-neutral-900 mt-1">{editingResultItem.projectName || '-'}</p>
                   </div>
 
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">Test総件数</p>
+                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldTestTotal')}</p>
                       <input
                         type="text"
                         value={getResultDraft(editingResultItem).testTotalCount}
                         onChange={(e) => updateResultDraft(editingResultItem.id, 'testTotalCount', e.target.value)}
                         className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder="请输入"
+                        placeholder={t('inputPlaceholder')}
                       />
                     </label>
                     <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">NG数</p>
+                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldNgCount')}</p>
                       <input
                         type="text"
                         value={getResultDraft(editingResultItem).bugCount}
                         onChange={(e) => updateResultDraft(editingResultItem.id, 'bugCount', e.target.value)}
                         className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder="请输入"
+                        placeholder={t('inputPlaceholder')}
                       />
                     </label>
                     <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">Test不可</p>
+                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldTestBlocked')}</p>
                       <input
                         type="text"
                         value={getResultDraft(editingResultItem).testBlockedCount}
                         onChange={(e) => updateResultDraft(editingResultItem.id, 'testBlockedCount', e.target.value)}
                         className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder="请输入"
+                        placeholder={t('inputPlaceholder')}
                       />
                     </label>
                     <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">判断不可/想定外件数</p>
+                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldPendingCount')}</p>
                       <input
                         type="text"
                         value={getResultDraft(editingResultItem).pendingConfirmCount}
                         onChange={(e) => updateResultDraft(editingResultItem.id, 'pendingConfirmCount', e.target.value)}
                         className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder="请输入"
+                        placeholder={t('inputPlaceholder')}
                       />
                     </label>
                   </div>
@@ -1195,7 +1558,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-not-allowed"
                     >
                       {savingResultMap[editingResultItem.id] ? <Loader2 size={14} className="animate-spin" /> : null}
-                      保存到Notion
+                      {t('btnSaveToNotion')}
                     </button>
                     {resultSaveNoticeMap[editingResultItem.id] && (
                       <span
@@ -1235,12 +1598,12 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
               <div className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
                 <p className="text-sm text-neutral-600">
-                  件数：<span className="font-semibold text-neutral-900">{currentItems.length}</span>
+                  {t('caseCount')}<span className="font-semibold text-neutral-900">{currentItems.length}</span>
                 </p>
                 <div className="flex flex-wrap items-center gap-2">
                   {areaResultReady && (
                     <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 border border-emerald-200">
-                      测试结果已出
+                      {t('resultReady')}
                     </span>
                   )}
                   <button
@@ -1250,7 +1613,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
                   >
                     {creatingPlan ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-                    計画資料
+                    {t('btnPlanDoc')}
                   </button>
                   <button
                     type="button"
@@ -1259,7 +1622,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 disabled:bg-neutral-200 disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
                   >
                     {creatingReport ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
-                    结果报告
+                    {t('btnResultReport')}
                   </button>
                 </div>
               </div>
@@ -1296,9 +1659,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
                     />
                     <div className="grid flex-1 grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-                      {renderField('月次', item.month)}
+                      {renderField(t('fieldMonth'), item.month)}
                       <div className="space-y-1">
-                        <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">案件名</p>
+                        <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldCaseName')}</p>
                         <button
                           type="button"
                           onClick={() => setEditingResultItemId(item.id)}
@@ -1307,9 +1670,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                           {item.projectName || '-'}
                         </button>
                       </div>
-                      {renderField('状態', item.status)}
-                      {renderField('見積総', item.estimateTotal)}
-                      {renderField('実績総', item.actualTotal)}
+                      {renderField(t('fieldStatus'), item.status)}
+                      {renderField(t('fieldEstTotal'), item.estimateTotal)}
+                      {renderField(t('fieldActTotal'), item.actualTotal)}
                     </div>
                   </div>
                 </section>
@@ -1319,23 +1682,158 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {AREAS.map((area) => (
-            <button
-              key={area.id}
-              type="button"
-              onClick={() => loadAreaData(area.id)}
-              className="bg-white border border-neutral-200 rounded-xl p-6 shadow-sm space-y-4 text-left hover:border-neutral-300 hover:shadow-md transition-all"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-neutral-50 flex items-center justify-center">
-                  {area.icon}
-                </div>
-                <h3 className="text-lg font-bold text-neutral-900">{area.title}</h3>
+        <div className="space-y-6">
+          {/* 顶部筛选 + KPI */}
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <select
+                  value={filterYear}
+                  onChange={(e) => setFilterYear(Number(e.target.value))}
+                  className="appearance-none bg-white border border-neutral-200 rounded-lg pl-9 pr-8 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
+                >
+                  {availableYears.map((y) => (
+                    <option key={y} value={y}>{y}年</option>
+                  ))}
+                </select>
+                <Calendar size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+                <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
               </div>
-              <p className="text-sm text-neutral-500 leading-relaxed">{area.description}</p>
+              <div className="relative">
+                <select
+                  value={filterMonth === 'all' ? 'all' : String(filterMonth)}
+                  onChange={(e) => setFilterMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                  className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 pr-8 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
+                >
+                  <option value="all">{t('filterAllMonth')}</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>{m}月</option>
+                  ))}
+                </select>
+                <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={fetchOverview}
+              disabled={overviewLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title={overviewUpdatedAt ? `${t('lastUpdated')}：${formatUpdatedAt(overviewUpdatedAt)}` : (lang === 'zh' ? '从 Notion 拉取最新数据' : 'Notionから最新データを取得')}
+            >
+              <RefreshCw size={14} className={overviewLoading ? 'animate-spin' : ''} />
+              {t('update')}
             </button>
-          ))}
+            {overviewUpdatedAt && (
+              <span className="text-[11px] text-neutral-400 leading-tight">
+                {t('lastUpdated')}<br />{formatUpdatedAt(overviewUpdatedAt)}
+              </span>
+            )}
+            <div className="flex items-center gap-4 pl-4 border-l border-neutral-200">
+              <KpiInline label={t('kpiCaseCount')} value={overviewKpi.caseCount} />
+              <KpiInline label={t('kpiBugTotal')} value={overviewKpi.bugTotal} />
+              <KpiInline label={t('kpiSystemClass')} value={overviewKpi.systemCount} suffix={t('kpiSystemSuffix')} />
+            </div>
+          </div>
+
+          {overviewError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 flex items-center gap-2 text-sm">
+              <AlertCircle size={16} />
+              {overviewError}
+            </div>
+          )}
+
+          {/* 3 つのダッシュボードカード */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
+              <div className="h-44">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                    <YAxis hide />
+                    <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
+                    <Bar dataKey="bug" fill="#0f172a" radius={[4, 4, 0, 0]} maxBarSize={22} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </DashboardCard>
+
+            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`}>
+              <div className="space-y-2.5 pt-1">
+                {systemDistribution.slice(0, 6).map((row, idx) => {
+                  const max = systemDistribution[0]?.count || 1;
+                  const palette = ['#f97316', '#3b82f6', '#8b5cf6', '#06b6d4', '#0ea5e9', '#ec4899'];
+                  return (
+                    <div key={row.areaId} className="flex items-center gap-2 text-xs">
+                      <span className="w-20 text-neutral-600 truncate" title={row.label}>{row.label}</span>
+                      <div className="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${(row.count / max) * 100}%`, backgroundColor: palette[idx % palette.length] }} />
+                      </div>
+                      <span className="w-7 text-right font-semibold text-neutral-700">{row.count}</span>
+                    </div>
+                  );
+                })}
+                {systemDistribution.length === 0 && (
+                  <p className="text-xs text-neutral-400 py-6 text-center">{t('noData')}</p>
+                )}
+              </div>
+            </DashboardCard>
+
+            <DashboardCard title={t('chartStatus')} iconColor="bg-emerald-500">
+              <StatusDonut data={statusDistribution} noDataLabel={t('noData')} caseLabel={t('caseLabel')} />
+            </DashboardCard>
+          </div>
+
+          {/* エリアカード（含 sparkline + 月环比） */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {AREAS.map((area) => {
+              const stats = areaStats.get(area.id);
+              const caseSeries = stats?.series ?? [];
+              const bugSeries = stats?.bugSeries ?? [];
+              return (
+                <button
+                  key={area.id}
+                  type="button"
+                  onClick={() => loadAreaData(area.id)}
+                  className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-3 text-left hover:border-neutral-300 hover:shadow-md transition-all"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-neutral-50 flex items-center justify-center">
+                      {area.icon}
+                    </div>
+                    <h3 className="text-lg font-bold text-neutral-900">{area.title[lang]}</h3>
+                  </div>
+                  <p className="text-sm text-neutral-500 leading-relaxed">{area.description[lang]}</p>
+                  <div className="h-10 -mx-1">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={caseSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+                        <Line type="monotone" dataKey="v" stroke="#6366f1" strokeWidth={1.5} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="h-12 -mx-1 -mt-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={bugSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+                        <XAxis dataKey="m" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#94a3b8' }} interval={0} height={14} />
+                        <Line type="monotone" dataKey="v" stroke="#cbd5e1" strokeWidth={1.5} dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs text-neutral-500">
+                    <span>{t('caseLabel')} <span className="font-bold text-neutral-900 text-sm">{stats?.caseCount ?? 0}</span></span>
+                    <span className="text-neutral-300">•</span>
+                    <span>{t('bugLabel')} <span className="font-bold text-neutral-900 text-sm">{stats?.bugTotal ?? 0}</span></span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {overviewLoading && overviewItems.length === 0 && (
+            <div className="flex items-center justify-center gap-2 text-neutral-500 text-sm py-4">
+              <Loader2 size={16} className="animate-spin" />
+              {t('loadingOverview')}
+            </div>
+          )}
         </div>
       )}
 
@@ -1347,21 +1845,21 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
         <div className="h-full max-w-7xl mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
-            <h3 className="text-base font-semibold text-neutral-900">計画資料</h3>
+            <h3 className="text-base font-semibold text-neutral-900">{t('btnPlanDoc')}</h3>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleSavePdf}
                 className="px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
               >
-                保存为PDF
+                {t('btnSavePdf')}
               </button>
               <button
                 type="button"
                 onClick={() => setPlanOpen(false)}
                 className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
               >
-                关闭
+                {t('close')}
               </button>
             </div>
           </div>
@@ -1380,21 +1878,21 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
         <div className="h-full max-w-[96rem] mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between">
-            <h3 className="text-base font-semibold text-neutral-900">结果报告</h3>
+            <h3 className="text-base font-semibold text-neutral-900">{t('reportEdit')}</h3>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleSaveReportPdf}
                 className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500"
               >
-                保存为PDF（结果报告）
+                {t('btnSaveReportPdf')}
               </button>
               <button
                 type="button"
                 onClick={() => setReportOpen(false)}
                 className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
               >
-                关闭
+                {t('close')}
               </button>
             </div>
           </div>
@@ -1402,7 +1900,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             {/* 左側：計画資料（参考） */}
             <div className="w-2/5 border-r border-neutral-200 flex flex-col min-w-0">
               <div className="px-3 py-1.5 bg-neutral-50 border-b border-neutral-200 flex items-center gap-2">
-                <span className="text-xs font-medium text-neutral-500">計画資料（参考）</span>
+                <span className="text-xs font-medium text-neutral-500">{t('planRef')}</span>
                 {latestPlanEntry && (
                   <span className="text-[10px] text-neutral-400 truncate">
                     {new Date(latestPlanEntry.savedAt).toLocaleString('ja-JP', {
@@ -1421,8 +1919,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full gap-2 text-neutral-400">
                     <FileText size={28} className="opacity-30" />
-                    <p className="text-sm">計画資料の履歴がありません</p>
-                    <p className="text-xs">先に計画資料を作成・PDF保存してください</p>
+                    <p className="text-sm">{t('noPlanHistory')}</p>
+                    <p className="text-xs">{t('noPlanHistoryHint')}</p>
                   </div>
                 )}
               </div>
@@ -1430,8 +1928,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             {/* 右側：結果報告（編集・印刷対象） */}
             <div className="flex-1 flex flex-col min-w-0">
               <div className="px-3 py-1.5 bg-indigo-50 border-b border-indigo-100 flex items-center gap-2">
-                <span className="text-xs font-medium text-indigo-600">結果報告</span>
-                <span className="text-[10px] text-indigo-400">← 編集・印刷対象</span>
+                <span className="text-xs font-medium text-indigo-600">{t('reportEdit')}</span>
+                <span className="text-[10px] text-indigo-400">{t('reportEditHint')}</span>
               </div>
               <div className="flex-1 min-h-0">
                 <iframe
@@ -1452,10 +1950,12 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <History size={18} className="text-neutral-600" />
-              <h3 className="text-base font-semibold text-neutral-900">HTML 保存履歴</h3>
+              <h3 className="text-base font-semibold text-neutral-900">{t('historyTitle')}</h3>
               {selectedAreaId && (
                 <span className="text-xs text-neutral-400">
-                  {historyShowAll ? '（全エリア）' : `（${selectedArea?.title ?? selectedAreaId}）`}
+                  {historyShowAll
+                    ? `（${lang === 'zh' ? '全部区域' : '全エリア'}）`
+                    : `（${selectedArea ? selectedArea.title[lang] : selectedAreaId}）`}
                 </span>
               )}
             </div>
@@ -1470,7 +1970,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       : 'border-neutral-300 text-neutral-600 hover:bg-neutral-50'
                   }`}
                 >
-                  {historyShowAll ? '全エリア表示中' : '全エリアを表示'}
+                  {historyShowAll ? t('btnAllAreasActive') : t('btnAllAreas')}
                 </button>
               )}
               <button
@@ -1478,7 +1978,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 onClick={() => setHistoryOpen(false)}
                 className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
               >
-                关闭
+                {t('close')}
               </button>
             </div>
           </div>
@@ -1486,13 +1986,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             {filteredHistory.length === 0 ? (
               <div className="text-center py-12 text-neutral-400 text-sm">
                 {htmlHistory.length === 0
-                  ? 'まだ履歴がありません。PDFを保存すると自動的に記録されます。'
-                  : 'このエリアの履歴はありません。'}
+                  ? t('historyEmpty')
+                  : t('historyAreaEmpty')}
               </div>
             ) : (
               <div className="space-y-2">
                 {filteredHistory.map((entry) => {
-                  const entryAreaTitle = AREAS.find((a) => a.id === entry.areaId)?.title ?? entry.areaId;
+                  const entryArea = AREAS.find((a) => a.id === entry.areaId);
+                  const entryAreaTitle = entryArea ? entryArea.title[lang] : entry.areaId;
                   return (
                     <div
                       key={entry.id}
@@ -1503,14 +2004,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                           ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
                           : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
                       }`}>
-                        {entry.type === 'plan' ? '計画' : '報告'}
+                        {entry.type === 'plan' ? t('historyTypePlan') : t('historyTypeReport')}
                       </span>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <p className="text-sm font-medium text-neutral-800 truncate">{entry.title}</p>
                           {historyShowAll && (
                             <span className="shrink-0 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] bg-neutral-50 border border-neutral-200 text-neutral-500">
-                              {entryAreaTitle.replace(/エリア$/, '')}
+                              {entryAreaTitle.replace(/エリア$|区域$/, '')}
                             </span>
                           )}
                         </div>
@@ -1528,7 +2029,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 transition-colors"
                         >
                           <Eye size={13} />
-                          プレビュー
+                          {t('btnPreview')}
                         </button>
                         <button
                           type="button"
@@ -1560,7 +2061,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
                     : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
                 }`}>
-                  {entry.type === 'plan' ? '計画' : '報告'}
+                  {entry.type === 'plan' ? t('historyTypePlan') : t('historyTypeReport')}
                 </span>
                 <p className="text-sm font-semibold text-neutral-800 truncate">{entry.title}</p>
               </div>
@@ -1584,14 +2085,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   }}
                   className="px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
                 >
-                  再保存PDF
+                  {t('btnReSavePdf')}
                 </button>
                 <button
                   type="button"
                   onClick={() => { setHistoryPreviewId(null); setHistoryOpen(true); }}
                   className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
                 >
-                  戻る
+                  {t('btnBack')}
                 </button>
               </div>
             </div>
