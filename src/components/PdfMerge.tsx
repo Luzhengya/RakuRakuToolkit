@@ -7,7 +7,6 @@ import {
   Download,
   AlertCircle,
   Loader2,
-  ArrowLeft,
   GripVertical,
   X,
   Layers,
@@ -286,16 +285,23 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
   const totalPages = pages.length;
   const uniqueFiles = new Set(pages.map(p => p.fileIndex)).size;
 
-  return (
-    <div className="max-w-5xl mx-auto">
-      {/* Back */}
+  const breadcrumb = (
+    <nav className="flex items-center gap-2 text-sm">
       <button
+        type="button"
         onClick={onBack}
-        className="flex items-center gap-2 text-neutral-500 hover:text-neutral-900 transition-colors mb-6 group"
+        className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
       >
-        <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
-        返回首页
+        首页
       </button>
+      <span className="text-neutral-400">{'>>'}</span>
+      <span className="text-neutral-900 font-medium">PDF 合并</span>
+    </nav>
+  );
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6">
+      {breadcrumb}
 
       <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-8">
         {/* Header */}
@@ -559,6 +565,10 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
           )}
 
         </div>
+      </div>
+
+      <div className="pt-4 border-t border-neutral-200">
+        {breadcrumb}
       </div>
 
       {/* Lightbox: high-res preview triggered by double-clicking a thumbnail */}

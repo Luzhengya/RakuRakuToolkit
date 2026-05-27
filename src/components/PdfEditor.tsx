@@ -13,7 +13,6 @@ import {
   Upload,
   AlertCircle,
   Loader2,
-  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   Save,
@@ -453,16 +452,23 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
 
   const currentPage = pages[currentPageIdx];
 
-  return (
-    <div className="max-w-5xl mx-auto">
-      {/* Back */}
+  const breadcrumb = (
+    <nav className="flex items-center gap-2 text-sm">
       <button
+        type="button"
         onClick={onBack}
-        className="flex items-center gap-2 text-neutral-500 hover:text-neutral-900 transition-colors mb-6 group"
+        className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
       >
-        <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
-        返回首页
+        首页
       </button>
+      <span className="text-neutral-400">{'>>'}</span>
+      <span className="text-neutral-900 font-medium">PDF 编辑</span>
+    </nav>
+  );
+
+  return (
+    <div className="max-w-5xl mx-auto space-y-6">
+      {breadcrumb}
 
       <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 overflow-hidden">
         {/* Card header */}
@@ -753,6 +759,10 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
             </motion.div>
           )}
         </div>
+      </div>
+
+      <div className="pt-4 border-t border-neutral-200">
+        {breadcrumb}
       </div>
     </div>
   );

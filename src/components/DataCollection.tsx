@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
 import JijiSokuho from './JijiSokuho';
 
 const TABS = [
@@ -16,19 +15,23 @@ interface DataCollectionProps {
 export default function DataCollection({ onBack }: DataCollectionProps) {
   const [activeTab, setActiveTab] = useState<TabId>('jiji');
 
+  const breadcrumb = (
+    <nav className="flex items-center gap-2 text-sm">
+      <button
+        type="button"
+        onClick={onBack}
+        className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+      >
+        首页
+      </button>
+      <span className="text-neutral-400">{'>>'}</span>
+      <span className="text-neutral-900 font-medium">データ収集</span>
+    </nav>
+  );
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-800 transition-colors"
-        >
-          <ArrowLeft size={16} />
-          ホーム
-        </button>
-        <span className="text-neutral-300">/</span>
-        <span className="text-sm font-medium text-neutral-900">データ収集</span>
-      </div>
+      {breadcrumb}
 
       <div className="border-b border-neutral-200">
         <div className="flex">
@@ -56,6 +59,10 @@ export default function DataCollection({ onBack }: DataCollectionProps) {
           界面新聞 — 開発中
         </div>
       )}
+
+      <div className="pt-4 border-t border-neutral-200">
+        {breadcrumb}
+      </div>
     </div>
   );
 }

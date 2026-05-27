@@ -6,7 +6,6 @@ import {
   CheckCircle,
   AlertCircle,
   Loader2,
-  ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useFileUpload } from '../hooks/useFileUpload';
@@ -113,15 +112,23 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
     }
   };
 
-  return (
-    <div className="max-w-2xl mx-auto">
+  const breadcrumb = (
+    <nav className="flex items-center gap-2 text-sm">
       <button
+        type="button"
         onClick={onBack}
-        className="flex items-center gap-2 text-neutral-500 hover:text-neutral-900 transition-colors mb-6 group"
+        className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
       >
-        <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
-        返回首页
+        首页
       </button>
+      <span className="text-neutral-400">{'>>'}</span>
+      <span className="text-neutral-900 font-medium">Excel to Markdown</span>
+    </nav>
+  );
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-6">
+      {breadcrumb}
 
       <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-8">
         <div className="mb-8">
@@ -269,6 +276,10 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
             </motion.div>
           )}
         </div>
+      </div>
+
+      <div className="pt-4 border-t border-neutral-200">
+        {breadcrumb}
       </div>
     </div>
   );

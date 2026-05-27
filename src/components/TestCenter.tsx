@@ -629,6 +629,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [planOpen, setPlanOpen] = useState(false);
   const planPreviewIframeRef = useRef<HTMLIFrameElement>(null);
   const reportPreviewIframeRef = useRef<HTMLIFrameElement>(null);
+  const historyPreviewIframeRef = useRef<HTMLIFrameElement>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [templateHtml, setTemplateHtml] = useState('');
   const [creatingPlan, setCreatingPlan] = useState(false);
@@ -778,6 +779,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     }
     return targetMonthKeys[0];
   }, [activeMonthTab, monthGroups, targetMonthKeys]);
+
+  // 履歴ボタンのバッジ件数：エリア + 月次で絞り込み（未選択時は全件）
+  const historyBadgeCount = useMemo(() => {
+    if (!selectedAreaId) return htmlHistory.length;
+    return htmlHistory.filter(
+      (e) => e.areaId === selectedAreaId && e.monthKey === currentMonthKey
+    ).length;
+  }, [htmlHistory, selectedAreaId, currentMonthKey]);
 
   const areaResultReady = useMemo(() => {
     if (!isAreaSelected || currentItems.length === 0) return false;
@@ -1013,81 +1022,87 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setEditingResultItemId(null);
   };
 
+  const breadcrumb = (
+    <nav className="flex items-center gap-2 text-sm">
+      <button
+        type="button"
+        onClick={onBack}
+        className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+      >
+        首页
+      </button>
+      <span className="text-neutral-400">{'>>'}</span>
+      {selectedArea ? (
+        <button
+          type="button"
+          onClick={goToAreaList}
+          className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+        >
+          测试中心
+        </button>
+      ) : (
+        <span className="text-neutral-900 font-medium">测试中心</span>
+      )}
+      {selectedArea && (
+        <>
+          <span className="text-neutral-400">{'>>'}</span>
+          {editingResultItem ? (
+            <button
+              type="button"
+              onClick={() => setEditingResultItemId(null)}
+              className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
+            >
+              {selectedArea.title.replace(/エリア$/, '')}
+            </button>
+          ) : (
+            <span className="text-neutral-900 font-medium">
+              {selectedArea.title.replace(/エリア$/, '')}
+            </span>
+          )}
+        </>
+      )}
+      {editingResultItem && (
+        <>
+          <span className="text-neutral-400">{'>>'}</span>
+          <span
+            className="text-neutral-900 font-medium"
+            title={editingResultItem.projectName || '-'}
+          >
+            {(() => {
+              const name = editingResultItem.projectName || '-';
+              return name.length > 8 ? `${name.slice(0, 8)}...` : name;
+            })()}
+          </span>
+        </>
+      )}
+    </nav>
+  );
+
   return (
     <>
     <div className="space-y-6">
-      <nav className="flex items-center gap-2 text-sm">
-        <button
-          type="button"
-          onClick={onBack}
-          className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
-        >
-          首页
-        </button>
-        <span className="text-neutral-400">{'>>'}</span>
-        {selectedArea ? (
-          <button
-            type="button"
-            onClick={goToAreaList}
-            className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
-          >
-            测试中心
-          </button>
-        ) : (
-          <span className="text-neutral-900 font-medium">测试中心</span>
-        )}
-        {selectedArea && (
-          <>
-            <span className="text-neutral-400">{'>>'}</span>
-            {editingResultItem ? (
-              <button
-                type="button"
-                onClick={() => setEditingResultItemId(null)}
-                className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
-              >
-                {selectedArea.title.replace(/エリア$/, '')}
-              </button>
-            ) : (
-              <span className="text-neutral-900 font-medium">
-                {selectedArea.title.replace(/エリア$/, '')}
-              </span>
-            )}
-          </>
-        )}
-        {editingResultItem && (
-          <>
-            <span className="text-neutral-400">{'>>'}</span>
-            <span
-              className="text-neutral-900 font-medium"
-              title={editingResultItem.projectName || '-'}
-            >
-              {(() => {
-                const name = editingResultItem.projectName || '-';
-                return name.length > 8 ? `${name.slice(0, 8)}...` : name;
-              })()}
-            </span>
-          </>
-        )}
-      </nav>
+      {breadcrumb}
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-neutral-900">
             {editingResultItem ? '案件詳細' : '测试中心管理画面'}
           </h2>
-          <button
-            type="button"
-            onClick={() => { setHistoryShowAll(false); setHistoryOpen(true); }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
-          >
-            <History size={15} />
-            履歴
-            {htmlHistory.length > 0 && (
-              <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-neutral-900 text-white text-[10px] font-bold w-4 h-4">
-                {htmlHistory.length > 9 ? '9+' : htmlHistory.length}
-              </span>
-            )}
-          </button>
+          {selectedAreaId && (
+            <button
+              type="button"
+              onClick={() => { setHistoryShowAll(false); setHistoryOpen(true); }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
+            >
+              <History size={15} />
+              履歴
+              {historyBadgeCount > 0 && (
+                <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-neutral-900 text-white text-[10px] font-bold w-4 h-4">
+                  {historyBadgeCount > 9 ? '9+' : historyBadgeCount}
+                </span>
+              )}
+            </button>
+          )}
         </div>
         <p className="text-neutral-500">
           {editingResultItem
@@ -1323,6 +1338,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           ))}
         </div>
       )}
+
+      <div className="pt-4 border-t border-neutral-200">
+        {breadcrumb}
+      </div>
     </div>
     {planOpen && (
       <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
@@ -1549,10 +1568,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 <button
                   type="button"
                   onClick={() => {
+                    const liveRoot = historyPreviewIframeRef.current?.contentDocument?.documentElement;
+                    const htmlToPrint = liveRoot
+                      ? `<!DOCTYPE html>\n${liveRoot.outerHTML}`
+                      : entry.htmlContent;
                     const win = window.open('', '_blank');
                     if (win) {
                       win.document.open();
-                      win.document.write(entry.htmlContent);
+                      win.document.write(htmlToPrint);
                       win.document.close();
                       win.document.title = entry.title;
                       win.focus();
@@ -1574,6 +1597,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             </div>
             <div className="flex-1 min-h-0">
               <iframe
+                ref={historyPreviewIframeRef}
                 title="history-preview"
                 srcDoc={entry.htmlContent}
                 className="w-full h-full bg-white border-0"
