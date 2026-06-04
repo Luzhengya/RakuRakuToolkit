@@ -18,8 +18,10 @@ import {
   Briefcase,
   Calendar,
   Languages,
+  ArrowRight,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
+import MonthlyReport from './MonthlyReport';
 import {
   BarChart,
   Bar,
@@ -854,6 +856,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [filterYear, setFilterYear] = useState<number>(() => new Date().getFullYear());
   const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
   const [lang, setLang] = useState<Lang>('zh');
+  const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
@@ -1516,6 +1519,16 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     </nav>
   );
 
+  if (monthlyReportOpen) {
+    return (
+      <MonthlyReport
+        lang={lang}
+        onHome={onBack}
+        onBack={() => setMonthlyReportOpen(false)}
+      />
+    );
+  }
+
   return (
     <>
     <div className="space-y-6">
@@ -1886,6 +1899,27 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               <StatusDonut data={statusDistribution} noDataLabel={t('noData')} caseLabel={t('caseLabel')} />
             </DashboardCard>
           </div>
+
+          {/* 月次報告 入口バナー */}
+          <button
+            type="button"
+            onClick={() => setMonthlyReportOpen(true)}
+            className="w-full flex items-center justify-between gap-4 rounded-2xl bg-neutral-900 px-6 py-5 text-left text-white shadow-sm hover:bg-neutral-800 transition-colors"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-lg bg-white/10 flex items-center justify-center">
+                <FileText size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold">{t('monthlyReportTitle')}</h3>
+                <p className="text-sm text-neutral-300 mt-0.5">{t('monthlyReportDesc')}</p>
+              </div>
+            </div>
+            <span className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm font-medium whitespace-nowrap">
+              {t('monthlyReportEnter')}
+              <ArrowRight size={16} />
+            </span>
+          </button>
 
           {/* エリアカード（含 sparkline + 月环比） */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
