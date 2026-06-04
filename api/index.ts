@@ -630,6 +630,142 @@ app.get("/api/test-center/overview", async (_req, res) => {
   }
 });
 
+// ── Monthly report (実績表 data source) ─────────────────────────────────
+// Queries the 実績表 Notion DB (NOTION_ACHIEVEMENT_DATABASE_ID) filtered by
+// year + month + selected systems. 年度 / 月次 are formula(number) fields.
+
+type AchievementItem = {
+  id: string;
+  system: string;
+  year: number | null;
+  month: number | null;
+  cmdb: string;
+  content: string;
+  testType: string;
+  testCount: string;
+  validNg: string;
+  japanNgCount: string;
+  expectedCase: string;
+  expectedNg: string;
+  planEffort: string;
+  actualEffort: string;
+  idealCaseDiff: string;
+  idealNgDiff: string;
+  execTestCount: string;
+  efficiency: string;
+  comments: string[];
+};
+
+function parseAchievementItem(page: any): AchievementItem {
+  const p = page?.properties ?? {};
+  const yearText = propertyToPlainText(p["年度"]);
+  const monthText = propertyToPlainText(p["月次"]);
+  return {
+    id: page?.id ?? "",
+    system: propertyToPlainText(p["システム"]),
+    year: yearText ? Number(yearText) : null,
+    month: monthText ? Number(monthText) : null,
+    cmdb: propertyToPlainText(p["CMDB"]),
+    content: propertyToPlainText(p["テスト内容"]),
+    testType: propertyToPlainText(p["テスト種類"]),
+    testCount: propertyToPlainText(p["TCテスト件数"]),
+    validNg: propertyToPlainText(p["有効NG数"]),
+    japanNgCount: propertyToPlainText(p["日本実施テストNG件数"]),
+    expectedCase: propertyToPlainText(p["想定ケース数"]),
+    expectedNg: propertyToPlainText(p["想定NG数"]),
+    planEffort: propertyToPlainText(p["テスト予定工数(人日)"]),
+    actualEffort: propertyToPlainText(p["テスト実績工数(人日)"]),
+    idealCaseDiff: propertyToPlainText(p["理想ケース差10以上はNG"]),
+    idealNgDiff: propertyToPlainText(p["理想NG差1以上はNG"]),
+    execTestCount: propertyToPlainText(p["実施テスト件数0以下はNG"]),
+    efficiency: propertyToPlainText(p["テストケース数/1人日"]),
+    comments: [],
+  };
+}
+
+async function fetchPageComments(pageId: string): Promise<string[]> {
+  if (!notion) return [];
+  try {
+    const res: any = await notion.comments.list({ block_id: pageId });
+    return (res.results ?? [])
+      .map((c: any) => richTextToPlainText(c.rich_text))
+      .filter((text: string) => text.length > 0);
+  } catch (error) {
+    console.error(`Failed to fetch comments for ${pageId}:`, error);
+    return [];
+  }
+}
+
+async function queryAllAchievementItems(databaseId: string): Promise<AchievementItem[]> {
+  if (!notion) return [];
+
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) {
+    throw new Error("No data source found in NOTION_ACHIEVEMENT_DATABASE_ID");
+  }
+
+  const items: AchievementItem[] = [];
+  let hasMore = true;
+  let nextCursor: string | undefined = undefined;
+
+  while (hasMore) {
+    const response = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: nextCursor,
+      page_size: 100,
+    });
+    for (const page of response.results) {
+      items.push(parseAchievementItem(page));
+    }
+    hasMore = response.has_more;
+    nextCursor = response.next_cursor ?? undefined;
+  }
+
+  return items;
+}
+
+app.get("/api/test-center/monthly-report", async (req, res) => {
+  const monthParam = String(req.query.month ?? "").trim();
+  const systemsParam = String(req.query.systems ?? "").trim();
+  const match = monthParam.match(/^(\d{4})(\d{2})$/);
+  if (!match) {
+    return res.status(400).json({ error: "month must be in YYYYMM format" });
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const systems = systemsParam
+    ? systemsParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  const databaseId = process.env.NOTION_ACHIEVEMENT_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_ACHIEVEMENT_DATABASE_ID",
+    });
+  }
+
+  try {
+    const allItems = await queryAllAchievementItems(databaseId);
+    const systemSet = new Set(systems);
+    const filtered = allItems.filter(
+      (item) =>
+        item.year === year &&
+        item.month === month &&
+        (systemSet.size === 0 || systemSet.has(item.system))
+    );
+    // Notion のコメント（評論）を行ごとに並列取得して付与
+    const withComments = await Promise.all(
+      filtered.map(async (item) => ({ ...item, comments: await fetchPageComments(item.id) }))
+    );
+    return res.json({ items: withComments, total: withComments.length, year, month, systems });
+  } catch (error) {
+    console.error("Monthly report query error:", error);
+    return res.status(500).json({ error: "Failed to query Notion achievement database" });
+  }
+});
+
 app.post("/api/test-center/results", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });
