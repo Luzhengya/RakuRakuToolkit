@@ -33,6 +33,7 @@ const dict = {
     monthlyReportTitle: '月次報告',
     monthlyReportDesc: '指定月份与系统检索测试实绩，生成月次报告书。',
     monthlyReportEnter: '前往检索画面',
+    bugListEnter: '查看BUG一览 →',
     // ── 区域卡片 ──────────────────────────────
     caseLabel: '案件',
     bugLabel: 'BUG',
@@ -106,6 +107,7 @@ const dict = {
     descNayose: '名寄せアプリ相关测试项的统一管理。',
     descGyoshu: '業種別審査ノート相关测试项的统一管理。',
     descRos: '与信ROS相关测试项的统一管理。',
+    descMeikancho: '名館長クラウド相关测试项的统一管理。',
     // ── 区域标题 ──────────────────────────────
     titleJmotto: 'jmotto区域',
     titleUniv: 'UNIV区域',
@@ -117,6 +119,7 @@ const dict = {
     titleNayose: '名寄せアプリ区域',
     titleGyoshu: '業種別区域',
     titleRos: '与信ROS区域',
+    titleMeikancho: '名館長クラウド区域',
   },
   ja: {
     // ── 通用 ──────────────────────────────────
@@ -150,6 +153,7 @@ const dict = {
     monthlyReportTitle: '月次報告',
     monthlyReportDesc: '月・システムを指定してテスト実績を検索し、月次報告書を作成します。',
     monthlyReportEnter: '検索画面へ',
+    bugListEnter: 'BUG一覧へ →',
     // ── 区域卡片 ──────────────────────────────
     caseLabel: '案件',
     bugLabel: 'BUG',
@@ -223,6 +227,7 @@ const dict = {
     descNayose: '名寄せアプリ関連のテスト項目を統一管理する。',
     descGyoshu: '業種別審査ノート関連のテスト項目を統一管理する。',
     descRos: '与信ROS関連のテスト項目を統一管理する。',
+    descMeikancho: '名館長クラウド関連のテスト項目を統一管理する。',
     // ── 区域标题 ──────────────────────────────
     titleJmotto: 'jmottoエリア',
     titleUniv: 'UNIVエリア',
@@ -234,6 +239,7 @@ const dict = {
     titleNayose: '名寄せアプリエリア',
     titleGyoshu: '業種別エリア',
     titleRos: '与信ROSエリア',
+    titleMeikancho: '名館長クラウドエリア',
   },
 } as const;
 

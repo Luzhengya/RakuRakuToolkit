@@ -80,7 +80,7 @@ async function convertPdfToWordBuffer(pdfBuffer: Buffer): Promise<Buffer> {
   return streamToBuffer(streamAsset.readStream);
 }
 
-type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros";
+type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros" | "meikancho";
 
 type ProgressItem = {
   id: string;
@@ -247,6 +247,8 @@ function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
       return matchesAny(["業種別", "业种别"]);
     case "ros":
       return matchesAny(["与信ROS"]);
+    case "meikancho":
+      return matchesAny(["名館長クラウド", "名館長"]);
     default:
       return false;
   }
@@ -512,7 +514,7 @@ app.get("/api/pdf-status", (_req, res) => {
 
 app.get("/api/test-center", async (req, res) => {
   const area = req.query.area as TestCenterArea | undefined;
-  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros"];
+  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho"];
   if (!area || !validAreas.includes(area)) {
     return res.status(400).json({ error: "Invalid area parameter" });
   }
@@ -592,7 +594,7 @@ app.get("/api/test-center/overview", async (_req, res) => {
     });
   }
 
-  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros"];
+  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho"];
 
   try {
     const allItems = await queryAllProgressItems(databaseId);
@@ -763,6 +765,268 @@ app.get("/api/test-center/monthly-report", async (req, res) => {
   } catch (error) {
     console.error("Monthly report query error:", error);
     return res.status(500).json({ error: "Failed to query Notion achievement database" });
+  }
+});
+
+// ── Bug list (全体バグ一覧表 data source) ───────────────────────────────
+// NOTION_BUG_DATABASE_ID の「全体バグ一覧表」を取得。システム/月次は rollup、
+// テスト案件名は relation（リレーション先のタイトルを解決）、担当者は実施者(created_by)。
+
+type BugItem = {
+  id: string;
+  no: string;
+  system: string;
+  testCaseName: string;
+  bugDesc: string;
+  judgment: string;
+  status: string;
+  execDate: string;
+  assignee: string;
+  month: string;
+  reproSteps: string;
+  expectedResult: string;
+  actualResult: string;
+  remarks: string;
+  caseNumber: string;
+};
+
+function rollupToText(prop: any): string {
+  if (!prop || prop.type !== "rollup") return "";
+  const arr = prop.rollup?.array ?? [];
+  const parts: string[] = [];
+  for (const el of arr) {
+    if (el.type === "multi_select") parts.push(...(el.multi_select ?? []).map((o: any) => o?.name).filter(Boolean));
+    else if (el.type === "select") parts.push(el.select?.name ?? "");
+    else if (el.type === "status") parts.push(el.status?.name ?? "");
+    else if (el.type === "number") parts.push(el.number == null ? "" : String(el.number));
+    else if (el.type === "rich_text") parts.push(richTextToPlainText(el.rich_text));
+    else if (el.type === "title") parts.push(richTextToPlainText(el.title));
+    else if (el.type === "formula") {
+      const f = el.formula;
+      if (f?.type === "string") parts.push(f.string ?? "");
+      else if (f?.type === "number") parts.push(f.number == null ? "" : String(f.number));
+    }
+  }
+  return parts.filter(Boolean).join(", ");
+}
+
+function createdByName(prop: any): string {
+  if (!prop || prop.type !== "created_by") return "";
+  return prop.created_by?.name ?? "";
+}
+
+function parseBugItem(page: any, relMap: Map<string, string>): BugItem {
+  const p = page?.properties ?? {};
+  const relIds: string[] = (p["テスト案件名"]?.relation ?? []).map((r: any) => r.id);
+  const testCaseName = relIds.map((rid) => relMap.get(rid) ?? "").filter(Boolean).join(", ");
+  return {
+    id: page?.id ?? "",
+    no: propertyToPlainText(p["No"]),
+    system: rollupToText(p["システム"]),
+    testCaseName,
+    bugDesc: propertyToPlainText(p["Bug説明"]),
+    judgment: propertyToPlainText(p["判定"]),
+    status: propertyToPlainText(p["ステータス"]),
+    execDate: propertyToPlainText(p["実施日"]),
+    assignee: createdByName(p["実施者"]),
+    month: rollupToText(p["月次"]),
+    reproSteps: propertyToPlainText(p["再現ステップ"]),
+    expectedResult: propertyToPlainText(p["予定結果"]),
+    actualResult: propertyToPlainText(p["実際結果"]),
+    remarks: propertyToPlainText(p["備考"]),
+    caseNumber: propertyToPlainText(p["ケース番号"]),
+  };
+}
+
+async function queryAllBugItems(databaseId: string): Promise<BugItem[]> {
+  if (!notion) return [];
+
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) {
+    throw new Error("No data source found in NOTION_BUG_DATABASE_ID");
+  }
+
+  const pages: any[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+  while (hasMore) {
+    const r: any = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    pages.push(...r.results);
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+
+  // テスト案件名(relation) のタイトルを重複排除して解決
+  const relIds = new Set<string>();
+  for (const pg of pages) {
+    for (const r of pg.properties?.["テスト案件名"]?.relation ?? []) relIds.add(r.id);
+  }
+  const relMap = new Map<string, string>();
+  await Promise.all(
+    Array.from(relIds).map(async (rid) => {
+      try {
+        const rp: any = await notion!.pages.retrieve({ page_id: rid });
+        const titleProp: any = Object.values(rp.properties ?? {}).find((v: any) => v.type === "title");
+        relMap.set(rid, richTextToPlainText(titleProp?.title));
+      } catch {
+        relMap.set(rid, "");
+      }
+    })
+  );
+
+  return pages.map((pg) => parseBugItem(pg, relMap));
+}
+
+function escapeHtml(text: string): string {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function richTextToHtml(rich: any[] = []): string {
+  return (rich ?? [])
+    .map((t: any) => {
+      let s = escapeHtml(t?.plain_text ?? "");
+      const a = t?.annotations ?? {};
+      if (a.code) s = `<code>${s}</code>`;
+      if (a.bold) s = `<strong>${s}</strong>`;
+      if (a.italic) s = `<em>${s}</em>`;
+      if (a.strikethrough) s = `<s>${s}</s>`;
+      if (a.underline) s = `<u>${s}</u>`;
+      if (t?.href) s = `<a href="${escapeHtml(t.href)}" target="_blank" rel="noopener">${s}</a>`;
+      return s;
+    })
+    .join("");
+}
+
+async function renderTableBlock(tableId: string): Promise<string> {
+  if (!notion) return "";
+  const r: any = await notion.blocks.children.list({ block_id: tableId, page_size: 100 });
+  const rows = (r.results ?? []).filter((b: any) => b.type === "table_row");
+  const trs = rows
+    .map(
+      (row: any) =>
+        `<tr>${(row.table_row?.cells ?? []).map((cell: any) => `<td>${richTextToHtml(cell)}</td>`).join("")}</tr>`
+    )
+    .join("");
+  return `<table class="notion-table">${trs}</table>`;
+}
+
+async function renderBlocksToHtml(blockId: string, depth = 0): Promise<string> {
+  if (!notion || depth > 4) return "";
+  let cursor: string | undefined = undefined;
+  let hasMore = true;
+  let html = "";
+  let listBuffer = "";
+  let listTag = "";
+  const flushList = () => {
+    if (listBuffer) {
+      html += `<${listTag}>${listBuffer}</${listTag}>`;
+      listBuffer = "";
+      listTag = "";
+    }
+  };
+
+  while (hasMore) {
+    const r: any = await notion.blocks.children.list({ block_id: blockId, start_cursor: cursor, page_size: 100 });
+    for (const b of r.results as any[]) {
+      const t = b.type;
+      const c = b[t];
+      const childHtml = b.has_children && t !== "table" ? await renderBlocksToHtml(b.id, depth + 1) : "";
+
+      if (t === "bulleted_list_item" || t === "numbered_list_item") {
+        const tag = t === "numbered_list_item" ? "ol" : "ul";
+        if (listTag && listTag !== tag) flushList();
+        listTag = tag;
+        listBuffer += `<li>${richTextToHtml(c.rich_text)}${childHtml}</li>`;
+        continue;
+      }
+      flushList();
+
+      switch (t) {
+        case "paragraph":
+          html += `<p>${richTextToHtml(c.rich_text)}</p>`;
+          break;
+        case "heading_1":
+          html += `<h3>${richTextToHtml(c.rich_text)}</h3>`;
+          break;
+        case "heading_2":
+          html += `<h4>${richTextToHtml(c.rich_text)}</h4>`;
+          break;
+        case "heading_3":
+          html += `<h5>${richTextToHtml(c.rich_text)}</h5>`;
+          break;
+        case "to_do":
+          html += `<p>${c.checked ? "☑" : "☐"} ${richTextToHtml(c.rich_text)}</p>`;
+          break;
+        case "quote":
+          html += `<blockquote>${richTextToHtml(c.rich_text)}</blockquote>`;
+          break;
+        case "callout":
+          html += `<div class="callout">${richTextToHtml(c.rich_text)}${childHtml}</div>`;
+          break;
+        case "code":
+          html += `<pre><code>${escapeHtml((c.rich_text ?? []).map((x: any) => x.plain_text).join(""))}</code></pre>`;
+          break;
+        case "divider":
+          html += "<hr/>";
+          break;
+        case "image": {
+          const url = c.type === "external" ? c.external?.url : c.file?.url;
+          if (url) html += `<img src="${escapeHtml(url)}" alt="" />`;
+          break;
+        }
+        case "table":
+          html += await renderTableBlock(b.id);
+          break;
+        default:
+          if (c?.rich_text) html += `<p>${richTextToHtml(c.rich_text)}</p>`;
+          break;
+      }
+    }
+    hasMore = r.has_more;
+    cursor = r.has_more ? r.next_cursor : undefined;
+  }
+  flushList();
+  return html;
+}
+
+app.get("/api/test-center/bugs", async (_req, res) => {
+  const databaseId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_BUG_DATABASE_ID",
+    });
+  }
+  try {
+    const items = await queryAllBugItems(databaseId);
+    return res.json({ items, total: items.length });
+  } catch (error) {
+    console.error("Bug list query error:", error);
+    return res.status(500).json({ error: "Failed to query Notion bug database" });
+  }
+});
+
+// 子ページ（バグ詳細ページ）の本文を簡易 HTML で返す
+app.get("/api/test-center/bugs/:id/children", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    const html = await renderBlocksToHtml(req.params.id);
+    return res.json({ html });
+  } catch (error) {
+    console.error("Bug children error:", error);
+    return res.status(500).json({ error: "Failed to load bug detail children" });
   }
 });
 

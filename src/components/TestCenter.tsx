@@ -19,9 +19,11 @@ import {
   Calendar,
   Languages,
   ArrowRight,
+  Cloud,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import MonthlyReport from './MonthlyReport';
+import BugList from './BugList';
 import {
   BarChart,
   Bar,
@@ -40,7 +42,7 @@ type TestCenterProps = {
   onBack: () => void;
 };
 
-type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros';
+type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros' | 'meikancho';
 
 type ProgressItem = {
   id: string;
@@ -314,6 +316,10 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '☑ [ブラウザ] Chrome（147.0.7727.102）',
       '☑ [URL] http://10.240.14.201:8080/mkt/login.html',
     ],
+    'meikancho': [
+      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [URL] （名館長クラウドのテストURLを入力してください）',
+    ],
   };
   return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
 }
@@ -368,6 +374,11 @@ const AREA_DOC_META: Record<AreaId, AreaDocMeta> = {
     releaseNameJa: '与信ROS',
     planFileNamePrefix: '与信ROS',
     svnPathSegment: '与信ROS',
+  },
+  'meikancho': {
+    releaseNameJa: '名館長クラウド',
+    planFileNamePrefix: '名館長クラウド',
+    svnPathSegment: '名館長クラウド',
   },
 };
 
@@ -670,15 +681,22 @@ function KpiInline({ label, value, suffix }: { label: string; value: number; suf
   );
 }
 
-function DashboardCard({ title, iconColor, badge, children }: { title: string; iconColor: string; badge?: string; children: ReactNode }) {
+function DashboardCard({ title, iconColor, badge, children, onClick, actionHint }: { title: string; iconColor: string; badge?: string; children: ReactNode; onClick?: () => void; actionHint?: string }) {
   return (
-    <section className="bg-white border border-neutral-200 rounded-xl p-4 shadow-sm">
+    <section
+      onClick={onClick}
+      className={`bg-white border border-neutral-200 rounded-xl p-4 shadow-sm ${onClick ? 'cursor-pointer hover:border-neutral-300 hover:shadow-md transition-all' : ''}`}
+    >
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-sm ${iconColor}`} />
           <h3 className="text-sm font-semibold text-neutral-800">{title}</h3>
         </div>
-        {badge && <span className="text-[11px] text-neutral-400 font-medium">{badge}</span>}
+        {actionHint ? (
+          <span className="text-[11px] text-blue-500 font-medium">{actionHint}</span>
+        ) : (
+          badge && <span className="text-[11px] text-neutral-400 font-medium">{badge}</span>
+        )}
       </div>
       {children}
     </section>
@@ -803,6 +821,12 @@ const AREAS = [
     description: { zh: '与信ROS相关测试项的统一管理。', ja: '与信ROS関連のテスト項目を統一管理する。' },
     icon: <FileText className="text-cyan-600" size={22} />
   },
+  {
+    id: 'meikancho' as AreaId,
+    title: { zh: '名館長クラウド区域', ja: '名館長クラウドエリア' },
+    description: { zh: '名館長クラウド相关测试项的统一管理。', ja: '名館長クラウド関連のテスト項目を統一管理する。' },
+    icon: <Cloud className="text-sky-600" size={22} />
+  },
 ];
 
 export default function TestCenter({ onBack }: TestCenterProps) {
@@ -845,7 +869,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const initialAreaUpdatedAtMap = useMemo<Record<string, number>>(() => {
     const map: Record<string, number> = {};
-    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros'];
+    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho'];
     for (const id of allAreaIds) {
       const cache = loadAreaCache(id);
       if (cache) map[id] = cache.updatedAt;
@@ -857,6 +881,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
   const [lang, setLang] = useState<Lang>('zh');
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
+  const [bugListOpen, setBugListOpen] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
@@ -1529,6 +1554,16 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     );
   }
 
+  if (bugListOpen) {
+    return (
+      <BugList
+        lang={lang}
+        onHome={onBack}
+        onBack={() => setBugListOpen(false)}
+      />
+    );
+  }
+
   return (
     <>
     <div className="space-y-6">
@@ -1861,7 +1896,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* 3 つのダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" onClick={() => setBugListOpen(true)} actionHint={t('bugListEnter')}>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
