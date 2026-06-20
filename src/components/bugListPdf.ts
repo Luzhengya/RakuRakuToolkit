@@ -1,10 +1,11 @@
-// BUG一覧の検索結果を自己完結 HTML（A4横）で出力する。別ウィンドウで印刷/PDF保存。
 import { type Lang } from '../i18n/testcenter';
 
 export type BugPdfItem = {
   id: string;
   no: string;
   system: string;
+  module: string;
+  priority: string;
   testCaseName: string;
   bugDesc: string;
   judgment: string;
@@ -17,6 +18,8 @@ export type BugPdfItem = {
   actualResult: string;
   remarks: string;
   caseNumber: string;
+  browserVersion: string;
+  appVersion: string;
 };
 
 export type BugPdfFilters = {
@@ -27,19 +30,25 @@ export type BugPdfFilters = {
   status: string;
 };
 
-// 印刷向けの淡色（背景色, 文字色）
-const JUDGMENT_PRINT: Record<string, [string, string]> = {
-  '確認OK': ['#ecfdf5', '#047857'],
-  'NG': ['#fef2f2', '#b91c1c'],
-  'NG確認要': ['#fffbeb', '#b45309'],
-  '想定以外NG': ['#faf5ff', '#7e22ce'],
+const JUDGMENT_COLOR: Record<string, { bg: string; fg: string; border: string }> = {
+  'NG':        { bg: '#fef2f2', fg: '#dc2626', border: '#fecaca' },
+  'NG確認要':   { bg: '#fffbeb', fg: '#d97706', border: '#fde68a' },
+  '想定以外NG': { bg: '#faf5ff', fg: '#7c3aed', border: '#ddd6fe' },
+  '確認OK':     { bg: '#ecfdf5', fg: '#059669', border: '#a7f3d0' },
 };
-const STATUS_PRINT: Record<string, [string, string]> = {
-  '対応待ち': ['#f3f4f6', '#4b5563'],
-  '対応中': ['#eff6ff', '#1d4ed8'],
-  '確認中': ['#fffbeb', '#b45309'],
-  '対応不要': ['#f9fafb', '#6b7280'],
-  '対応完了': ['#ecfdf5', '#047857'],
+
+const STATUS_COLOR: Record<string, { bg: string; fg: string; border: string }> = {
+  '対応待ち': { bg: '#fef2f2', fg: '#dc2626', border: '#fecaca' },
+  '対応中':   { bg: '#fffbeb', fg: '#d97706', border: '#fde68a' },
+  '確認中':   { bg: '#eff6ff', fg: '#2563eb', border: '#bfdbfe' },
+  '対応不要': { bg: '#f3f4f6', fg: '#6b7280', border: '#d1d5db' },
+  '対応完了': { bg: '#ecfdf5', fg: '#059669', border: '#a7f3d0' },
+};
+
+const PRIORITY_DONUT_COLOR: Record<string, string> = {
+  '高': '#dc2626',
+  '中': '#f59e0b',
+  '低': '#22c55e',
 };
 
 function esc(text: string): string {
@@ -51,20 +60,46 @@ function esc(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function pill(value: string, palette: Record<string, [string, string]>): string {
+function judgPill(value: string): string {
   if (!value) return '-';
-  const [bg, fg] = palette[value] ?? ['#f3f4f6', '#4b5563'];
-  return `<span class="pill" style="background:${bg};color:${fg};">${esc(value)}</span>`;
+  const c = JUDGMENT_COLOR[value] ?? { bg: '#f3f4f6', fg: '#4b5563', border: '#d1d5db' };
+  return `<span class="tag-pill" style="background:${c.bg};color:${c.fg};border-color:${c.border};">${esc(value)}</span>`;
+}
+
+function statusPill(value: string): string {
+  if (!value) return '-';
+  const c = STATUS_COLOR[value] ?? { bg: '#f3f4f6', fg: '#4b5563', border: '#d1d5db' };
+  return `<span class="tag-pill" style="background:${c.bg};color:${c.fg};border-color:${c.border};">${esc(value)}</span>`;
 }
 
 function fmtDate(value: string): string {
-  return value ? value.slice(0, 10) : '-';
+  if (!value) return '-';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return `${m[1]}年${Number(m[2])}月${Number(m[3])}日`;
+    return value;
+  }
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
-function formatNow(): string {
+function fmtNow(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${d.getFullYear()}年${p(d.getMonth() + 1)}月${p(d.getDate())}日`;
+}
+
+function fmtNowCompact(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+}
+
+function fmtMonth(m: string): string {
+  if (!m) return '';
+  const match = m.match(/^(\d{4})(\d{2})$/);
+  if (match) return `${match[1]}年${Number(match[2])}月`;
+  return m;
 }
 
 function countBy(items: BugPdfItem[], key: (it: BugPdfItem) => string): Map<string, number> {
@@ -76,158 +111,364 @@ function countBy(items: BugPdfItem[], key: (it: BugPdfItem) => string): Map<stri
   return map;
 }
 
-export function buildBugListPdfHtml(items: BugPdfItem[], filters: BugPdfFilters, lang: Lang): string {
+function parseSteps(text: string): string[] {
+  if (!text || !text.trim()) return [];
+  return text.split(/\n/).map(l => l.replace(/^\s*\d+[\.\)、）]\s*/, '').trim()).filter(Boolean);
+}
+
+function buildDonutSvg(counts: Map<string, number>, total: number, colorMap: Record<string, string>): string {
+  if (total === 0) return '<svg viewBox="0 0 140 140" width="140" height="140"></svg>';
+  const r = 52;
+  const cx = 70, cy = 70;
+  const C = 2 * Math.PI * r;
+  let offset = 0;
+  const segments: string[] = [];
+  const entries = Array.from(counts.entries()).sort(([, a], [, b]) => b - a);
+
+  for (const [key, count] of entries) {
+    const len = (count / total) * C;
+    const color = colorMap[key] || '#94a3b8';
+    segments.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="20" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" />`);
+    offset += len;
+  }
+
+  return `<svg viewBox="0 0 140 140" width="140" height="140">
+    <g transform="rotate(-90 ${cx} ${cy})">${segments.join('')}</g>
+    <text x="${cx}" y="${cy - 4}" text-anchor="middle" dominant-baseline="central" font-size="28" font-weight="700" fill="#1f2937">${total}</text>
+    <text x="${cx}" y="${cy + 16}" text-anchor="middle" dominant-baseline="central" font-size="11" fill="#6b7280">件</text>
+  </svg>`;
+}
+
+function fmtEnvVersion(it: BugPdfItem): string {
+  const parts: string[] = [];
+  if (it.browserVersion) parts.push(it.browserVersion);
+  if (it.appVersion) parts.push(it.appVersion);
+  return parts.join(' / ') || '-';
+}
+
+export function buildBugListHtml(
+  items: BugPdfItem[],
+  filters: BugPdfFilters,
+  lang: Lang,
+  childContentMap: Record<string, string> = {}
+): string {
   const L =
     lang === 'zh'
       ? {
-          title: 'BUG一览', exportedAt: '导出时间', total: '总件数', cond: '检索条件',
-          keyword: '关键字', system: '系统区分', month: '月份', judgment: '判定', status: '状态', all: '全部',
-          byJudg: '判定别件数', byStatus: '状态别件数',
-          colNo: 'NO', colSystem: '系统区分', colCase: '测试案件名', colDesc: 'BUG概要',
-          colJudg: '判定', colStatus: '状态', colDate: '测试时间', colAssignee: '测试担当者', colMonth: '月份',
-          detailTitle: '明细', reproSteps: '再现手顺', expected: '预定结果', actual: '实际结果', remarks: '备注', caseNo: '案例编号',
+          reportTitle: '【TestCenter】BUG报告',
+          period: '对象期间', project: '项目', createdAt: '创建日', assignee: '负责人',
+          total: '总件数', pending: '未对应', inProgress: '对应中', resolved: '已解决',
+          moduleCounts: 'モジュール別 件数', priorityBreakdown: '優先度 内訳',
+          bugList: 'BUG一览', expandAll: '全部展开', collapseAll: '全部收起',
+          caseName: '案件名', module: 'モジュール', envVersion: '環境 / バージョン', execDate: '実施日',
+          bugDesc: 'BUG概要', reproSteps: '再现手顺', expected: '期待结果', actual: '实际结果',
+          screenshots: '详细截图', noChild: '无子页面内容',
+          all: '全部', count: '件',
         }
       : {
-          title: 'BUG一覧', exportedAt: '出力日時', total: '総件数', cond: '検索条件',
-          keyword: 'キーワード', system: 'システム', month: '月次', judgment: '判定', status: 'ステータス', all: 'すべて',
-          byJudg: '判定別件数', byStatus: 'ステータス別件数',
-          colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'BUG説明',
-          colJudg: '判定', colStatus: 'ステータス', colDate: '実施日', colAssignee: '担当者', colMonth: '月次',
-          detailTitle: '明細', reproSteps: '再現ステップ', expected: '予定結果', actual: '実際結果', remarks: '備考欄', caseNo: 'ケース番号',
+          reportTitle: '【TestCenter】不具合レポート',
+          period: '対象期間', project: 'プロジェクト', createdAt: '作成日', assignee: '担当',
+          total: '総件数', pending: '未対応', inProgress: '対応中', resolved: '解決済',
+          moduleCounts: 'モジュール別 件数', priorityBreakdown: '優先度 内訳',
+          bugList: '不具合一覧', expandAll: 'すべて展開', collapseAll: 'すべて閉じる',
+          caseName: '案件名', module: 'モジュール', envVersion: '環境 / バージョン', execDate: '実施日',
+          bugDesc: 'BUG概要', reproSteps: '再現手順', expected: '期待結果', actual: '実際の結果',
+          screenshots: '詳細スクリーンショット', noChild: '子ページの内容はありません',
+          all: 'すべて', count: '件',
         };
 
-  const condParts: string[] = [];
-  condParts.push(`${L.month}: ${filters.month || L.all}`);
-  condParts.push(`${L.system}: ${filters.system || L.all}`);
-  condParts.push(`${L.judgment}: ${filters.judgments.length ? filters.judgments.join('、') : L.all}`);
-  condParts.push(`${L.status}: ${filters.status || L.all}`);
-  if (filters.keyword.trim()) condParts.push(`${L.keyword}: ${filters.keyword.trim()}`);
+  const total = items.length;
+  const pendingCount = items.filter(b => b.status === '対応待ち').length;
+  const inProgressCount = items.filter(b => b.status === '対応中' || b.status === '確認中').length;
+  const resolvedCount = items.filter(b => b.status === '対応完了').length;
 
-  const judgSummary = Array.from(countBy(items, (it) => it.judgment).entries())
-    .map(([k, c]) => `${pill(k, JUDGMENT_PRINT)} <b>${c}</b>`)
-    .join('　');
-  const statusSummary = Array.from(countBy(items, (it) => it.status).entries())
-    .map(([k, c]) => `${pill(k, STATUS_PRINT)} <b>${c}</b>`)
-    .join('　');
+  const moduleCounts = countBy(items, it => it.module);
+  const priorityCounts = countBy(items, it => it.priority);
 
-  const rows = items
-    .map(
-      (it) => `
-      <tr>
-        <td class="nowrap">${esc(it.no || '-')}</td>
-        <td class="nowrap">${esc(it.system || '-')}</td>
-        <td>${esc(it.testCaseName || '-')}</td>
-        <td class="desc">${esc(it.bugDesc || '-')}</td>
-        <td class="nowrap">${pill(it.judgment, JUDGMENT_PRINT)}</td>
-        <td class="nowrap">${pill(it.status, STATUS_PRINT)}</td>
-        <td class="nowrap">${esc(fmtDate(it.execDate))}</td>
-        <td class="nowrap">${esc(it.assignee || '-')}</td>
-        <td class="nowrap">${esc(it.month || '-')}</td>
-      </tr>`
-    )
-    .join('');
+  const maxModuleCount = Math.max(...Array.from(moduleCounts.values()), 1);
+  const moduleBarHtml = Array.from(moduleCounts.entries())
+    .sort(([, a], [, b]) => b - a)
+    .map(([mod, cnt]) => {
+      const pct = (cnt / maxModuleCount) * 100;
+      return `<div class="bar-row"><span class="bar-label">${esc(mod)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(1)}%"></div></div><span class="bar-count">${cnt}</span></div>`;
+    }).join('');
 
-  // 明細：各 BUG の詳細カード（画面の展開内容に相当）
-  const field = (label: string, value: string, full = false, pre = false) =>
-    `<div class="f${full ? ' full' : ''}"><div class="f-label">${esc(label)}</div><div class="f-val${pre ? ' pre' : ''}">${esc(value || '-')}</div></div>`;
+  const donutSvg = buildDonutSvg(priorityCounts, total, PRIORITY_DONUT_COLOR);
+  const legendHtml = Array.from(priorityCounts.entries())
+    .sort(([, a], [, b]) => b - a)
+    .map(([k, c]) => {
+      const color = PRIORITY_DONUT_COLOR[k] || '#94a3b8';
+      return `<div class="legend-item"><span class="legend-dot" style="background:${color}"></span><span class="legend-label">${esc(k)}</span><span class="legend-count">${c}</span></div>`;
+    }).join('');
 
-  const detailCards = items
-    .map((it) => {
-      const metaParts = [
-        `${L.colAssignee}: ${it.assignee || '-'}`,
-        `${L.colDate}: ${fmtDate(it.execDate)}`,
-        `${L.colMonth}: ${it.month || '-'}`,
-      ];
-      if (it.caseNumber) metaParts.push(`${L.caseNo}: ${it.caseNumber}`);
-      return `
-      <div class="card">
-        <div class="card-head">
-          <span class="card-no">${esc(it.no || '-')}</span>
-          ${pill(it.judgment, JUDGMENT_PRINT)}
-          ${pill(it.status, STATUS_PRINT)}
-          <span class="card-sys">${esc(it.system || '-')}</span>
-          <span class="card-meta">${esc(metaParts.join('　·　'))}</span>
+  const bugItems = items.map((it) => {
+    const steps = parseSteps(it.reproSteps);
+    const stepsHtml = steps.length > 0
+      ? `<ol class="steps-list">${steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol>`
+      : `<p class="text-muted">-</p>`;
+
+    const childRaw = childContentMap[it.id] ?? '';
+    const childSection = childRaw.trim()
+      ? `<div class="detail-section"><h5>${esc(L.screenshots)}</h5><div class="child-body">${childRaw}</div></div>`
+      : `<div class="detail-section"><h5>${esc(L.screenshots)}</h5><p class="text-muted">${esc(L.noChild)}</p></div>`;
+
+    return `
+    <details class="bug-item" id="bug-${esc(it.no || it.id)}">
+      <summary class="bug-row">
+        <span class="bug-id">${esc(it.no || '-')}</span>
+        <span class="bug-desc">${esc(it.bugDesc || it.testCaseName || '-')}</span>
+        <span class="bug-tags">
+          ${judgPill(it.judgment)}
+          ${statusPill(it.status)}
+        </span>
+        <span class="bug-arrow">›</span>
+      </summary>
+      <div class="bug-detail">
+        <h4 class="detail-title">${esc(L.caseName)}</h4>
+        <p class="detail-case-name">${esc(it.testCaseName || it.bugDesc || '-')}</p>
+
+        <div class="detail-meta">
+          <div class="dm"><span class="dm-label">${esc(L.module)}</span><span class="dm-value">${esc(it.module || '-')}</span></div>
+          <div class="dm"><span class="dm-label">${esc(L.envVersion)}</span><span class="dm-value">${esc(fmtEnvVersion(it))}</span></div>
+          <div class="dm dm-last"><span class="dm-label">${esc(L.execDate)}</span><span class="dm-value">${esc(fmtDate(it.execDate))}</span></div>
         </div>
-        <div class="card-grid">
-          ${field(L.colCase, it.testCaseName, true)}
-          ${field(L.colDesc, it.bugDesc, true)}
-          ${field(L.expected, it.expectedResult)}
-          ${field(L.actual, it.actualResult)}
-          ${field(L.reproSteps, it.reproSteps, true, true)}
-          ${field(L.remarks, it.remarks, true)}
+
+        <div class="detail-section">
+          <h5>${esc(L.bugDesc)}</h5>
+          <p>${esc(it.bugDesc || '-')}</p>
         </div>
-      </div>`;
-    })
-    .join('');
+
+        <div class="detail-section">
+          <h5>${esc(L.reproSteps)}</h5>
+          ${stepsHtml}
+        </div>
+
+        <div class="result-grid">
+          <div class="result-card expected">
+            <h5><span class="result-dot green"></span>${esc(L.expected)}</h5>
+            <p>${esc(it.expectedResult || '-')}</p>
+          </div>
+          <div class="result-card actual">
+            <h5><span class="result-dot red"></span>${esc(L.actual)}</h5>
+            <p>${esc(it.actualResult || '-')}</p>
+          </div>
+        </div>
+
+        ${childSection}
+      </div>
+    </details>`;
+  }).join('');
 
   return `<!DOCTYPE html>
 <html lang="${lang === 'zh' ? 'zh' : 'ja'}">
 <head>
 <meta charset="utf-8" />
-<title>${esc(L.title)}_${formatNow().slice(0, 10).replace(/\//g, '')}</title>
+<title>${esc(L.reportTitle)}_${fmtNowCompact()}</title>
 <style>
-  @page { size: A4 landscape; margin: 10mm; }
-  * { box-sizing: border-box; }
-  body { font-family: "Yu Gothic","Meiryo",system-ui,sans-serif; color:#1f2937; margin:0; padding:14px; }
-  h1 { font-size:20px; margin:0 0 4px; border-bottom:3px solid #0f172a; padding-bottom:6px; }
-  .meta { font-size:11px; color:#6b7280; margin-top:6px; line-height:1.7; }
-  .meta b { color:#111827; }
-  .summary { margin:10px 0 6px; font-size:12px; display:flex; flex-wrap:wrap; gap:18px; }
-  .summary .label { color:#6b7280; margin-right:6px; }
-  .pill { display:inline-block; border-radius:9999px; padding:1px 8px; font-size:11px; font-weight:600; }
-  table { width:100%; border-collapse:collapse; font-size:11px; margin-top:8px; table-layout:fixed; }
-  th,td { border:1px solid #d1d5db; padding:4px 6px; text-align:left; vertical-align:top; word-break:break-word; }
-  th { background:#0f172a; color:#fff; font-weight:600; }
-  td.nowrap { white-space:nowrap; }
-  td.desc { font-size:10.5px; }
-  col.c-no{width:48px;} col.c-sys{width:84px;} col.c-case{width:150px;} col.c-desc{width:auto;}
-  col.c-judg{width:74px;} col.c-status{width:74px;} col.c-date{width:74px;} col.c-assi{width:70px;} col.c-month{width:56px;}
-  tbody tr:nth-child(even){ background:#f8fafc; }
-  /* 明細カード */
-  .detail-title { font-size:15px; font-weight:700; margin:22px 0 8px; padding-bottom:4px; border-bottom:2px solid #0f172a; }
-  .card { border:1px solid #d1d5db; border-radius:8px; margin-bottom:10px; overflow:hidden; }
-  .card-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; background:#f1f5f9; border-bottom:1px solid #e2e8f0; padding:6px 10px; }
-  .card-no { font-weight:700; font-size:13px; color:#0f172a; }
-  .card-sys { font-size:11px; color:#475569; }
-  .card-meta { font-size:10.5px; color:#6b7280; margin-left:auto; }
-  .card-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; padding:10px 12px; }
-  .f.full { grid-column:1 / -1; }
-  .f-label { font-size:10px; color:#6b7280; font-weight:600; margin-bottom:2px; }
-  .f-val { font-size:11.5px; color:#1f2937; word-break:break-word; }
-  .f-val.pre { white-space:pre-wrap; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Yu Gothic","Meiryo","Hiragino Sans","Microsoft YaHei",system-ui,sans-serif; color:#1f2937; background:#fff; line-height:1.6; }
+
+  .report { max-width:1060px; margin:0 auto; padding:48px 40px 32px; }
+
+  /* ── Header ── */
+  .report-header { margin-bottom:36px; }
+  .report-title { font-size:26px; font-weight:800; color:#111827; letter-spacing:-0.5px; margin-bottom:16px; }
+  .meta-row { display:flex; gap:40px; border-bottom:1px solid #e5e7eb; padding-bottom:16px; }
+  .meta-item { display:flex; flex-direction:column; gap:2px; }
+  .meta-label { font-size:11px; color:#9ca3af; font-weight:500; }
+  .meta-value { font-size:14px; color:#111827; font-weight:500; }
+
+  /* ── Summary Cards ── */
+  .summary-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:32px; }
+  .summary-card { border:1px solid #e5e7eb; border-radius:10px; padding:16px 20px; }
+  .summary-card .card-label { font-size:12px; color:#6b7280; font-weight:500; margin-bottom:4px; }
+  .summary-card .card-value { font-size:32px; font-weight:800; line-height:1.1; }
+  .summary-card .card-unit { font-size:14px; font-weight:400; color:#9ca3af; margin-left:4px; }
+  .card-black .card-value { color:#111827; }
+  .card-red .card-value { color:#dc2626; }
+  .card-amber .card-value { color:#d97706; }
+  .card-green .card-value { color:#059669; }
+
+  /* ── Statistics ── */
+  .stats-row { display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-bottom:40px; }
+  .stat-panel { border:1px solid #e5e7eb; border-radius:10px; padding:20px 24px; }
+  .stat-panel h3 { font-size:14px; font-weight:700; color:#111827; margin-bottom:16px; }
+
+  /* Bar chart */
+  .bar-row { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+  .bar-row:last-child { margin-bottom:0; }
+  .bar-label { font-size:13px; color:#374151; min-width:90px; text-align:right; flex-shrink:0; }
+  .bar-track { flex:1; height:10px; background:#eef2ff; border-radius:5px; overflow:hidden; }
+  .bar-fill { height:100%; background:#6366f1; border-radius:5px; }
+  .bar-count { font-size:13px; color:#6b7280; min-width:24px; text-align:right; }
+
+  /* Donut chart */
+  .donut-wrap { display:flex; align-items:center; gap:32px; }
+  .legend { display:flex; flex-direction:column; gap:8px; }
+  .legend-item { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .legend-dot { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
+  .legend-label { color:#374151; min-width:70px; }
+  .legend-count { color:#111827; font-weight:600; }
+
+  /* ── Bug List ── */
+  .list-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+  .list-header h3 { font-size:16px; font-weight:700; color:#111827; }
+  .list-header h3 span { font-weight:400; color:#6b7280; margin-left:6px; font-size:14px; }
+  .toggle-btn { padding:6px 16px; font-size:12px; font-weight:500; border:1px solid #d1d5db; border-radius:6px; background:#fff; color:#374151; cursor:pointer; }
+  .toggle-btn:hover { background:#f9fafb; }
+
+  /* Bug row */
+  .bug-item { border:1px solid #e5e7eb; border-radius:8px; margin-bottom:8px; overflow:hidden; background:#fff; }
+  .bug-item[open] { border-color:#d1d5db; }
+  .bug-row { display:flex; align-items:center; gap:12px; padding:12px 16px; cursor:pointer; list-style:none; user-select:none; font-size:14px; }
+  .bug-row::-webkit-details-marker { display:none; }
+  .bug-row:hover { background:#fafbfc; }
+  .bug-id { font-size:13px; font-weight:600; color:#2563eb; min-width:36px; }
+  .bug-desc { flex:1; color:#374151; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .bug-tags { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+  .tag-pill { display:inline-block; font-size:11px; font-weight:600; padding:2px 10px; border-radius:9999px; border:1px solid; }
+  .bug-arrow { font-size:18px; color:#d1d5db; transition:transform 0.2s; flex-shrink:0; }
+  .bug-item[open] .bug-arrow { transform:rotate(90deg); }
+
+  /* Bug detail */
+  .bug-detail { border-top:1px solid #e5e7eb; padding:20px 24px; background:#fafbfc; }
+  .detail-title { font-size:12px; color:#9ca3af; font-weight:500; margin-bottom:4px; }
+  .detail-case-name { font-size:16px; font-weight:700; color:#111827; margin-bottom:20px; }
+
+  .detail-meta { display:grid; grid-template-columns:repeat(3,1fr); gap:0; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:24px; background:#fff; }
+  .dm { padding:12px 16px; border-right:1px solid #e5e7eb; }
+  .dm.dm-last { border-right:none; }
+  .dm-label { display:block; font-size:11px; color:#9ca3af; font-weight:500; margin-bottom:4px; }
+  .dm-value { display:block; font-size:13px; color:#111827; font-weight:500; }
+
+  .detail-section { margin-bottom:20px; }
+  .detail-section h5 { font-size:13px; font-weight:700; color:#374151; margin-bottom:8px; }
+  .detail-section p { font-size:14px; color:#4b5563; line-height:1.7; }
+  .text-muted { color:#9ca3af; font-style:italic; }
+
+  /* Steps */
+  .steps-list { list-style:none; padding:0; counter-reset:step; }
+  .steps-list li { display:flex; align-items:flex-start; gap:12px; margin-bottom:8px; font-size:14px; color:#4b5563; }
+  .steps-list li::before { counter-increment:step; content:counter(step); display:flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:#eff6ff; color:#2563eb; font-size:12px; font-weight:700; flex-shrink:0; }
+
+  /* Expected / Actual */
+  .result-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+  .result-card { border-radius:10px; padding:16px 20px; }
+  .result-card h5 { font-size:13px; font-weight:700; margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .result-card p { font-size:14px; line-height:1.6; }
+  .result-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+  .result-dot.green { background:#059669; }
+  .result-dot.red { background:#dc2626; }
+  .result-card.expected { background:#f0fdf4; border-left:3px solid #22c55e; }
+  .result-card.expected h5 { color:#059669; }
+  .result-card.expected p { color:#374151; }
+  .result-card.actual { background:#fef2f2; border-left:3px solid #ef4444; }
+  .result-card.actual h5 { color:#dc2626; }
+  .result-card.actual p { color:#374151; }
+
+  /* Child content / Screenshots */
+  .child-body { font-size:13px; color:#374151; display:flex; flex-wrap:wrap; gap:12px; }
+  .child-body img { width:480px; height:auto; border-radius:6px; border:1px solid #e5e7eb; cursor:pointer; transition:opacity 0.2s; }
+  .child-body img:hover { opacity:0.85; }
+
+  /* Lightbox */
+  .lightbox-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.75); z-index:9999; justify-content:center; align-items:center; cursor:zoom-out; }
+  .lightbox-overlay.active { display:flex; }
+  .lightbox-overlay img { max-width:92vw; max-height:92vh; border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,0.3); }
+
+  /* ── Footer ── */
+  .report-footer { display:flex; justify-content:space-between; align-items:center; padding:24px 0 0; margin-top:40px; border-top:1px solid #e5e7eb; font-size:12px; color:#9ca3af; }
+
+  /* ── Print ── */
   @media print {
-    thead { display: table-header-group; }
-    tr { page-break-inside: avoid; }
-    .card { page-break-inside: avoid; }
-    .detail-title { page-break-before: always; }
+    body { background:#fff; }
+    .report { padding:20px; }
+    .toggle-btn { display:none; }
+    .bug-item { page-break-inside:avoid; }
+    .bug-row:hover { background:transparent; }
+    .child-body img { width:400px; }
+    .lightbox-overlay { display:none !important; }
+  }
+
+  /* ── Responsive ── */
+  @media (max-width:768px) {
+    .report { padding:24px 16px; }
+    .meta-row { flex-wrap:wrap; gap:16px; }
+    .summary-grid { grid-template-columns:repeat(2,1fr); }
+    .stats-row { grid-template-columns:1fr; }
+    .detail-meta { grid-template-columns:1fr; }
+    .dm { border-right:none; border-bottom:1px solid #e5e7eb; }
+    .dm.dm-last { border-bottom:none; }
+    .result-grid { grid-template-columns:1fr; }
+    .child-body img { width:100%; }
   }
 </style>
 </head>
 <body>
-  <h1>${esc(L.title)}</h1>
-  <div class="meta">
-    <span><b>${L.exportedAt}:</b> ${esc(formatNow())}</span>　<span><b>${L.total}:</b> ${items.length}</span><br>
-    <b>${L.cond}:</b> ${esc(condParts.join('　|　'))}
-  </div>
-  <div class="summary">
-    <div><span class="label">${L.byJudg}:</span> ${judgSummary || '-'}</div>
-    <div><span class="label">${L.byStatus}:</span> ${statusSummary || '-'}</div>
-  </div>
-  <table>
-    <colgroup>
-      <col class="c-no"/><col class="c-sys"/><col class="c-case"/><col class="c-desc"/>
-      <col class="c-judg"/><col class="c-status"/><col class="c-date"/><col class="c-assi"/><col class="c-month"/>
-    </colgroup>
-    <thead>
-      <tr>
-        <th>${L.colNo}</th><th>${L.colSystem}</th><th>${L.colCase}</th><th>${L.colDesc}</th>
-        <th>${L.colJudg}</th><th>${L.colStatus}</th><th>${L.colDate}</th><th>${L.colAssignee}</th><th>${L.colMonth}</th>
-      </tr>
-    </thead>
-    <tbody>${rows || `<tr><td colspan="9" style="text-align:center;color:#9ca3af;">-</td></tr>`}</tbody>
-  </table>
+  <div class="report">
+    <!-- Header -->
+    <header class="report-header">
+      <h1 class="report-title">${esc(L.reportTitle)}</h1>
+      <div class="meta-row">
+        <div class="meta-item"><span class="meta-label">${esc(L.period)}</span><span class="meta-value">${esc(fmtMonth(filters.month) || L.all)}</span></div>
+        <div class="meta-item"><span class="meta-label">${esc(L.project)}</span><span class="meta-value">${esc(filters.system || L.all)}</span></div>
+        <div class="meta-item"><span class="meta-label">${esc(L.createdAt)}</span><span class="meta-value">${esc(fmtNow())}</span></div>
+        <div class="meta-item"><span class="meta-label">${esc(L.assignee)}</span><span class="meta-value">TestCenter</span></div>
+      </div>
+    </header>
 
-  ${items.length ? `<div class="detail-title">${esc(L.detailTitle)}</div>${detailCards}` : ''}
+    <!-- Summary Cards -->
+    <div class="summary-grid">
+      <div class="summary-card card-black"><div class="card-label">${esc(L.total)}</div><div class="card-value">${total}<span class="card-unit">${esc(L.count)}</span></div></div>
+      <div class="summary-card card-red"><div class="card-label">${esc(L.pending)}</div><div class="card-value">${pendingCount}<span class="card-unit">${esc(L.count)}</span></div></div>
+      <div class="summary-card card-amber"><div class="card-label">${esc(L.inProgress)}</div><div class="card-value">${inProgressCount}<span class="card-unit">${esc(L.count)}</span></div></div>
+      <div class="summary-card card-green"><div class="card-label">${esc(L.resolved)}</div><div class="card-value">${resolvedCount}<span class="card-unit">${esc(L.count)}</span></div></div>
+    </div>
+
+    <!-- Statistics -->
+    <div class="stats-row">
+      <div class="stat-panel">
+        <h3>${esc(L.moduleCounts)}</h3>
+        ${moduleBarHtml}
+      </div>
+      <div class="stat-panel">
+        <h3>${esc(L.priorityBreakdown)}</h3>
+        <div class="donut-wrap">
+          ${donutSvg}
+          <div class="legend">${legendHtml}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bug List -->
+    <section>
+      <div class="list-header">
+        <h3>${esc(L.bugList)}<span>（${total}${esc(L.count)}）</span></h3>
+        <button class="toggle-btn" onclick="(function(){var ds=document.querySelectorAll('details.bug-item');var allOpen=Array.from(ds).every(function(d){return d.open});ds.forEach(function(d){d.open=!allOpen});this.textContent=allOpen?'${esc(L.expandAll)}':'${esc(L.collapseAll)}';}).call(this)">${esc(L.expandAll)}</button>
+      </div>
+      ${bugItems}
+    </section>
+
+    <!-- Footer -->
+    <footer class="report-footer">
+      <span>TestCenter-${lang === 'zh' ? 'BUG报告' : '不具合レポート'} ${fmtNowCompact()}</span>
+      <span>version1.0</span>
+    </footer>
+  </div>
+
+  <!-- Lightbox for image zoom -->
+  <div class="lightbox-overlay" id="lightbox" onclick="this.classList.remove('active')">
+    <img id="lightbox-img" src="" alt="" />
+  </div>
+  <script>
+    document.querySelectorAll('.child-body img').forEach(function(img) {
+      img.addEventListener('dblclick', function() {
+        var lb = document.getElementById('lightbox');
+        document.getElementById('lightbox-img').src = this.src;
+        lb.classList.add('active');
+      });
+    });
+  </script>
 </body>
 </html>`;
 }
