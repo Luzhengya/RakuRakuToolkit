@@ -1,18 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ChevronDown, Download, Loader2, Search, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Download, Loader2, Search, X, Calendar } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
-import { buildBugListPdfHtml } from './bugListPdf';
+import { buildBugListHtml } from './bugListPdf';
 
 type BugListProps = {
   lang: Lang;
   onHome: () => void;
   onBack: () => void;
+  initialMonth?: string;
 };
 
 type BugItem = {
   id: string;
   no: string;
   system: string;
+  module: string;
+  priority: string;
   testCaseName: string;
   bugDesc: string;
   judgment: string;
@@ -25,6 +28,8 @@ type BugItem = {
   actualResult: string;
   remarks: string;
   caseNumber: string;
+  browserVersion: string;
+  appVersion: string;
 };
 
 const JUDGMENT_COLOR: Record<string, string> = {
@@ -46,6 +51,16 @@ function badge(value: string, palette: Record<string, string>): string {
   return palette[value] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200';
 }
 
+function toMonthKey(value: string): string {
+  const text = value.trim();
+  if (!text) return '';
+  const fullPattern = text.match(/(\d{4})[\-/.年](\d{1,2})/);
+  if (fullPattern) return `${fullPattern[1]}${String(Number(fullPattern[2])).padStart(2, '0')}`;
+  const compactPattern = text.match(/^(\d{4})(\d{2})$/);
+  if (compactPattern) return `${compactPattern[1]}${compactPattern[2]}`;
+  return text;
+}
+
 function noNumber(no: string): number {
   const m = no.match(/(\d+)/);
   return m ? Number(m[1]) : 0;
@@ -55,14 +70,14 @@ function fmtDate(value: string): string {
   return value ? value.slice(0, 10) : '-';
 }
 
-export default function BugList({ lang, onHome, onBack }: BugListProps) {
+export default function BugList({ lang, onHome, onBack, initialMonth = '' }: BugListProps) {
   const L =
     lang === 'zh'
       ? {
           home: '首页', testCenter: '测试中心', title: 'BUG一览',
           keyword: '关键字', keywordPh: 'NO / 测试案件名 / BUG概要',
           system: '系统区分', month: '月份', judgment: '判定', status: '状态',
-          all: '全部', clear: '清除条件', search: '检索', result: '检索结果', count: '件', exportPdf: '导出 PDF',
+          all: '全部', clear: '清除条件', search: '检索', result: '检索结果', count: '件', exportHtml: '导出 HTML',
           sumTotal: '合计件数', sumNg: 'NG件数', sumIncomplete: '未完成', sumDone: '已完成',
           colNo: 'NO', colSystem: '系统区分', colCase: '测试案件名', colDesc: 'BUG概要',
           colJudg: '判定', colStatus: '状态', colDate: '测试时间', colAssignee: '测试担当者', colMonth: '月份',
@@ -75,7 +90,7 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
           home: 'ホーム', testCenter: '測試中心', title: 'BUG一覧',
           keyword: 'キーワード', keywordPh: 'NO / テスト案件名 / BUG説明',
           system: 'システム', month: '月次', judgment: '判定', status: 'ステータス',
-          all: 'すべて', clear: '条件クリア', search: '検索', result: '検索結果', count: '件', exportPdf: 'PDF出力',
+          all: 'すべて', clear: '条件クリア', search: '検索', result: '検索結果', count: '件', exportHtml: 'HTML出力',
           sumTotal: '合計件数', sumNg: 'NG件数', sumIncomplete: '未完了', sumDone: '対応完了',
           colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'BUG説明',
           colJudg: '判定', colStatus: 'ステータス', colDate: '実施日', colAssignee: '担当者', colMonth: '月次',
@@ -91,13 +106,29 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
 
   const [keyword, setKeyword] = useState('');
   const [system, setSystem] = useState('');
-  const [month, setMonth] = useState('');
+  const [month, setMonth] = useState(initialMonth);
   const [judgments, setJudgments] = useState<string[]>([]);
   const [status, setStatus] = useState('');
+  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
+  const [monthPickerYear, setMonthPickerYear] = useState(() => {
+    if (initialMonth && initialMonth.length >= 4) return Number(initialMonth.slice(0, 4));
+    return new Date().getFullYear();
+  });
+  const monthPickerRef = useRef<HTMLDivElement>(null);
 
   const [openId, setOpenId] = useState<string | null>(null);
   const [childHtml, setChildHtml] = useState<string>('');
   const [childLoading, setChildLoading] = useState(false);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (monthPickerRef.current && !monthPickerRef.current.contains(e.target as Node)) {
+        setMonthPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   useEffect(() => {
     let aborted = false;
@@ -127,10 +158,6 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
     () => Array.from(new Set<string>(allItems.map((b) => b.system).filter(Boolean))).sort(),
     [allItems]
   );
-  const monthOptions = useMemo(
-    () => Array.from(new Set<string>(allItems.map((b) => b.month).filter(Boolean))).sort((a, b) => b.localeCompare(a)),
-    [allItems]
-  );
   const judgmentOptions = useMemo(
     () => Array.from(new Set<string>(allItems.map((b) => b.judgment).filter(Boolean))).sort(),
     [allItems]
@@ -145,7 +172,7 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
     return allItems
       .filter((b) => {
         if (system && b.system !== system) return false;
-        if (month && b.month !== month) return false;
+        if (month && toMonthKey(b.month) !== month) return false;
         if (judgments.length && !judgments.includes(b.judgment)) return false;
         if (status && b.status !== status) return false;
         if (kw) {
@@ -165,19 +192,47 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
     setStatus('');
   };
 
-  const handleExportPdf = () => {
-    const html = buildBugListPdfHtml(
-      filtered,
-      { keyword, system, month, judgments, status },
-      lang
-    );
-    const win = window.open('', '_blank');
-    if (!win) return;
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
-    win.focus();
-    setTimeout(() => win.print(), 300);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportHtml = async () => {
+    setExporting(true);
+    try {
+      const childMap: Record<string, string> = {};
+      const batchSize = 5;
+      for (let i = 0; i < filtered.length; i += batchSize) {
+        const batch = filtered.slice(i, i + batchSize);
+        const results = await Promise.allSettled(
+          batch.map(async (bug) => {
+            const res = await fetch(`/api/test-center/bugs/${encodeURIComponent(bug.id)}/children`);
+            if (res.ok) {
+              const data = await res.json();
+              return { id: bug.id, html: typeof data.html === 'string' ? data.html : '' };
+            }
+            return { id: bug.id, html: '' };
+          })
+        );
+        for (const r of results) {
+          if (r.status === 'fulfilled') childMap[r.value.id] = r.value.html;
+        }
+      }
+
+      const html = buildBugListHtml(filtered, { keyword, system, month, judgments, status }, lang, childMap);
+      const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      a.download = `BUG_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Export failed:', err);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const summary = useMemo(() => {
@@ -274,14 +329,56 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
                 ))}
               </select>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 relative" ref={monthPickerRef}>
               <label className="text-xs font-semibold text-neutral-500">{L.month}</label>
-              <select value={month} onChange={(e) => setMonth(e.target.value)} className={selectCls}>
-                <option value="">{L.all}</option>
-                {monthOptions.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+              <button
+                type="button"
+                onClick={() => setMonthPickerOpen((v) => !v)}
+                className="flex items-center gap-2 bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm text-neutral-700 hover:border-neutral-400 focus:border-neutral-500 focus:outline-none min-w-[120px]"
+              >
+                <Calendar size={14} className="text-neutral-400" />
+                <span className="flex-1 text-left">{month || L.all}</span>
+                <ChevronDown size={14} className={`text-neutral-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
+              </button>
+              {monthPickerOpen && (
+                <div className="absolute top-full right-0 mt-1 z-20 bg-white border border-neutral-200 rounded-xl shadow-lg p-3 w-[260px]">
+                  <div className="flex items-center justify-between mb-2">
+                    <button type="button" onClick={() => setMonthPickerYear((y) => y - 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronLeft size={16} /></button>
+                    <span className="text-sm font-semibold text-neutral-800">{monthPickerYear}</span>
+                    <button type="button" onClick={() => setMonthPickerYear((y) => y + 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronRight size={16} /></button>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const m = i + 1;
+                      const key = `${monthPickerYear}${String(m).padStart(2, '0')}`;
+                      const isActive = month === key;
+                      return (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => { setMonth(key); setMonthPickerOpen(false); }}
+                          className={`rounded-lg py-1.5 text-sm font-medium transition-colors ${
+                            isActive
+                              ? 'bg-neutral-900 text-white'
+                              : 'text-neutral-600 hover:bg-neutral-100'
+                          }`}
+                        >
+                          {m}月
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {month && (
+                    <button
+                      type="button"
+                      onClick={() => { setMonth(''); setMonthPickerOpen(false); }}
+                      className="w-full mt-2 rounded-lg border border-neutral-200 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50 transition-colors"
+                    >
+                      {L.clear}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-neutral-500">{L.judgment}</label>
@@ -340,12 +437,12 @@ export default function BugList({ lang, onHome, onBack }: BugListProps) {
             </div>
             <button
               type="button"
-              onClick={handleExportPdf}
-              disabled={filtered.length === 0}
+              onClick={handleExportHtml}
+              disabled={filtered.length === 0 || exporting}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:bg-neutral-200 disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
             >
-              <Download size={15} />
-              {L.exportPdf}
+              {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+              {L.exportHtml}
             </button>
           </div>
 

@@ -882,6 +882,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [lang, setLang] = useState<Lang>('zh');
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
   const [bugListOpen, setBugListOpen] = useState(false);
+  const [bugListInitialMonth, setBugListInitialMonth] = useState('');
   const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
@@ -1559,7 +1560,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <BugList
         lang={lang}
         onHome={onBack}
-        onBack={() => setBugListOpen(false)}
+        onBack={() => { setBugListOpen(false); setBugListInitialMonth(''); }}
+        initialMonth={bugListInitialMonth}
       />
     );
   }
@@ -1896,14 +1898,27 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* 3 つのダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" onClick={() => setBugListOpen(true)} actionHint={t('bugListEnter')}>
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                  <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
                     <YAxis hide />
                     <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
-                    <Bar dataKey="bug" fill="#0f172a" radius={[4, 4, 0, 0]} maxBarSize={22} />
+                    <Bar
+                      dataKey="bug"
+                      fill="#0f172a"
+                      radius={[4, 4, 0, 0]}
+                      maxBarSize={22}
+                      cursor="pointer"
+                      onClick={(data: any) => {
+                        if (data?.month) {
+                          const monthStr = `${filterYear}${String(data.month).padStart(2, '0')}`;
+                          setBugListInitialMonth(monthStr);
+                          setBugListOpen(true);
+                        }
+                      }}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

@@ -230,7 +230,7 @@ function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
     case "jmotto":
       return matchesAny(["jmottoポータル"]);
     case "univ":
-      return matchesAny(["univ2", "univcontents", "univ"]);
+      return matchesAny(["univ2"]);
     case "overseas":
       return matchesAny(["海外調書", "海外调书"]);
     case "credit":
@@ -240,7 +240,7 @@ function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
     case "univ-app":
       return matchesAny(["univアプリ", "univ アプリ"]);
     case "univ-contents":
-      return matchesAny(["univcontents", "univ contents", "univコンテンツ"]);
+      return matchesAny(["univcontents"]);
     case "nayose":
       return matchesAny(["名寄せアプリ", "名寄せ"]);
     case "gyoshu":
@@ -776,6 +776,8 @@ type BugItem = {
   id: string;
   no: string;
   system: string;
+  module: string;
+  priority: string;
   testCaseName: string;
   bugDesc: string;
   judgment: string;
@@ -788,6 +790,8 @@ type BugItem = {
   actualResult: string;
   remarks: string;
   caseNumber: string;
+  browserVersion: string;
+  appVersion: string;
 };
 
 function rollupToText(prop: any): string {
@@ -823,6 +827,8 @@ function parseBugItem(page: any, relMap: Map<string, string>): BugItem {
     id: page?.id ?? "",
     no: propertyToPlainText(p["No"]),
     system: rollupToText(p["システム"]),
+    module: propertyToPlainText(p["モジュール"]),
+    priority: propertyToPlainText(p["優先度"]),
     testCaseName,
     bugDesc: propertyToPlainText(p["Bug説明"]),
     judgment: propertyToPlainText(p["判定"]),
@@ -835,6 +841,8 @@ function parseBugItem(page: any, relMap: Map<string, string>): BugItem {
     actualResult: propertyToPlainText(p["実際結果"]),
     remarks: propertyToPlainText(p["備考"]),
     caseNumber: propertyToPlainText(p["ケース番号"]),
+    browserVersion: propertyToPlainText(p["ブラウザ / バージョン"]),
+    appVersion: propertyToPlainText(p["アプリバージョン"]),
   };
 }
 

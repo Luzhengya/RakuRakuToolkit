@@ -37,60 +37,47 @@ npm install
 cp .env.example .env.local   # Fill in API keys before running
 ```
 
+No test framework is configured.
+
 ---
 
 ## Architecture
 
-This is a **full-stack TypeScript monorepo** — a single Express server serves both the REST API and the Vite-built React frontend.
+Full-stack TypeScript app ("ToolSetLimo") — one Express server serves both the REST API and the Vite-built React SPA. The app is a collection of internal tools organized into three categories: 文档类 (document tools), 管理类 (management tools), and データ収集类 (data collection).
 
-### Entry Points
+### Server
 
-| Environment | Entry | Notes |
-|------------|-------|-------|
-| Development | `server.ts` | Wraps Vite dev middleware + Express |
-| Production/Vercel | `api/index.ts` | Express app as a serverless function |
+- **Development**: `server.ts` imports the Express app from `api/index.ts`, wraps it with Vite dev middleware, and listens on PORT (default 5173).
+- **Production/Vercel**: `api/index.ts` is the Express app exported as a serverless function. `vercel.json` rewrites `/api/*` to this single function (maxDuration 90s, 1024 MB memory).
+- **All API routes live in `api/index.ts`** (single file, ~1800 lines). File uploads use in-memory storage only (`multer.memoryStorage`) — no disk I/O, required for Vercel serverless.
 
-### Request Flow
+### Frontend
 
-```
-Browser → Vite dev server (port 5173)
-         → /api/* proxy → Express (server.ts → api/index.ts)
-         → All other routes → React SPA (src/App.tsx)
-```
+- **Routing**: `App.tsx` holds a `view` string state and renders the matching component. No router library. Each tool component receives an `onBack` callback.
+- **Styling**: Tailwind CSS v4 via `@tailwindcss/vite` plugin — no `tailwind.config.js` or PostCSS config.
+- **Animations**: `motion` (Framer Motion) for view transitions.
+- **i18n**: `src/i18n/testcenter.ts` provides zh/ja translations for the TestCenter module via a `createT(lang)` helper. Not all components are i18n-aware.
+- **Shared hook**: `src/hooks/useFileUpload.ts` provides drag-and-drop file upload with optional server round-trip (`skipUpload` flag for client-only processing).
+- **Path alias**: `@/*` maps to project root (configured in both `tsconfig.json` and `vite.config.ts`).
 
-On Vercel, `vercel.json` rewrites `/api/*` → `/api/index` (90s timeout, 1024MB).
+### External Services
 
-### Backend (`api/index.ts`)
+All configured via env vars (see `.env.example`):
 
-All API routes live in one file. File uploads use **in-memory storage only** (`multer.memoryStorage`) — no disk I/O, which is required for Vercel serverless.
+- **Notion API** — TestCenter progress data, history storage, monthly achievement reports, bug list (multiple database IDs).
+- **Adobe PDF Services** — PDF → Word conversion.
+- **Browserless (Playwright)** — headless browser for 時事速報 data collection scraping.
+- **時事通信社 (jijiweb)** — login credentials for news article scraping.
 
-Key routes:
-- `POST /api/upload` — Detect file type (Excel/PDF) and return metadata
-- `POST /api/convert` — Excel → Markdown (ExcelJS)
-- `POST /api/pdf-convert` — PDF → Word (Adobe PDF Services SDK)
-- `POST /api/pdf-merge` — Merge PDFs (pdf-lib)
-- `GET/POST /api/test-center` — Notion DB integration for test progress
-- `POST /api/jiji-search` — Japanese news scraping (Playwright via Browserless)
+### API Routes
 
-### Frontend (`src/`)
-
-`App.tsx` is the view router — it holds the current view string and renders the active component. Navigation categories ('文档类', '管理类', 'データ収集类') filter which tools appear on `Home.tsx`.
-
-`useFileUpload` hook (`src/hooks/useFileUpload.ts`) handles drag-drop, format validation, and upload state for all file-processing components.
-
-### Key External Dependencies
-
-| Service | Env Var | Used For |
-|---------|---------|----------|
-| Adobe PDF Services | `PDF_SERVICES_CLIENT_ID` / `PDF_SERVICES_CLIENT_SECRET` | PDF → Word conversion |
-| Notion API | `NOTION_API_KEY` / `NOTION_PROGRESS_DATABASE_ID` | Test Center dashboard |
-| Browserless | `BROWSERLESS_TOKEN` | Headless browser for data collection |
-| Jiji (時事速報) | `JIJI_LOGIN_ID` / `JIJI_PASSWORD` | Japanese news scraping |
-
-### TestCenter (`src/components/TestCenter.tsx`)
-
-The largest component (~66KB). It pulls structured test progress data from a Notion database, organized by project area (jmotto, univ, overseas, credit, etc.) with fields for estimated hours, actual hours, test counts, and bug counts. Supports HTML report generation and save history.
-
-### Docker
-
-`Dockerfile` uses `node:20-slim` + Python 3 with `pdf2docx` and `opencv-python-headless` (system libs: `libgl1`, `libglib2.0-0`). The Python scripts (`convert_pdf.py`, `merge_pdf.py`) are legacy fallbacks — the app now uses Adobe PDF Services SDK instead.
+| Prefix | Purpose |
+|---|---|
+| `POST /api/upload` | File upload (Excel metadata extraction) |
+| `POST /api/convert` | Excel → Markdown conversion |
+| `POST /api/pdf-convert` | PDF → Word (Adobe) |
+| `POST /api/pdf-merge` | Merge multiple PDFs |
+| `GET/POST /api/test-center/*` | TestCenter CRUD: progress list, overview, results update, history |
+| `GET /api/test-center/monthly-report` | Monthly report data from Notion achievement DB |
+| `GET /api/test-center/bugs` | Bug list from Notion bug DB |
+| `POST /api/jiji-search` | 時事速報 scraping via Browserless |
