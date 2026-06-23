@@ -165,12 +165,20 @@ function pickProperty(properties: Record<string, any>, names: string[]): any {
   return undefined;
 }
 
+function stripSpaces(s: string): string {
+  return s.replace(/[\s　]/g, '');
+}
+
 function findDateProperty(properties: Record<string, any>, keywords: string[]): any {
   for (const kw of keywords) {
     if (properties[kw] !== undefined) return properties[kw];
   }
   for (const [name, prop] of Object.entries(properties)) {
-    if ((prop?.type === 'date' || prop?.type === 'formula') && keywords.some(kw => name.includes(kw.replace(/日$/, '')))) {
+    const norm = stripSpaces(name);
+    if (keywords.some(kw => norm === stripSpaces(kw))) return prop;
+  }
+  for (const [name, prop] of Object.entries(properties)) {
+    if ((prop?.type === 'date' || prop?.type === 'formula') && keywords.some(kw => stripSpaces(name).includes(stripSpaces(kw).replace(/日$/, '')))) {
       return prop;
     }
   }
