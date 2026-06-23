@@ -248,6 +248,10 @@ function safeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function fmtNum(n: number): string {
+  return Number.isInteger(n) ? String(n) : parseFloat(n.toFixed(2)).toString();
+}
+
 function replaceToken(source: string, token: string, value: string): string {
   return source.replace(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
 }
@@ -255,7 +259,7 @@ function replaceToken(source: string, token: string, value: string): string {
 function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
   const byArea: Record<AreaId, string[]> = {
     jmotto: [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [ポータル] https://www1-v2stg100.j-motto.co.jp/web/doLogin',
       '☑ [ GW ] https://gws85.j-motto.co.jp/cgi-bin/',
       '□ [ポータル申込画面] https://www1-v2stg100.j-motto.co.jp/web2/entrRegist',
@@ -263,18 +267,18 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '□ [ WPDL ] https://www1-v2stg101.j-motto.co.jp/00000000/wp/',
     ],
     univ: [
-      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ブラウザ] Chrome (149.0.7827.156)',
       '☑ [ スマホ ] IOS26.1 ｜ android16',
       '☑ [ UNIV2 ] https://54.64.96.104/login',
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     credit: [
-      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ブラウザ] Chrome (149.0.7827.156)',
       '☑ [利用者] https://test-alb.kigyo-joho.com/login/1DCCyG3Xe1',
       '☑ [管理者] http://10.240.14.166/login/',
     ],
     overseas: [
-      '☑ [ChromeVersion] 147.0.7727.102',
+      '☑ [ChromeVersion] 149.0.7827.156',
       '☑ [管理] http://54.92.97.142/report/inner/index.html',
       '☑ [利墨] https://140.179.40.134/ssoLogin/login',
       '☑ [与信・RM] http://172.26.4.109:8080/rismon_ukeire/',
@@ -295,29 +299,29 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     'univ-contents': [
-      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ブラウザ] Chrome (149.0.7827.156)',
       '☑ [ スマホ ] IOS26.1 ｜ android16',
       '☑ [ スマホ ] IOS18 ｜ android12（比較バージョン）',
       '☑ [ UNIVコンテンツ ] https://www.cybaxuniv.com/',
       '☑ [ UNIV２ ] https://54.64.96.104/login',
     ],
     'nayose': [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [URL] https://test-nayose.riskmonster.net/login',
       '☑ [URL] http://172.26.4.109:8080/rismon_ukeire/',
     ],
     'gyoshu': [
-      '☑ Chrome（147.0.7727.102）',
+      '☑ Chrome（149.0.7827.156）',
       '☑ IOS26.1.0（iphone13）',
       '☑ Android16（Pixel 6A）',
       '☑ https://test-gyoushu.riskmonster.net/',
     ],
     'ros': [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [URL] http://10.240.14.201:8080/mkt/login.html',
     ],
     'meikancho': [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [URL] （名館長クラウドのテストURLを入力してください）',
     ],
   };
@@ -451,8 +455,8 @@ function buildPlanHtml(
   html = replaceToken(html, '{{PDF_DOCUMENT_TITLE}}', getPlanPdfFilename(monthKey, areaId));
   html = replaceToken(html, '{{AREA_RELEASE_NAME}}', areaMeta.releaseNameJa);
   html = replaceToken(html, '{{SVN_PATH_SEGMENT}}', areaMeta.svnPathSegment);
-  html = replaceToken(html, '{{開発工数総計}}', String(totalDevelopment));
-  html = replaceToken(html, '{{見積工数総計}}', String(totalEstimate));
+  html = replaceToken(html, '{{開発工数総計}}', fmtNum(totalDevelopment));
+  html = replaceToken(html, '{{見積工数総計}}', fmtNum(totalEstimate));
   html = replaceToken(html, '{{TC開始予定日}}', first.tcStartDate || '');
   html = replaceToken(html, '{{TC設計書完了予定日}}', tcDesign);
   html = replaceToken(html, '{{TC実施完了予定日}}', tcExec);
@@ -476,6 +480,9 @@ function buildResultReportHtml(
 ): string {
   if (selectedItems.length === 0) return template;
 
+  const completedItems = selectedItems.filter(item => item.status === '予定通り完了');
+  const inProgressItems = selectedItems.filter(item => item.status !== '予定通り完了');
+
   const first = selectedItems[0];
   const yyyy = monthKey.slice(0, 4);
   const mm = monthKey.slice(4, 6);
@@ -483,19 +490,26 @@ function buildResultReportHtml(
   const tcDesign = first.tcDesignCompleteDate || '';
   const tcExec = first.tcExecutionCompleteDate || '';
 
-  const totalTestCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.testTotalCount), 0);
-  const totalBugCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
-  const totalBlockedCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.testBlockedCount), 0);
-  const totalPendingCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.pendingConfirmCount), 0);
-  const totalEstimateEffort = selectedItems.reduce((sum, item) => sum + parseNumber(item.estimateTotal), 0);
-  const totalActualEffort = selectedItems.reduce((sum, item) => sum + parseNumber(item.actualTotal), 0);
+  const totalTestCount = completedItems.reduce((sum, item) => sum + parseNumber(item.testTotalCount), 0);
+  const totalBugCount = completedItems.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
+  const totalBlockedCount = completedItems.reduce((sum, item) => sum + parseNumber(item.testBlockedCount), 0);
+  const totalPendingCount = completedItems.reduce((sum, item) => sum + parseNumber(item.pendingConfirmCount), 0);
+  const totalEstimateEffort = completedItems.reduce((sum, item) => sum + parseNumber(item.estimateTotal), 0);
+  const totalActualEffort = completedItems.reduce((sum, item) => sum + parseNumber(item.actualTotal), 0);
   const totalEffortDiff = parseFloat((totalActualEffort - totalEstimateEffort).toFixed(2));
+  const totalEstimateEffortStr = fmtNum(totalEstimateEffort);
+  const totalActualEffortStr = fmtNum(totalActualEffort);
 
   const projectListHtml = selectedItems
-    .map((item) => `<li>${safeHtml(item.projectName || '-')}</li>`)
+    .map((item) => {
+      const badge = item.status !== '予定通り完了'
+        ? ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>'
+        : '';
+      return `<li>${safeHtml(item.projectName || '-')}${badge}</li>`;
+    })
     .join('\n');
 
-  const resultCardsHtml = selectedItems
+  const resultCardsHtml = completedItems
     .map((item) => {
       const testTotal = parseNumber(item.testTotalCount);
       const bug = parseNumber(item.bugCount);
@@ -545,7 +559,7 @@ function buildResultReportHtml(
     })
     .join('\n');
 
-  const effortProjectBlocksHtml = selectedItems
+  const effortProjectBlocksHtml = completedItems
     .map((item) => {
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
@@ -553,7 +567,7 @@ function buildResultReportHtml(
 
       // 工数差分 > 2 の場合のみ工数説明行を追加
       const effortNoteRow = diff > 2
-        ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${diff}人日を超えています。理由を記入してください。</td></tr>`
+        ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${fmtNum(diff)}人日を超えています。理由を記入してください。</td></tr>`
         : '';
 
       return `
@@ -562,8 +576,8 @@ function buildResultReportHtml(
         <table class="effort-project-table">
           <tbody>
             <tr><th>開発工数</th><td>${safeHtml(item.developmentEffort || '0')}</td></tr>
-            <tr><th>見積工数</th><td>${estimate}</td></tr>
-            <tr><th>実績工数</th><td>${actual}</td></tr>
+            <tr><th>見積工数</th><td>${fmtNum(estimate)}</td></tr>
+            <tr><th>実績工数</th><td>${fmtNum(actual)}</td></tr>
             ${effortNoteRow}
           </tbody>
         </table>
@@ -576,7 +590,7 @@ function buildResultReportHtml(
       ? '一部の案件でテスト不可・NG・判断不可/想定外が存在します。詳細は案件別結果をご確認ください。'
       : '全案件で重大な問題は確認されませんでした。';
   const isActualOverEstimate = totalActualEffort > totalEstimateEffort;
-  const totalEffortDiffLabel = totalEffortDiff > 0 ? `+${totalEffortDiff}` : String(totalEffortDiff);
+  const totalEffortDiffLabel = totalEffortDiff > 0 ? `+${fmtNum(totalEffortDiff)}` : fmtNum(totalEffortDiff);
 
   let html = template;
   html = replaceToken(html, '{{REPORT_DOCUMENT_TITLE}}', getReportPdfFilename(monthKey, areaId));
@@ -597,8 +611,8 @@ function buildResultReportHtml(
   html = replaceToken(html, '{{BUG_COUNT}}', String(totalBugCount));
   html = replaceToken(html, '{{TEST_BLOCKED_COUNT}}', String(totalBlockedCount));
   html = replaceToken(html, '{{PENDING_CONFIRM_COUNT}}', String(totalPendingCount));
-  html = replaceToken(html, '{{ESTIMATE_TOTAL_EFFORT}}', String(totalEstimateEffort));
-  html = replaceToken(html, '{{ACTUAL_TOTAL_EFFORT}}', String(totalActualEffort));
+  html = replaceToken(html, '{{ESTIMATE_TOTAL_EFFORT}}', totalEstimateEffortStr);
+  html = replaceToken(html, '{{ACTUAL_TOTAL_EFFORT}}', totalActualEffortStr);
   html = replaceToken(html, '{{TOTAL_EFFORT_DIFF}}', totalEffortDiffLabel);
   html = replaceToken(
     html,

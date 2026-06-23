@@ -254,9 +254,9 @@ export function buildMonthlyReportHtml(items: ReportItem[], meta: ReportMeta): s
     { label: '案件数', value: String(caseCount) },
     { label: 'テスト総件数', value: String(sumTest) },
     { label: '有効NG総数', value: String(sumValidNg) },
-    { label: '予定工数合計', value: sumPlan.toFixed(1) },
-    { label: '実績工数合計', value: sumActual.toFixed(1) },
-    { label: '平均効率', value: avgEff.toFixed(1) },
+    { label: '予定工数合計', value: parseFloat(sumPlan.toFixed(2)).toString() },
+    { label: '実績工数合計', value: parseFloat(sumActual.toFixed(2)).toString() },
+    { label: '平均効率', value: parseFloat(avgEff.toFixed(2)).toString() },
   ]
     .map((c) => `<div class="kpi"><span class="kpi-label">${esc(c.label)}</span><span class="kpi-value">${esc(c.value)}</span></div>`)
     .join('');
