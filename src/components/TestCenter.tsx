@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   Building2,
@@ -18,8 +18,10 @@ import {
   Briefcase,
   Calendar,
   Languages,
+  ArrowLeft,
   ArrowRight,
   Cloud,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import MonthlyReport from './MonthlyReport';
@@ -55,6 +57,9 @@ type ProgressItem = {
   tcStartDate: string;
   tcDesignCompleteDate: string;
   tcExecutionCompleteDate: string;
+  actualStartDate: string;
+  actualDesignCompleteDate: string;
+  actualExecutionCompleteDate: string;
   testTotalCount: string;
   bugCount: string;
   testBlockedCount: string;
@@ -248,6 +253,10 @@ function safeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function fmtNum(n: number): string {
+  return Number.isInteger(n) ? String(n) : parseFloat(n.toFixed(2)).toString();
+}
+
 function replaceToken(source: string, token: string, value: string): string {
   return source.replace(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
 }
@@ -255,7 +264,7 @@ function replaceToken(source: string, token: string, value: string): string {
 function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
   const byArea: Record<AreaId, string[]> = {
     jmotto: [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [ポータル] https://www1-v2stg100.j-motto.co.jp/web/doLogin',
       '☑ [ GW ] https://gws85.j-motto.co.jp/cgi-bin/',
       '□ [ポータル申込画面] https://www1-v2stg100.j-motto.co.jp/web2/entrRegist',
@@ -263,18 +272,18 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '□ [ WPDL ] https://www1-v2stg101.j-motto.co.jp/00000000/wp/',
     ],
     univ: [
-      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ブラウザ] Chrome (149.0.7827.156)',
       '☑ [ スマホ ] IOS26.1 ｜ android16',
       '☑ [ UNIV2 ] https://54.64.96.104/login',
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     credit: [
-      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ブラウザ] Chrome (149.0.7827.156)',
       '☑ [利用者] https://test-alb.kigyo-joho.com/login/1DCCyG3Xe1',
       '☑ [管理者] http://10.240.14.166/login/',
     ],
     overseas: [
-      '☑ [ChromeVersion] 147.0.7727.102',
+      '☑ [ChromeVersion] 149.0.7827.156',
       '☑ [管理] http://54.92.97.142/report/inner/index.html',
       '☑ [利墨] https://140.179.40.134/ssoLogin/login',
       '☑ [与信・RM] http://172.26.4.109:8080/rismon_ukeire/',
@@ -295,29 +304,29 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     'univ-contents': [
-      '☑ [ブラウザ] Chrome (147.0.7727.102)',
+      '☑ [ブラウザ] Chrome (149.0.7827.156)',
       '☑ [ スマホ ] IOS26.1 ｜ android16',
       '☑ [ スマホ ] IOS18 ｜ android12（比較バージョン）',
       '☑ [ UNIVコンテンツ ] https://www.cybaxuniv.com/',
       '☑ [ UNIV２ ] https://54.64.96.104/login',
     ],
     'nayose': [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [URL] https://test-nayose.riskmonster.net/login',
       '☑ [URL] http://172.26.4.109:8080/rismon_ukeire/',
     ],
     'gyoshu': [
-      '☑ Chrome（147.0.7727.102）',
+      '☑ Chrome（149.0.7827.156）',
       '☑ IOS26.1.0（iphone13）',
       '☑ Android16（Pixel 6A）',
       '☑ https://test-gyoushu.riskmonster.net/',
     ],
     'ros': [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [URL] http://10.240.14.201:8080/mkt/login.html',
     ],
     'meikancho': [
-      '☑ [ブラウザ] Chrome（147.0.7727.102）',
+      '☑ [ブラウザ] Chrome（149.0.7827.156）',
       '☑ [URL] （名館長クラウドのテストURLを入力してください）',
     ],
   };
@@ -451,8 +460,8 @@ function buildPlanHtml(
   html = replaceToken(html, '{{PDF_DOCUMENT_TITLE}}', getPlanPdfFilename(monthKey, areaId));
   html = replaceToken(html, '{{AREA_RELEASE_NAME}}', areaMeta.releaseNameJa);
   html = replaceToken(html, '{{SVN_PATH_SEGMENT}}', areaMeta.svnPathSegment);
-  html = replaceToken(html, '{{開発工数総計}}', String(totalDevelopment));
-  html = replaceToken(html, '{{見積工数総計}}', String(totalEstimate));
+  html = replaceToken(html, '{{開発工数総計}}', fmtNum(totalDevelopment));
+  html = replaceToken(html, '{{見積工数総計}}', fmtNum(totalEstimate));
   html = replaceToken(html, '{{TC開始予定日}}', first.tcStartDate || '');
   html = replaceToken(html, '{{TC設計書完了予定日}}', tcDesign);
   html = replaceToken(html, '{{TC実施完了予定日}}', tcExec);
@@ -476,6 +485,9 @@ function buildResultReportHtml(
 ): string {
   if (selectedItems.length === 0) return template;
 
+  const completedItems = selectedItems.filter(item => item.status === '予定通り完了');
+  const inProgressItems = selectedItems.filter(item => item.status !== '予定通り完了');
+
   const first = selectedItems[0];
   const yyyy = monthKey.slice(0, 4);
   const mm = monthKey.slice(4, 6);
@@ -483,19 +495,26 @@ function buildResultReportHtml(
   const tcDesign = first.tcDesignCompleteDate || '';
   const tcExec = first.tcExecutionCompleteDate || '';
 
-  const totalTestCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.testTotalCount), 0);
-  const totalBugCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
-  const totalBlockedCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.testBlockedCount), 0);
-  const totalPendingCount = selectedItems.reduce((sum, item) => sum + parseNumber(item.pendingConfirmCount), 0);
-  const totalEstimateEffort = selectedItems.reduce((sum, item) => sum + parseNumber(item.estimateTotal), 0);
-  const totalActualEffort = selectedItems.reduce((sum, item) => sum + parseNumber(item.actualTotal), 0);
+  const totalTestCount = completedItems.reduce((sum, item) => sum + parseNumber(item.testTotalCount), 0);
+  const totalBugCount = completedItems.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
+  const totalBlockedCount = completedItems.reduce((sum, item) => sum + parseNumber(item.testBlockedCount), 0);
+  const totalPendingCount = completedItems.reduce((sum, item) => sum + parseNumber(item.pendingConfirmCount), 0);
+  const totalEstimateEffort = completedItems.reduce((sum, item) => sum + parseNumber(item.estimateTotal), 0);
+  const totalActualEffort = completedItems.reduce((sum, item) => sum + parseNumber(item.actualTotal), 0);
   const totalEffortDiff = parseFloat((totalActualEffort - totalEstimateEffort).toFixed(2));
+  const totalEstimateEffortStr = fmtNum(totalEstimateEffort);
+  const totalActualEffortStr = fmtNum(totalActualEffort);
 
   const projectListHtml = selectedItems
-    .map((item) => `<li>${safeHtml(item.projectName || '-')}</li>`)
+    .map((item) => {
+      const badge = item.status !== '予定通り完了'
+        ? ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>'
+        : '';
+      return `<li>${safeHtml(item.projectName || '-')}${badge}</li>`;
+    })
     .join('\n');
 
-  const resultCardsHtml = selectedItems
+  const resultCardsHtml = completedItems
     .map((item) => {
       const testTotal = parseNumber(item.testTotalCount);
       const bug = parseNumber(item.bugCount);
@@ -545,7 +564,7 @@ function buildResultReportHtml(
     })
     .join('\n');
 
-  const effortProjectBlocksHtml = selectedItems
+  const effortProjectBlocksHtml = completedItems
     .map((item) => {
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
@@ -553,7 +572,7 @@ function buildResultReportHtml(
 
       // 工数差分 > 2 の場合のみ工数説明行を追加
       const effortNoteRow = diff > 2
-        ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${diff}人日を超えています。理由を記入してください。</td></tr>`
+        ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${fmtNum(diff)}人日を超えています。理由を記入してください。</td></tr>`
         : '';
 
       return `
@@ -562,8 +581,8 @@ function buildResultReportHtml(
         <table class="effort-project-table">
           <tbody>
             <tr><th>開発工数</th><td>${safeHtml(item.developmentEffort || '0')}</td></tr>
-            <tr><th>見積工数</th><td>${estimate}</td></tr>
-            <tr><th>実績工数</th><td>${actual}</td></tr>
+            <tr><th>見積工数</th><td>${fmtNum(estimate)}</td></tr>
+            <tr><th>実績工数</th><td>${fmtNum(actual)}</td></tr>
             ${effortNoteRow}
           </tbody>
         </table>
@@ -576,7 +595,7 @@ function buildResultReportHtml(
       ? '一部の案件でテスト不可・NG・判断不可/想定外が存在します。詳細は案件別結果をご確認ください。'
       : '全案件で重大な問題は確認されませんでした。';
   const isActualOverEstimate = totalActualEffort > totalEstimateEffort;
-  const totalEffortDiffLabel = totalEffortDiff > 0 ? `+${totalEffortDiff}` : String(totalEffortDiff);
+  const totalEffortDiffLabel = totalEffortDiff > 0 ? `+${fmtNum(totalEffortDiff)}` : fmtNum(totalEffortDiff);
 
   let html = template;
   html = replaceToken(html, '{{REPORT_DOCUMENT_TITLE}}', getReportPdfFilename(monthKey, areaId));
@@ -597,8 +616,8 @@ function buildResultReportHtml(
   html = replaceToken(html, '{{BUG_COUNT}}', String(totalBugCount));
   html = replaceToken(html, '{{TEST_BLOCKED_COUNT}}', String(totalBlockedCount));
   html = replaceToken(html, '{{PENDING_CONFIRM_COUNT}}', String(totalPendingCount));
-  html = replaceToken(html, '{{ESTIMATE_TOTAL_EFFORT}}', String(totalEstimateEffort));
-  html = replaceToken(html, '{{ACTUAL_TOTAL_EFFORT}}', String(totalActualEffort));
+  html = replaceToken(html, '{{ESTIMATE_TOTAL_EFFORT}}', totalEstimateEffortStr);
+  html = replaceToken(html, '{{ACTUAL_TOTAL_EFFORT}}', totalActualEffortStr);
   html = replaceToken(html, '{{TOTAL_EFFORT_DIFF}}', totalEffortDiffLabel);
   html = replaceToken(
     html,
@@ -724,7 +743,7 @@ function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string;
   return (
     <div className="flex items-center gap-3">
       <div className="relative w-28 h-28 flex-shrink-0">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
           <PieChart>
             <Pie
               data={data}
@@ -756,6 +775,328 @@ function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string;
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Gantt Chart View ──
+
+type GanttViewProps = {
+  lang: Lang;
+  onBack: () => void;
+  onHome: () => void;
+  fetchArea: (id: AreaId) => Promise<ProgressItem[]>;
+  filterYear: number;
+};
+
+function parseDate(s: string): Date | null {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function fmtShortDate(d: Date): string {
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+type GanttRow = ProgressItem & { _areaId: AreaId; _areaLabel: string };
+
+function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewProps) {
+  const [allItems, setAllItems] = useState<GanttRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const t = useMemo(() => createT(lang), [lang]);
+
+  const [fMonthFrom, setFMonthFrom] = useState<number>(1);
+  const [fMonthTo, setFMonthTo] = useState<number>(12);
+  const [fStatus, setFStatus] = useState<string>('all');
+  const [fArea, setFArea] = useState<string>('all');
+  const [showFilters, setShowFilters] = useState(true);
+
+  const loadAll = useCallback(async (useCache: boolean) => {
+    const results: GanttRow[] = [];
+    await Promise.all(AREAS.map(async (area) => {
+      try {
+        const fetched = await fetchArea(area.id);
+        const label = area.title[lang].replace(/エリア$|区域$/, '');
+        for (const it of fetched) results.push({ ...it, _areaId: area.id, _areaLabel: label });
+      } catch { /* ignore */ }
+    }));
+    return results;
+  }, [fetchArea, lang]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const data = await loadAll(true);
+      if (!cancelled) { setAllItems(data); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [loadAll]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    const data = await loadAll(false);
+    setAllItems(data);
+    setRefreshing(false);
+  }, [loadAll]);
+
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const it of allItems) { if (it.status) set.add(it.status); }
+    return Array.from(set).sort();
+  }, [allItems]);
+
+  const areaOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { id: string; label: string }[] = [];
+    for (const it of allItems) {
+      if (!seen.has(it._areaId)) { seen.add(it._areaId); list.push({ id: it._areaId, label: it._areaLabel }); }
+    }
+    return list;
+  }, [allItems]);
+
+  const filtered = useMemo(() => {
+    return allItems.filter((it) => {
+      const mk = toMonthKey(it.month);
+      if (!mk) return false;
+      const y = parseInt(mk.slice(0, 4), 10);
+      const m = parseInt(mk.slice(4), 10);
+      if (y !== filterYear) return false;
+      if (m < fMonthFrom || m > fMonthTo) return false;
+      if (fStatus !== 'all' && it.status !== fStatus) return false;
+      if (fArea !== 'all' && it._areaId !== fArea) return false;
+      return true;
+    });
+  }, [allItems, filterYear, fMonthFrom, fMonthTo, fStatus, fArea]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, { areaId: AreaId; label: string; items: GanttRow[] }>();
+    for (const it of filtered) {
+      let group = map.get(it._areaId);
+      if (!group) { group = { areaId: it._areaId, label: it._areaLabel, items: [] }; map.set(it._areaId, group); }
+      group.items.push(it);
+    }
+    return Array.from(map.values());
+  }, [filtered]);
+
+  const { minDate, maxDate } = useMemo(() => {
+    const allDates: Date[] = [];
+    for (const it of filtered) {
+      for (const f of [it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate]) {
+        const d = parseDate(f);
+        if (d) allDates.push(d);
+      }
+    }
+    if (allDates.length === 0) {
+      const now = new Date();
+      return { minDate: now, maxDate: new Date(now.getTime() + 30 * 86400000) };
+    }
+    const sorted = allDates.sort((a, b) => a.getTime() - b.getTime());
+    return { minDate: new Date(sorted[0].getTime() - 3 * 86400000), maxDate: new Date(sorted[sorted.length - 1].getTime() + 3 * 86400000) };
+  }, [filtered]);
+
+  const toPct = useCallback((d: Date) => {
+    const range = maxDate.getTime() - minDate.getTime();
+    if (range <= 0) return 50;
+    return ((d.getTime() - minDate.getTime()) / range) * 100;
+  }, [minDate, maxDate]);
+
+  const { monthTicks, dayTicks } = useMemo(() => {
+    const months: { date: Date; label: string }[] = [];
+    const days: { date: Date; label: string; isFirst: boolean }[] = [];
+    const cur = new Date(minDate);
+    cur.setDate(1);
+    if (cur < minDate) cur.setMonth(cur.getMonth() + 1);
+    while (cur <= maxDate) {
+      const monthLabel = `${cur.getMonth() + 1}月`;
+      months.push({ date: new Date(cur), label: monthLabel });
+      for (const day of [1, 5, 10, 15, 20, 25]) {
+        const d = new Date(cur.getFullYear(), cur.getMonth(), day);
+        if (d >= minDate && d <= maxDate) {
+          days.push({ date: d, label: String(day), isFirst: day === 1 });
+        }
+      }
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    return { monthTicks: months, dayTicks: days };
+  }, [minDate, maxDate]);
+
+  const renderSegments = (startStr: string, midStr: string, endStr: string, color1: string, color2: string, labelPrefix: string) => {
+    const s = parseDate(startStr);
+    const m = parseDate(midStr);
+    const e = parseDate(endStr);
+    if (!s && !m && !e) return null;
+    const segments: ReactNode[] = [];
+    const effectiveEnd = e || m || s;
+    const effectiveStart = s || m || e;
+    if (effectiveStart && effectiveEnd) {
+      if (m) {
+        const left = Math.max(0, toPct(effectiveStart));
+        const right = Math.min(100, toPct(m));
+        if (right > left) {
+          segments.push(
+            <div key="design" className="absolute top-0.5 h-4 rounded-l" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '3px' }} title={`${labelPrefix}(設計): ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(m)}`} />
+          );
+        }
+        if (e) {
+          const left2 = Math.max(0, toPct(m));
+          const right2 = Math.min(100, toPct(e));
+          if (right2 > left2) {
+            segments.push(
+              <div key="exec" className="absolute top-0.5 h-4 rounded-r" style={{ left: `${left2}%`, width: `${Math.max(right2 - left2, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
+            );
+          }
+        }
+      } else {
+        const left = Math.max(0, toPct(effectiveStart));
+        const right = Math.min(100, toPct(effectiveEnd));
+        if (right > left || (s && e)) {
+          segments.push(
+            <div key="full" className="absolute top-0.5 h-4 rounded" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}: ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(effectiveEnd)}`} />
+          );
+        }
+      }
+    }
+    return segments.length > 0 ? <div className="relative h-5">{segments}</div> : null;
+  };
+
+  const todayPct = toPct(new Date());
+  const monthNums = Array.from({ length: 12 }, (_, i) => i + 1);
+  const selectClass = 'px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400';
+
+  return (
+    <div className="space-y-4">
+      <nav className="flex items-center gap-2 text-sm text-neutral-500">
+        <button type="button" onClick={onHome} className="hover:text-neutral-900">{lang === 'zh' ? '首页' : 'ホーム'}</button>
+        <span>&gt;&gt;</span>
+        <button type="button" onClick={onBack} className="hover:text-neutral-900">TestCenter</button>
+        <span>&gt;&gt;</span>
+        <span className="text-neutral-900 font-medium">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</span>
+      </nav>
+
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={onBack} className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900">
+            <ArrowLeft size={20} />
+          </button>
+          <h2 className="text-xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
+          <span className="text-sm text-neutral-400">({filtered.length}{lang === 'zh' ? '件' : '件'})</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}>
+            <SlidersHorizontal size={14} />{lang === 'zh' ? '筛选' : 'フィルター'}
+          </button>
+          <button type="button" onClick={handleRefresh} disabled={refreshing} className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50 disabled:opacity-50">
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />{lang === 'zh' ? '更新' : '更新'}
+          </button>
+        </div>
+      </div>
+
+      {showFilters && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-600">
+          <label className="flex items-center gap-1.5">
+            <Calendar size={13} className="text-neutral-400" />
+            <span>{lang === 'zh' ? '月份' : '月'}:</span>
+            <select className={selectClass} value={fMonthFrom} onChange={(e) => setFMonthFrom(Number(e.target.value))}>
+              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+            <span>~</span>
+            <select className={selectClass} value={fMonthTo} onChange={(e) => setFMonthTo(Number(e.target.value))}>
+              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span>{lang === 'zh' ? '状态' : 'ステータス'}:</span>
+            <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
+              {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span>{lang === 'zh' ? '系统' : 'システム'}:</span>
+            <select className={selectClass} value={fArea} onChange={(e) => setFArea(e.target.value)}>
+              <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
+              {areaOptions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+          </label>
+          <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatus('all'); setFArea('all'); }} className="ml-auto text-[11px] text-blue-500 hover:text-blue-700">
+            {lang === 'zh' ? '重置' : 'リセット'}
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex justify-center py-20"><Loader2 className="animate-spin text-neutral-400" size={28} /></div>
+      ) : filtered.length === 0 ? (
+        <p className="text-neutral-400 text-center py-16">{t('noData')}</p>
+      ) : (
+        <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <div style={{ minWidth: '900px' }}>
+              {/* Header */}
+              <div className="flex border-b border-neutral-200 bg-neutral-50 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
+                <div className="w-52 shrink-0 px-4 py-2.5 border-r border-neutral-200">{lang === 'zh' ? '案件名' : '案件名'}</div>
+                <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-center">{lang === 'zh' ? '区分' : '区分'}</div>
+                <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-right">{lang === 'zh' ? '工数' : '工数'}</div>
+                <div className="flex-1 relative py-1 px-2" style={{ height: '36px' }}>
+                  {monthTicks.map((tick, i) => (
+                    <span key={`m${i}`} className="absolute text-[11px] font-semibold text-neutral-500" style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '2px' }}>{tick.label}</span>
+                  ))}
+                  {dayTicks.map((tick, i) => (
+                    <span key={`d${i}`} className={`absolute text-[9px] ${tick.isFirst ? 'text-neutral-400' : 'text-neutral-300'}`} style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '20px' }}>{tick.isFirst ? '' : tick.label}</span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Groups */}
+              {grouped.map((group) => (
+                <div key={group.areaId}>
+                  <div className="flex items-center gap-2 px-4 py-1.5 bg-neutral-100 border-b border-neutral-200">
+                    <span className="text-[12px] font-bold text-neutral-700">{group.label}</span>
+                    <span className="text-[11px] text-neutral-400">({group.items.length}{lang === 'zh' ? '件' : '件'})</span>
+                  </div>
+                  {group.items.map((it, idx) => (
+                    <div key={it.id} className={`flex border-b border-neutral-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/50'}`}>
+                      <div className="w-52 shrink-0 px-4 py-2 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate" title={it.projectName}>
+                        {it.projectName || '-'}
+                      </div>
+                      <div className="w-16 shrink-0 border-r border-neutral-100">
+                        <div className="px-1 py-0.5 text-[10px] text-blue-600 text-center">予定</div>
+                        <div className="px-1 py-0.5 text-[10px] text-emerald-600 text-center">実績</div>
+                      </div>
+                      <div className="w-16 shrink-0 border-r border-neutral-100 text-right">
+                        <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.estimateTotal))}</div>
+                        <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.actualTotal))}</div>
+                      </div>
+                      <div className="flex-1 relative px-1 py-0.5">
+                        {dayTicks.map((tick, i) => (
+                          <div key={`dl${i}`} className={`absolute top-0 bottom-0 ${tick.isFirst ? 'border-l border-neutral-200' : 'border-l border-dashed border-neutral-100'}`} style={{ left: `${toPct(tick.date)}%` }} />
+                        ))}
+                        {todayPct >= 0 && todayPct <= 100 && (
+                          <div className="absolute top-0 bottom-0 border-l-2 border-red-400 z-10" style={{ left: `${todayPct}%` }} title={lang === 'zh' ? '今日' : '今日'} />
+                        )}
+                        {renderSegments(it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, '#93c5fd', '#3b82f6', '予定') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                        {renderSegments(it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate, '#86efac', '#22c55e', '実績') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center gap-6 px-4 py-3 border-t border-neutral-200 bg-neutral-50 text-[11px] text-neutral-500">
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#93c5fd' }} />予定(設計)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />予定(実施)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#86efac' }} />実績(設計)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />実績(実施)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-red-400" />{lang === 'zh' ? '今日' : '今日'}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -883,6 +1224,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
   const [bugListOpen, setBugListOpen] = useState(false);
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
+  const [ganttOpen, setGanttOpen] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
@@ -1566,6 +1908,23 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     );
   }
 
+  if (ganttOpen) {
+    return (
+      <GanttView
+        lang={lang}
+        onBack={() => setGanttOpen(false)}
+        onHome={onBack}
+        fetchArea={async (id: AreaId) => {
+          const res = await fetch(`/api/test-center?area=${id}`);
+          if (!res.ok) throw new Error('Failed to fetch');
+          const data = (await res.json()) as ApiResponse;
+          return data.items ?? [];
+        }}
+        filterYear={filterYear}
+      />
+    );
+  }
+
   return (
     <>
     <div className="space-y-6">
@@ -1900,7 +2259,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
               <div className="h-44">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
                     <YAxis hide />
@@ -1924,7 +2283,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`}>
+            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint={lang === 'zh' ? '查看甘特图' : 'ガントチャート'}>
               <div className="space-y-2.5 pt-1">
                 {systemDistribution.slice(0, 6).map((row, idx) => {
                   const max = systemDistribution[0]?.count || 1;
@@ -1992,14 +2351,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   </div>
                   <p className="text-sm text-neutral-500 leading-relaxed">{area.description[lang]}</p>
                   <div className="h-10 -mx-1">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                       <LineChart data={caseSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                         <Line type="monotone" dataKey="v" stroke="#6366f1" strokeWidth={1.5} dot={false} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                   <div className="h-12 -mx-1 -mt-2">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                       <LineChart data={bugSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                         <XAxis dataKey="m" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#94a3b8' }} interval={0} height={14} />
                         <Line type="monotone" dataKey="v" stroke="#cbd5e1" strokeWidth={1.5} dot={false} />

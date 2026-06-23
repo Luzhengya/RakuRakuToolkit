@@ -101,6 +101,9 @@ type ProgressItem = {
   implementationEstimate: string;
   executionEstimate: string;
   reviewEstimate: string;
+  actualStartDate: string;
+  actualDesignCompleteDate: string;
+  actualExecutionCompleteDate: string;
   system: string;
   childProjectIds: string[];
 };
@@ -162,8 +165,36 @@ function pickProperty(properties: Record<string, any>, names: string[]): any {
   return undefined;
 }
 
+function stripSpaces(s: string): string {
+  return s.replace(/[\s　]/g, '');
+}
+
+function findDateProperty(properties: Record<string, any>, keywords: string[]): any {
+  for (const kw of keywords) {
+    if (properties[kw] !== undefined) return properties[kw];
+  }
+  for (const [name, prop] of Object.entries(properties)) {
+    const norm = stripSpaces(name);
+    if (keywords.some(kw => norm === stripSpaces(kw))) return prop;
+  }
+  for (const [name, prop] of Object.entries(properties)) {
+    if ((prop?.type === 'date' || prop?.type === 'formula') && keywords.some(kw => stripSpaces(name).includes(stripSpaces(kw).replace(/日$/, '')))) {
+      return prop;
+    }
+  }
+  return undefined;
+}
+
+let _loggedProps = false;
 function parseProgressItem(page: any): ProgressItem {
   const properties = page?.properties ?? {};
+  if (!_loggedProps) {
+    _loggedProps = true;
+    const dateProps = Object.entries(properties)
+      .filter(([, v]: [string, any]) => v?.type === 'date' || v?.type === 'formula')
+      .map(([k, v]: [string, any]) => `${k}(${v.type})`);
+    console.log('[parseProgressItem] date/formula props:', dateProps.join(', '));
+  }
   const childProjectIds = extractChildProjectIds(properties);
   return {
     id: page?.id ?? "",
@@ -191,6 +222,15 @@ function parseProgressItem(page: any): ProgressItem {
     ),
     reviewEstimate: propertyToPlainText(
       pickProperty(properties, ["review見積工数", "Review見積工数", "レビュー見積工数", "review見積工数"])
+    ),
+    actualStartDate: propertyToPlainText(
+      findDateProperty(properties, ["実際開始日", "実績開始日", "実際TC開始日", "TC実際開始日"])
+    ),
+    actualDesignCompleteDate: propertyToPlainText(
+      findDateProperty(properties, ["実際設計書完了日", "実績設計書完了日", "実際TC設計書完了日", "TC実際設計書完了日"])
+    ),
+    actualExecutionCompleteDate: propertyToPlainText(
+      findDateProperty(properties, ["実際実施完了日", "実績実施完了日", "実際TC実施完了日", "TC実際実施完了日"])
     ),
     system: propertyToPlainText(properties["System"]),
     childProjectIds,
