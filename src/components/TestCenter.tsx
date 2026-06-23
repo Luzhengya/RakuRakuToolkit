@@ -869,16 +869,24 @@ function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonth
     return ((d.getTime() - minDate.getTime()) / range) * 100;
   }, [minDate, maxDate]);
 
-  const monthTicks = useMemo(() => {
-    const ticks: { date: Date; label: string }[] = [];
+  const { monthTicks, dayTicks } = useMemo(() => {
+    const months: { date: Date; label: string }[] = [];
+    const days: { date: Date; label: string; isFirst: boolean }[] = [];
     const cur = new Date(minDate);
     cur.setDate(1);
     if (cur < minDate) cur.setMonth(cur.getMonth() + 1);
     while (cur <= maxDate) {
-      ticks.push({ date: new Date(cur), label: `${cur.getMonth() + 1}月` });
+      const monthLabel = `${cur.getMonth() + 1}月`;
+      months.push({ date: new Date(cur), label: monthLabel });
+      for (const day of [1, 5, 10, 15, 20, 25]) {
+        const d = new Date(cur.getFullYear(), cur.getMonth(), day);
+        if (d >= minDate && d <= maxDate) {
+          days.push({ date: d, label: String(day), isFirst: day === 1 });
+        }
+      }
       cur.setMonth(cur.getMonth() + 1);
     }
-    return ticks;
+    return { monthTicks: months, dayTicks: days };
   }, [minDate, maxDate]);
 
   const renderSegments = (startStr: string, midStr: string, endStr: string, color1: string, color2: string, labelPrefix: string) => {
@@ -953,12 +961,13 @@ function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonth
                 <div className="w-52 shrink-0 px-4 py-2.5 border-r border-neutral-200">{lang === 'zh' ? '案件名' : '案件名'}</div>
                 <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-center">{lang === 'zh' ? '区分' : '区分'}</div>
                 <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-right">{lang === 'zh' ? '工数' : '工数'}</div>
-                <div className="flex-1 relative py-2.5 px-2">
-                  <div className="flex justify-between text-[10px] text-neutral-400">
-                    {monthTicks.map((tick, i) => (
-                      <span key={i} style={{ position: 'absolute', left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)' }}>{tick.label}</span>
-                    ))}
-                  </div>
+                <div className="flex-1 relative py-1 px-2" style={{ height: '36px' }}>
+                  {monthTicks.map((tick, i) => (
+                    <span key={`m${i}`} className="absolute text-[11px] font-semibold text-neutral-500" style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '2px' }}>{tick.label}</span>
+                  ))}
+                  {dayTicks.map((tick, i) => (
+                    <span key={`d${i}`} className={`absolute text-[9px] ${tick.isFirst ? 'text-neutral-400' : 'text-neutral-300'}`} style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '20px' }}>{tick.isFirst ? '' : tick.label}</span>
+                  ))}
                 </div>
               </div>
 
@@ -983,8 +992,8 @@ function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonth
                         <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.actualTotal))}</div>
                       </div>
                       <div className="flex-1 relative px-1 py-0.5">
-                        {monthTicks.map((tick, i) => (
-                          <div key={i} className="absolute top-0 bottom-0 border-l border-neutral-100" style={{ left: `${toPct(tick.date)}%` }} />
+                        {dayTicks.map((tick, i) => (
+                          <div key={`dl${i}`} className={`absolute top-0 bottom-0 ${tick.isFirst ? 'border-l border-neutral-200' : 'border-l border-dashed border-neutral-100'}`} style={{ left: `${toPct(tick.date)}%` }} />
                         ))}
                         {todayPct >= 0 && todayPct <= 100 && (
                           <div className="absolute top-0 bottom-0 border-l-2 border-red-400 z-10" style={{ left: `${todayPct}%` }} title={lang === 'zh' ? '今日' : '今日'} />
