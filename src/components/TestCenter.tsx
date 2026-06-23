@@ -21,6 +21,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Cloud,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import MonthlyReport from './MonthlyReport';
@@ -784,9 +785,8 @@ type GanttViewProps = {
   lang: Lang;
   onBack: () => void;
   onHome: () => void;
-  loadAreaCache: (id: AreaId) => { items: ProgressItem[] } | null;
   fetchArea: (id: AreaId) => Promise<ProgressItem[]>;
-  targetMonthKeySet: Set<string>;
+  filterYear: number;
 };
 
 function parseDate(s: string): Date | null {
@@ -801,41 +801,75 @@ function fmtShortDate(d: Date): string {
 
 type GanttRow = ProgressItem & { _areaId: AreaId; _areaLabel: string };
 
-function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonthKeySet }: GanttViewProps) {
+function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewProps) {
   const [allItems, setAllItems] = useState<GanttRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
+
+  const [fMonthFrom, setFMonthFrom] = useState<number>(1);
+  const [fMonthTo, setFMonthTo] = useState<number>(12);
+  const [fStatus, setFStatus] = useState<string>('all');
+  const [fArea, setFArea] = useState<string>('all');
+  const [showFilters, setShowFilters] = useState(true);
+
+  const loadAll = useCallback(async (useCache: boolean) => {
+    const results: GanttRow[] = [];
+    await Promise.all(AREAS.map(async (area) => {
+      try {
+        const fetched = await fetchArea(area.id);
+        const label = area.title[lang].replace(/エリア$|区域$/, '');
+        for (const it of fetched) results.push({ ...it, _areaId: area.id, _areaLabel: label });
+      } catch { /* ignore */ }
+    }));
+    return results;
+  }, [fetchArea, lang]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const results: GanttRow[] = [];
-      await Promise.all(AREAS.map(async (area) => {
-        const cache = loadAreaCache(area.id);
-        let items: ProgressItem[];
-        if (cache) {
-          items = cache.items;
-        } else {
-          try { items = await fetchArea(area.id); } catch { items = []; }
-        }
-        const label = area.title[lang].replace(/エリア$|区域$/, '');
-        for (const it of items) {
-          results.push({ ...it, _areaId: area.id, _areaLabel: label });
-        }
-      }));
-      if (!cancelled) {
-        setAllItems(results);
-        setLoading(false);
-      }
+      const data = await loadAll(true);
+      if (!cancelled) { setAllItems(data); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [lang]);
+  }, [loadAll]);
 
-  const filtered = useMemo(
-    () => allItems.filter((it) => targetMonthKeySet.has(toMonthKey(it.month))),
-    [allItems, targetMonthKeySet]
-  );
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    const data = await loadAll(false);
+    setAllItems(data);
+    setRefreshing(false);
+  }, [loadAll]);
+
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const it of allItems) { if (it.status) set.add(it.status); }
+    return Array.from(set).sort();
+  }, [allItems]);
+
+  const areaOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const list: { id: string; label: string }[] = [];
+    for (const it of allItems) {
+      if (!seen.has(it._areaId)) { seen.add(it._areaId); list.push({ id: it._areaId, label: it._areaLabel }); }
+    }
+    return list;
+  }, [allItems]);
+
+  const filtered = useMemo(() => {
+    return allItems.filter((it) => {
+      const mk = toMonthKey(it.month);
+      if (!mk) return false;
+      const y = parseInt(mk.slice(0, 4), 10);
+      const m = parseInt(mk.slice(4), 10);
+      if (y !== filterYear) return false;
+      if (m < fMonthFrom || m > fMonthTo) return false;
+      if (fStatus !== 'all' && it.status !== fStatus) return false;
+      if (fArea !== 'all' && it._areaId !== fArea) return false;
+      return true;
+    });
+  }, [allItems, filterYear, fMonthFrom, fMonthTo, fStatus, fArea]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, { areaId: AreaId; label: string; items: GanttRow[] }>();
@@ -929,6 +963,8 @@ function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonth
   };
 
   const todayPct = toPct(new Date());
+  const monthNums = Array.from({ length: 12 }, (_, i) => i + 1);
+  const selectClass = 'px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400';
 
   return (
     <div className="space-y-4">
@@ -940,13 +976,56 @@ function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonth
         <span className="text-neutral-900 font-medium">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</span>
       </nav>
 
-      <div className="flex items-center gap-3">
-        <button type="button" onClick={onBack} className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900">
-          <ArrowLeft size={20} />
-        </button>
-        <h2 className="text-xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
-        <span className="text-sm text-neutral-400">({filtered.length} {lang === 'zh' ? '件' : '件'})</span>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={onBack} className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900">
+            <ArrowLeft size={20} />
+          </button>
+          <h2 className="text-xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
+          <span className="text-sm text-neutral-400">({filtered.length}{lang === 'zh' ? '件' : '件'})</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}>
+            <SlidersHorizontal size={14} />{lang === 'zh' ? '筛选' : 'フィルター'}
+          </button>
+          <button type="button" onClick={handleRefresh} disabled={refreshing} className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50 disabled:opacity-50">
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />{lang === 'zh' ? '更新' : '更新'}
+          </button>
+        </div>
       </div>
+
+      {showFilters && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-600">
+          <label className="flex items-center gap-1.5">
+            <Calendar size={13} className="text-neutral-400" />
+            <span>{lang === 'zh' ? '月份' : '月'}:</span>
+            <select className={selectClass} value={fMonthFrom} onChange={(e) => setFMonthFrom(Number(e.target.value))}>
+              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+            <span>~</span>
+            <select className={selectClass} value={fMonthTo} onChange={(e) => setFMonthTo(Number(e.target.value))}>
+              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span>{lang === 'zh' ? '状态' : 'ステータス'}:</span>
+            <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
+              {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center gap-1.5">
+            <span>{lang === 'zh' ? '系统' : 'システム'}:</span>
+            <select className={selectClass} value={fArea} onChange={(e) => setFArea(e.target.value)}>
+              <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
+              {areaOptions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+            </select>
+          </label>
+          <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatus('all'); setFArea('all'); }} className="ml-auto text-[11px] text-blue-500 hover:text-blue-700">
+            {lang === 'zh' ? '重置' : 'リセット'}
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex justify-center py-20"><Loader2 className="animate-spin text-neutral-400" size={28} /></div>
@@ -1835,14 +1914,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         lang={lang}
         onBack={() => setGanttOpen(false)}
         onHome={onBack}
-        loadAreaCache={loadAreaCache}
         fetchArea={async (id: AreaId) => {
           const res = await fetch(`/api/test-center?area=${id}`);
           if (!res.ok) throw new Error('Failed to fetch');
           const data = (await res.json()) as ApiResponse;
           return data.items ?? [];
         }}
-        targetMonthKeySet={targetMonthKeySet}
+        filterYear={filterYear}
       />
     );
   }
