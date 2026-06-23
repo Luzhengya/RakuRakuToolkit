@@ -564,25 +564,29 @@ function buildResultReportHtml(
     })
     .join('\n');
 
-  const effortProjectBlocksHtml = completedItems
+  const effortProjectBlocksHtml = selectedItems
     .map((item) => {
+      const isInProgress = item.status !== '予定通り完了';
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
       const diff = parseFloat((actual - estimate).toFixed(2));
+      const badge = isInProgress
+        ? ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>'
+        : '';
+      const actualCell = isInProgress ? '' : fmtNum(actual);
 
-      // 工数差分 > 2 の場合のみ工数説明行を追加
-      const effortNoteRow = diff > 2
+      const effortNoteRow = !isInProgress && diff > 2
         ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${fmtNum(diff)}人日を超えています。理由を記入してください。</td></tr>`
         : '';
 
       return `
       <div class="effort-project-block">
-        <div class="effort-project-title">${safeHtml(item.projectName || '-')}</div>
+        <div class="effort-project-title">${safeHtml(item.projectName || '-')}${badge}</div>
         <table class="effort-project-table">
           <tbody>
             <tr><th>開発工数</th><td>${safeHtml(item.developmentEffort || '0')}</td></tr>
             <tr><th>見積工数</th><td>${fmtNum(estimate)}</td></tr>
-            <tr><th>実績工数</th><td>${fmtNum(actual)}</td></tr>
+            <tr><th>実績工数</th><td>${actualCell}</td></tr>
             ${effortNoteRow}
           </tbody>
         </table>
