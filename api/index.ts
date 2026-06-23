@@ -101,6 +101,9 @@ type ProgressItem = {
   implementationEstimate: string;
   executionEstimate: string;
   reviewEstimate: string;
+  actualStartDate: string;
+  actualDesignCompleteDate: string;
+  actualExecutionCompleteDate: string;
   system: string;
   childProjectIds: string[];
 };
@@ -191,6 +194,15 @@ function parseProgressItem(page: any): ProgressItem {
     ),
     reviewEstimate: propertyToPlainText(
       pickProperty(properties, ["review見積工数", "Review見積工数", "レビュー見積工数", "review見積工数"])
+    ),
+    actualStartDate: propertyToPlainText(
+      pickProperty(properties, ["実際開始日", "実績開始日", "実際TC開始日"])
+    ),
+    actualDesignCompleteDate: propertyToPlainText(
+      pickProperty(properties, ["実際設計書完了日", "実績設計書完了日", "実際TC設計書完了日"])
+    ),
+    actualExecutionCompleteDate: propertyToPlainText(
+      pickProperty(properties, ["実際実施完了日", "実績実施完了日", "実際TC実施完了日"])
     ),
     system: propertyToPlainText(properties["System"]),
     childProjectIds,

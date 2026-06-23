@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertCircle,
   Building2,
@@ -18,6 +18,7 @@ import {
   Briefcase,
   Calendar,
   Languages,
+  ArrowLeft,
   ArrowRight,
   Cloud,
 } from 'lucide-react';
@@ -55,6 +56,9 @@ type ProgressItem = {
   tcStartDate: string;
   tcDesignCompleteDate: string;
   tcExecutionCompleteDate: string;
+  actualStartDate: string;
+  actualDesignCompleteDate: string;
+  actualExecutionCompleteDate: string;
   testTotalCount: string;
   bugCount: string;
   testBlockedCount: string;
@@ -774,6 +778,210 @@ function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string;
   );
 }
 
+// ── Gantt Chart View ──
+
+type GanttViewProps = {
+  areaId: AreaId;
+  lang: Lang;
+  onBack: () => void;
+  onHome: () => void;
+  loadAreaCache: (id: AreaId) => { items: ProgressItem[] } | null;
+  fetchArea: (id: AreaId) => Promise<ProgressItem[]>;
+  targetMonthKeySet: Set<string>;
+};
+
+function parseDate(s: string): Date | null {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function daysBetween(a: Date, b: Date): number {
+  return Math.round((b.getTime() - a.getTime()) / 86400000);
+}
+
+function fmtShortDate(d: Date): string {
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, targetMonthKeySet }: GanttViewProps) {
+  const [items, setItems] = useState<ProgressItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const t = useMemo(() => createT(lang), [lang]);
+  const areaLabel = useMemo(() => {
+    const found = AREAS.find((a) => a.id === areaId);
+    return found ? found.title[lang].replace(/エリア$|区域$/, '') : areaId;
+  }, [areaId, lang]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const cache = loadAreaCache(areaId);
+      if (cache) {
+        setItems(cache.items);
+        setLoading(false);
+        return;
+      }
+      try {
+        const fetched = await fetchArea(areaId);
+        if (!cancelled) setItems(fetched);
+      } catch { /* ignore */ }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [areaId]);
+
+  const filtered = useMemo(
+    () => items.filter((it) => targetMonthKeySet.has(toMonthKey(it.month))),
+    [items, targetMonthKeySet]
+  );
+
+  const { minDate, maxDate, totalDays } = useMemo(() => {
+    const allDates: Date[] = [];
+    for (const it of filtered) {
+      for (const f of [it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate]) {
+        const d = parseDate(f);
+        if (d) allDates.push(d);
+      }
+    }
+    if (allDates.length === 0) {
+      const now = new Date();
+      return { minDate: now, maxDate: new Date(now.getTime() + 30 * 86400000), totalDays: 30 };
+    }
+    const sorted = allDates.sort((a, b) => a.getTime() - b.getTime());
+    const min = new Date(sorted[0].getTime() - 3 * 86400000);
+    const max = new Date(sorted[sorted.length - 1].getTime() + 3 * 86400000);
+    return { minDate: min, maxDate: max, totalDays: Math.max(daysBetween(min, max), 1) };
+  }, [filtered]);
+
+  const toPct = useCallback((d: Date) => {
+    return ((d.getTime() - minDate.getTime()) / (maxDate.getTime() - minDate.getTime())) * 100;
+  }, [minDate, maxDate]);
+
+  const monthTicks = useMemo(() => {
+    const ticks: { date: Date; label: string }[] = [];
+    const cur = new Date(minDate);
+    cur.setDate(1);
+    if (cur < minDate) cur.setMonth(cur.getMonth() + 1);
+    while (cur <= maxDate) {
+      ticks.push({ date: new Date(cur), label: `${cur.getMonth() + 1}月` });
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    return ticks;
+  }, [minDate, maxDate]);
+
+  const renderSegments = (startStr: string, midStr: string, endStr: string, color1: string, color2: string, labelPrefix: string) => {
+    const s = parseDate(startStr);
+    const m = parseDate(midStr);
+    const e = parseDate(endStr);
+    if (!s && !e) return null;
+    const segments: ReactNode[] = [];
+    if (s && (m || e)) {
+      const segEnd = m || e!;
+      const left = Math.max(0, toPct(s));
+      const right = Math.min(100, toPct(segEnd));
+      segments.push(
+        <div key="design" className="absolute top-0.5 h-4 rounded-l" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '3px' }} title={`${labelPrefix}(設計): ${fmtShortDate(s)} ~ ${fmtShortDate(segEnd)}`} />
+      );
+    }
+    if (m && e) {
+      const left = Math.max(0, toPct(m));
+      const right = Math.min(100, toPct(e));
+      segments.push(
+        <div key="exec" className="absolute top-0.5 h-4 rounded-r" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
+      );
+    }
+    return segments.length > 0 ? <div className="relative h-5">{segments}</div> : null;
+  };
+
+  return (
+    <div className="space-y-4">
+      <nav className="flex items-center gap-2 text-sm text-neutral-500">
+        <button type="button" onClick={onHome} className="hover:text-neutral-900">{lang === 'zh' ? '首页' : 'ホーム'}</button>
+        <span>&gt;&gt;</span>
+        <button type="button" onClick={onBack} className="hover:text-neutral-900">TestCenter</button>
+        <span>&gt;&gt;</span>
+        <span className="text-neutral-900 font-medium">{areaLabel} {lang === 'zh' ? '甘特图' : 'ガントチャート'}</span>
+      </nav>
+
+      <div className="flex items-center gap-3">
+        <button type="button" onClick={onBack} className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900">
+          <ArrowLeft size={20} />
+        </button>
+        <h2 className="text-xl font-bold text-neutral-900">{areaLabel} — {lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-20"><Loader2 className="animate-spin text-neutral-400" size={28} /></div>
+      ) : filtered.length === 0 ? (
+        <p className="text-neutral-400 text-center py-16">{t('noData')}</p>
+      ) : (
+        <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <div style={{ minWidth: '900px' }}>
+              {/* Header */}
+              <div className="flex border-b border-neutral-200 bg-neutral-50 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
+                <div className="w-52 shrink-0 px-4 py-2.5 border-r border-neutral-200">{lang === 'zh' ? '案件名' : '案件名'}</div>
+                <div className="w-20 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-center">{lang === 'zh' ? '类型' : '区分'}</div>
+                <div className="w-20 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-right">{lang === 'zh' ? '工数' : '工数'}</div>
+                <div className="flex-1 relative py-2.5 px-2">
+                  <div className="flex justify-between text-[10px] text-neutral-400">
+                    {monthTicks.map((tick, i) => (
+                      <span key={i} style={{ position: 'absolute', left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)' }}>{tick.label}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Rows */}
+              {filtered.map((it, idx) => {
+                const planStart = it.tcStartDate;
+                const planEnd = it.tcExecutionCompleteDate;
+                const planMid = it.tcDesignCompleteDate;
+                const actStart = it.actualStartDate;
+                const actEnd = it.actualExecutionCompleteDate;
+                const actMid = it.actualDesignCompleteDate;
+
+                return (
+                  <div key={it.id} className={`flex border-b border-neutral-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/50'}`}>
+                    <div className="w-52 shrink-0 px-4 py-2 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate" title={it.projectName}>
+                      {it.projectName || '-'}
+                    </div>
+                    <div className="w-20 shrink-0 border-r border-neutral-100">
+                      <div className="px-2 py-0.5 text-[11px] text-blue-600 text-center">{lang === 'zh' ? '予定' : '予定'}</div>
+                      <div className="px-2 py-0.5 text-[11px] text-emerald-600 text-center">{lang === 'zh' ? '実際' : '実績'}</div>
+                    </div>
+                    <div className="w-20 shrink-0 border-r border-neutral-100 text-right">
+                      <div className="px-2 py-0.5 text-[12px] text-neutral-700">{fmtNum(parseNumber(it.estimateTotal))}</div>
+                      <div className="px-2 py-0.5 text-[12px] text-neutral-700">{fmtNum(parseNumber(it.actualTotal))}</div>
+                    </div>
+                    <div className="flex-1 relative px-1 py-0.5">
+                      {monthTicks.map((tick, i) => (
+                        <div key={i} className="absolute top-0 bottom-0 border-l border-neutral-100" style={{ left: `${toPct(tick.date)}%` }} />
+                      ))}
+                      {renderSegments(planStart, planMid, planEnd, '#93c5fd', '#3b82f6', '予定') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                      {renderSegments(actStart, actMid, actEnd, '#86efac', '#22c55e', '実績') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Legend */}
+          <div className="flex items-center gap-6 px-4 py-3 border-t border-neutral-200 bg-neutral-50 text-[11px] text-neutral-500">
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#93c5fd' }} />{lang === 'zh' ? '予定(設計)' : '予定(設計)'}</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />{lang === 'zh' ? '予定(実施)' : '予定(実施)'}</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#86efac' }} />{lang === 'zh' ? '実際(設計)' : '実績(設計)'}</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />{lang === 'zh' ? '実際(実施)' : '実績(実施)'}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const AREAS = [
   {
     id: 'jmotto' as AreaId,
@@ -897,6 +1105,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
   const [bugListOpen, setBugListOpen] = useState(false);
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
+  const [ganttAreaId, setGanttAreaId] = useState<AreaId | null>(null);
   const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
@@ -1580,6 +1789,25 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     );
   }
 
+  if (ganttAreaId) {
+    return (
+      <GanttView
+        areaId={ganttAreaId}
+        lang={lang}
+        onBack={() => setGanttAreaId(null)}
+        onHome={onBack}
+        loadAreaCache={loadAreaCache}
+        fetchArea={async (id: AreaId) => {
+          const res = await fetch(`/api/test-center?area=${id}`);
+          if (!res.ok) throw new Error('Failed to fetch');
+          const data = (await res.json()) as ApiResponse;
+          return data.items ?? [];
+        }}
+        targetMonthKeySet={targetMonthKeySet}
+      />
+    );
+  }
+
   return (
     <>
     <div className="space-y-6">
@@ -1944,7 +2172,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   const max = systemDistribution[0]?.count || 1;
                   const palette = ['#f97316', '#3b82f6', '#8b5cf6', '#06b6d4', '#0ea5e9', '#ec4899'];
                   return (
-                    <div key={row.areaId} className="flex items-center gap-2 text-xs">
+                    <div key={row.areaId} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-neutral-50 rounded px-1 -mx-1 py-0.5" onClick={() => setGanttAreaId(row.areaId)}>
                       <span className="w-20 text-neutral-600 truncate" title={row.label}>{row.label}</span>
                       <div className="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
                         <div className="h-full rounded-full" style={{ width: `${(row.count / max) * 100}%`, backgroundColor: palette[idx % palette.length] }} />
