@@ -742,7 +742,7 @@ function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string;
   return (
     <div className="flex items-center gap-3">
       <div className="relative w-28 h-28 flex-shrink-0">
-        <ResponsiveContainer width="100%" height="100%">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
           <PieChart>
             <Pie
               data={data}
@@ -2172,7 +2172,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
               <div className="h-44">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
                     <YAxis hide />
@@ -2264,14 +2264,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   </div>
                   <p className="text-sm text-neutral-500 leading-relaxed">{area.description[lang]}</p>
                   <div className="h-10 -mx-1">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                       <LineChart data={caseSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                         <Line type="monotone" dataKey="v" stroke="#6366f1" strokeWidth={1.5} dot={false} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
                   <div className="h-12 -mx-1 -mt-2">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                       <LineChart data={bugSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                         <XAxis dataKey="m" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#94a3b8' }} interval={0} height={14} />
                         <Line type="monotone" dataKey="v" stroke="#cbd5e1" strokeWidth={1.5} dot={false} />
