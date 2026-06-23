@@ -781,7 +781,6 @@ function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string;
 // ── Gantt Chart View ──
 
 type GanttViewProps = {
-  areaId: AreaId;
   lang: Lang;
   onBack: () => void;
   onHome: () => void;
@@ -796,48 +795,59 @@ function parseDate(s: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
-function daysBetween(a: Date, b: Date): number {
-  return Math.round((b.getTime() - a.getTime()) / 86400000);
-}
-
 function fmtShortDate(d: Date): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, targetMonthKeySet }: GanttViewProps) {
-  const [items, setItems] = useState<ProgressItem[]>([]);
+type GanttRow = ProgressItem & { _areaId: AreaId; _areaLabel: string };
+
+function GanttView({ lang, onBack, onHome, loadAreaCache, fetchArea, targetMonthKeySet }: GanttViewProps) {
+  const [allItems, setAllItems] = useState<GanttRow[]>([]);
   const [loading, setLoading] = useState(true);
   const t = useMemo(() => createT(lang), [lang]);
-  const areaLabel = useMemo(() => {
-    const found = AREAS.find((a) => a.id === areaId);
-    return found ? found.title[lang].replace(/エリア$|区域$/, '') : areaId;
-  }, [areaId, lang]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const cache = loadAreaCache(areaId);
-      if (cache) {
-        setItems(cache.items);
+      const results: GanttRow[] = [];
+      await Promise.all(AREAS.map(async (area) => {
+        const cache = loadAreaCache(area.id);
+        let items: ProgressItem[];
+        if (cache) {
+          items = cache.items;
+        } else {
+          try { items = await fetchArea(area.id); } catch { items = []; }
+        }
+        const label = area.title[lang].replace(/エリア$|区域$/, '');
+        for (const it of items) {
+          results.push({ ...it, _areaId: area.id, _areaLabel: label });
+        }
+      }));
+      if (!cancelled) {
+        setAllItems(results);
         setLoading(false);
-        return;
       }
-      try {
-        const fetched = await fetchArea(areaId);
-        if (!cancelled) setItems(fetched);
-      } catch { /* ignore */ }
-      if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [areaId]);
+  }, [lang]);
 
   const filtered = useMemo(
-    () => items.filter((it) => targetMonthKeySet.has(toMonthKey(it.month))),
-    [items, targetMonthKeySet]
+    () => allItems.filter((it) => targetMonthKeySet.has(toMonthKey(it.month))),
+    [allItems, targetMonthKeySet]
   );
 
-  const { minDate, maxDate, totalDays } = useMemo(() => {
+  const grouped = useMemo(() => {
+    const map = new Map<string, { areaId: AreaId; label: string; items: GanttRow[] }>();
+    for (const it of filtered) {
+      let group = map.get(it._areaId);
+      if (!group) { group = { areaId: it._areaId, label: it._areaLabel, items: [] }; map.set(it._areaId, group); }
+      group.items.push(it);
+    }
+    return Array.from(map.values());
+  }, [filtered]);
+
+  const { minDate, maxDate } = useMemo(() => {
     const allDates: Date[] = [];
     for (const it of filtered) {
       for (const f of [it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate]) {
@@ -847,16 +857,16 @@ function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, tar
     }
     if (allDates.length === 0) {
       const now = new Date();
-      return { minDate: now, maxDate: new Date(now.getTime() + 30 * 86400000), totalDays: 30 };
+      return { minDate: now, maxDate: new Date(now.getTime() + 30 * 86400000) };
     }
     const sorted = allDates.sort((a, b) => a.getTime() - b.getTime());
-    const min = new Date(sorted[0].getTime() - 3 * 86400000);
-    const max = new Date(sorted[sorted.length - 1].getTime() + 3 * 86400000);
-    return { minDate: min, maxDate: max, totalDays: Math.max(daysBetween(min, max), 1) };
+    return { minDate: new Date(sorted[0].getTime() - 3 * 86400000), maxDate: new Date(sorted[sorted.length - 1].getTime() + 3 * 86400000) };
   }, [filtered]);
 
   const toPct = useCallback((d: Date) => {
-    return ((d.getTime() - minDate.getTime()) / (maxDate.getTime() - minDate.getTime())) * 100;
+    const range = maxDate.getTime() - minDate.getTime();
+    if (range <= 0) return 50;
+    return ((d.getTime() - minDate.getTime()) / range) * 100;
   }, [minDate, maxDate]);
 
   const monthTicks = useMemo(() => {
@@ -875,25 +885,42 @@ function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, tar
     const s = parseDate(startStr);
     const m = parseDate(midStr);
     const e = parseDate(endStr);
-    if (!s && !e) return null;
+    if (!s && !m && !e) return null;
     const segments: ReactNode[] = [];
-    if (s && (m || e)) {
-      const segEnd = m || e!;
-      const left = Math.max(0, toPct(s));
-      const right = Math.min(100, toPct(segEnd));
-      segments.push(
-        <div key="design" className="absolute top-0.5 h-4 rounded-l" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '3px' }} title={`${labelPrefix}(設計): ${fmtShortDate(s)} ~ ${fmtShortDate(segEnd)}`} />
-      );
-    }
-    if (m && e) {
-      const left = Math.max(0, toPct(m));
-      const right = Math.min(100, toPct(e));
-      segments.push(
-        <div key="exec" className="absolute top-0.5 h-4 rounded-r" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
-      );
+    const effectiveEnd = e || m || s;
+    const effectiveStart = s || m || e;
+    if (effectiveStart && effectiveEnd) {
+      if (m) {
+        const left = Math.max(0, toPct(effectiveStart));
+        const right = Math.min(100, toPct(m));
+        if (right > left) {
+          segments.push(
+            <div key="design" className="absolute top-0.5 h-4 rounded-l" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '3px' }} title={`${labelPrefix}(設計): ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(m)}`} />
+          );
+        }
+        if (e) {
+          const left2 = Math.max(0, toPct(m));
+          const right2 = Math.min(100, toPct(e));
+          if (right2 > left2) {
+            segments.push(
+              <div key="exec" className="absolute top-0.5 h-4 rounded-r" style={{ left: `${left2}%`, width: `${Math.max(right2 - left2, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
+            );
+          }
+        }
+      } else {
+        const left = Math.max(0, toPct(effectiveStart));
+        const right = Math.min(100, toPct(effectiveEnd));
+        if (right > left || (s && e)) {
+          segments.push(
+            <div key="full" className="absolute top-0.5 h-4 rounded" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}: ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(effectiveEnd)}`} />
+          );
+        }
+      }
     }
     return segments.length > 0 ? <div className="relative h-5">{segments}</div> : null;
   };
+
+  const todayPct = toPct(new Date());
 
   return (
     <div className="space-y-4">
@@ -902,14 +929,15 @@ function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, tar
         <span>&gt;&gt;</span>
         <button type="button" onClick={onBack} className="hover:text-neutral-900">TestCenter</button>
         <span>&gt;&gt;</span>
-        <span className="text-neutral-900 font-medium">{areaLabel} {lang === 'zh' ? '甘特图' : 'ガントチャート'}</span>
+        <span className="text-neutral-900 font-medium">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</span>
       </nav>
 
       <div className="flex items-center gap-3">
         <button type="button" onClick={onBack} className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900">
           <ArrowLeft size={20} />
         </button>
-        <h2 className="text-xl font-bold text-neutral-900">{areaLabel} — {lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
+        <h2 className="text-xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
+        <span className="text-sm text-neutral-400">({filtered.length} {lang === 'zh' ? '件' : '件'})</span>
       </div>
 
       {loading ? (
@@ -923,8 +951,8 @@ function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, tar
               {/* Header */}
               <div className="flex border-b border-neutral-200 bg-neutral-50 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
                 <div className="w-52 shrink-0 px-4 py-2.5 border-r border-neutral-200">{lang === 'zh' ? '案件名' : '案件名'}</div>
-                <div className="w-20 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-center">{lang === 'zh' ? '类型' : '区分'}</div>
-                <div className="w-20 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-right">{lang === 'zh' ? '工数' : '工数'}</div>
+                <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-center">{lang === 'zh' ? '区分' : '区分'}</div>
+                <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-right">{lang === 'zh' ? '工数' : '工数'}</div>
                 <div className="flex-1 relative py-2.5 px-2">
                   <div className="flex justify-between text-[10px] text-neutral-400">
                     {monthTicks.map((tick, i) => (
@@ -934,47 +962,50 @@ function GanttView({ areaId, lang, onBack, onHome, loadAreaCache, fetchArea, tar
                 </div>
               </div>
 
-              {/* Rows */}
-              {filtered.map((it, idx) => {
-                const planStart = it.tcStartDate;
-                const planEnd = it.tcExecutionCompleteDate;
-                const planMid = it.tcDesignCompleteDate;
-                const actStart = it.actualStartDate;
-                const actEnd = it.actualExecutionCompleteDate;
-                const actMid = it.actualDesignCompleteDate;
-
-                return (
-                  <div key={it.id} className={`flex border-b border-neutral-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/50'}`}>
-                    <div className="w-52 shrink-0 px-4 py-2 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate" title={it.projectName}>
-                      {it.projectName || '-'}
-                    </div>
-                    <div className="w-20 shrink-0 border-r border-neutral-100">
-                      <div className="px-2 py-0.5 text-[11px] text-blue-600 text-center">{lang === 'zh' ? '予定' : '予定'}</div>
-                      <div className="px-2 py-0.5 text-[11px] text-emerald-600 text-center">{lang === 'zh' ? '実際' : '実績'}</div>
-                    </div>
-                    <div className="w-20 shrink-0 border-r border-neutral-100 text-right">
-                      <div className="px-2 py-0.5 text-[12px] text-neutral-700">{fmtNum(parseNumber(it.estimateTotal))}</div>
-                      <div className="px-2 py-0.5 text-[12px] text-neutral-700">{fmtNum(parseNumber(it.actualTotal))}</div>
-                    </div>
-                    <div className="flex-1 relative px-1 py-0.5">
-                      {monthTicks.map((tick, i) => (
-                        <div key={i} className="absolute top-0 bottom-0 border-l border-neutral-100" style={{ left: `${toPct(tick.date)}%` }} />
-                      ))}
-                      {renderSegments(planStart, planMid, planEnd, '#93c5fd', '#3b82f6', '予定') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
-                      {renderSegments(actStart, actMid, actEnd, '#86efac', '#22c55e', '実績') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
-                    </div>
+              {/* Groups */}
+              {grouped.map((group) => (
+                <div key={group.areaId}>
+                  <div className="flex items-center gap-2 px-4 py-1.5 bg-neutral-100 border-b border-neutral-200">
+                    <span className="text-[12px] font-bold text-neutral-700">{group.label}</span>
+                    <span className="text-[11px] text-neutral-400">({group.items.length}{lang === 'zh' ? '件' : '件'})</span>
                   </div>
-                );
-              })}
+                  {group.items.map((it, idx) => (
+                    <div key={it.id} className={`flex border-b border-neutral-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/50'}`}>
+                      <div className="w-52 shrink-0 px-4 py-2 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate" title={it.projectName}>
+                        {it.projectName || '-'}
+                      </div>
+                      <div className="w-16 shrink-0 border-r border-neutral-100">
+                        <div className="px-1 py-0.5 text-[10px] text-blue-600 text-center">予定</div>
+                        <div className="px-1 py-0.5 text-[10px] text-emerald-600 text-center">実績</div>
+                      </div>
+                      <div className="w-16 shrink-0 border-r border-neutral-100 text-right">
+                        <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.estimateTotal))}</div>
+                        <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.actualTotal))}</div>
+                      </div>
+                      <div className="flex-1 relative px-1 py-0.5">
+                        {monthTicks.map((tick, i) => (
+                          <div key={i} className="absolute top-0 bottom-0 border-l border-neutral-100" style={{ left: `${toPct(tick.date)}%` }} />
+                        ))}
+                        {todayPct >= 0 && todayPct <= 100 && (
+                          <div className="absolute top-0 bottom-0 border-l-2 border-red-400 z-10" style={{ left: `${todayPct}%` }} title={lang === 'zh' ? '今日' : '今日'} />
+                        )}
+                        {renderSegments(it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, '#93c5fd', '#3b82f6', '予定') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                        {renderSegments(it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate, '#86efac', '#22c55e', '実績') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
             </div>
           </div>
 
           {/* Legend */}
           <div className="flex items-center gap-6 px-4 py-3 border-t border-neutral-200 bg-neutral-50 text-[11px] text-neutral-500">
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#93c5fd' }} />{lang === 'zh' ? '予定(設計)' : '予定(設計)'}</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />{lang === 'zh' ? '予定(実施)' : '予定(実施)'}</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#86efac' }} />{lang === 'zh' ? '実際(設計)' : '実績(設計)'}</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />{lang === 'zh' ? '実際(実施)' : '実績(実施)'}</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#93c5fd' }} />予定(設計)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />予定(実施)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#86efac' }} />実績(設計)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />実績(実施)</div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-red-400" />{lang === 'zh' ? '今日' : '今日'}</div>
           </div>
         </div>
       )}
@@ -1105,7 +1136,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
   const [bugListOpen, setBugListOpen] = useState(false);
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
-  const [ganttAreaId, setGanttAreaId] = useState<AreaId | null>(null);
+  const [ganttOpen, setGanttOpen] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
   const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
@@ -1789,12 +1820,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     );
   }
 
-  if (ganttAreaId) {
+  if (ganttOpen) {
     return (
       <GanttView
-        areaId={ganttAreaId}
         lang={lang}
-        onBack={() => setGanttAreaId(null)}
+        onBack={() => setGanttOpen(false)}
         onHome={onBack}
         loadAreaCache={loadAreaCache}
         fetchArea={async (id: AreaId) => {
@@ -2166,13 +2196,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`}>
+            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint={lang === 'zh' ? '查看甘特图' : 'ガントチャート'}>
               <div className="space-y-2.5 pt-1">
                 {systemDistribution.slice(0, 6).map((row, idx) => {
                   const max = systemDistribution[0]?.count || 1;
                   const palette = ['#f97316', '#3b82f6', '#8b5cf6', '#06b6d4', '#0ea5e9', '#ec4899'];
                   return (
-                    <div key={row.areaId} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-neutral-50 rounded px-1 -mx-1 py-0.5" onClick={() => setGanttAreaId(row.areaId)}>
+                    <div key={row.areaId} className="flex items-center gap-2 text-xs">
                       <span className="w-20 text-neutral-600 truncate" title={row.label}>{row.label}</span>
                       <div className="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
                         <div className="h-full rounded-full" style={{ width: `${(row.count / max) * 100}%`, backgroundColor: palette[idx % palette.length] }} />
