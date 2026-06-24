@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Download, Loader2, Search, X, Calendar } from 'lucide-react';
+import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Download, Loader2, Search, X, Calendar, ChevronRight as ChevronSep } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
 import { buildBugListHtml } from './bugListPdf';
 
@@ -35,7 +35,7 @@ type BugItem = {
 const JUDGMENT_COLOR: Record<string, string> = {
   '確認OK': 'bg-emerald-50 text-emerald-700 border-emerald-200',
   'NG': 'bg-red-50 text-red-700 border-red-200',
-  'NG確認要': 'bg-amber-50 text-amber-700 border-amber-200',
+  'NG確認要': 'bg-orange-50 text-orange-700 border-orange-200',
   '想定以外NG': 'bg-purple-50 text-purple-700 border-purple-200',
 };
 
@@ -70,6 +70,13 @@ function fmtDate(value: string): string {
   return value ? value.slice(0, 10) : '-';
 }
 
+const SUMMARY_CARDS = [
+  { key: 'total', accent: 'border-l-neutral-400', numColor: 'text-neutral-900' },
+  { key: 'ng', accent: 'border-l-red-500', numColor: 'text-red-600' },
+  { key: 'incomplete', accent: 'border-l-amber-500', numColor: 'text-amber-600' },
+  { key: 'done', accent: 'border-l-emerald-500', numColor: 'text-emerald-600' },
+] as const;
+
 export default function BugList({ lang, onHome, onBack, initialMonth = '' }: BugListProps) {
   const L =
     lang === 'zh'
@@ -85,6 +92,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           dReproSteps: '再现手顺', dExpected: '预定结果', dActual: '实际结果', dRemarks: '备注',
           dCase: '测试案件名', dDesc: 'BUG概要', dChild: '子页面内容', dChildEmpty: '无子页面内容',
           close: '关闭', caseNo: '案例编号',
+          filterLabel: '筛选条件',
         }
       : {
           home: 'ホーム', testCenter: '測試中心', title: 'BUG一覧',
@@ -98,6 +106,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           dReproSteps: '再現ステップ', dExpected: '予定結果', dActual: '実際結果', dRemarks: '備考欄',
           dCase: 'テスト案件名', dDesc: 'BUG説明', dChild: '子ページ内容', dChildEmpty: '子ページの内容はありません',
           close: '閉じる', caseNo: 'ケース番号',
+          filterLabel: '絞り込み',
         };
 
   const [allItems, setAllItems] = useState<BugItem[]>([]);
@@ -192,6 +201,8 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
     setStatus('');
   };
 
+  const hasFilter = keyword || system || month || judgments.length > 0 || status;
+
   const [exporting, setExporting] = useState(false);
 
   const handleExportHtml = async () => {
@@ -243,7 +254,6 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
     return { total, ng, incomplete, done };
   }, [filtered]);
 
-  // 行クリックでアコーディオン展開。展開時に子ページ本文を遅延取得
   const toggleRow = async (bug: BugItem) => {
     if (openId === bug.id) {
       setOpenId(null);
@@ -259,166 +269,196 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
         setChildHtml(typeof data.html === 'string' ? data.html : '');
       }
     } catch {
-      // 子页面加载失败时静默
+      // silent
     } finally {
       setChildLoading(false);
     }
   };
 
+  const summaryLabels = { total: L.sumTotal, ng: L.sumNg, incomplete: L.sumIncomplete, done: L.sumDone };
+  const summaryValues = { total: summary.total, ng: summary.ng, incomplete: summary.incomplete, done: summary.done };
+
   const breadcrumb = (
-    <nav className="flex items-center gap-2 text-sm">
+    <nav className="flex items-center gap-1.5 text-sm">
       <button type="button" onClick={onHome} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
         {L.home}
       </button>
-      <span className="text-neutral-400">{'>>'}</span>
+      <ChevronSep size={14} className="text-neutral-300 shrink-0" />
       <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
         {L.testCenter}
       </button>
-      <span className="text-neutral-400">{'>>'}</span>
+      <ChevronSep size={14} className="text-neutral-300 shrink-0" />
       <span className="text-neutral-900 font-medium">{L.title}</span>
     </nav>
   );
 
   const selectCls =
-    'appearance-none bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none';
+    'appearance-none bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none hover:border-neutral-400 transition-colors';
 
   return (
     <>
       <div className="space-y-6">
         {breadcrumb}
 
-        <h2 className="text-2xl font-bold text-neutral-900">{L.title}</h2>
+        <div className="flex items-end justify-between">
+          <h2 className="text-2xl font-bold text-neutral-900">{L.title}</h2>
+          <button
+            type="button"
+            onClick={handleExportHtml}
+            disabled={filtered.length === 0 || exporting}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-600 hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            {L.exportHtml}
+          </button>
+        </div>
 
-        {/* サマリー */}
+        {/* Summary cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { label: L.sumTotal, value: summary.total, color: 'text-neutral-900' },
-            { label: L.sumNg, value: summary.ng, color: 'text-red-600' },
-            { label: L.sumIncomplete, value: summary.incomplete, color: 'text-amber-600' },
-            { label: L.sumDone, value: summary.done, color: 'text-emerald-600' },
-          ].map((s) => (
-            <div key={s.label} className="bg-white border border-neutral-200 rounded-xl px-4 py-3 shadow-sm">
-              <div className={`text-2xl font-bold ${s.color}`}>{s.value}</div>
-              <div className="text-xs text-neutral-500 mt-0.5">{s.label}</div>
+          {SUMMARY_CARDS.map((card) => (
+            <div
+              key={card.key}
+              className={`bg-neutral-50 rounded-xl px-4 py-3.5 border-l-[3px] ${card.accent}`}
+            >
+              <div className="text-xs text-neutral-500 mb-1">{summaryLabels[card.key]}</div>
+              <div className={`text-3xl font-bold tabular-nums tracking-tight ${card.numColor}`}>
+                {summaryValues[card.key]}
+              </div>
             </div>
           ))}
         </div>
 
-        {/* 検索条件 */}
-        <div className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-4">
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="space-y-1.5 flex-1 min-w-[220px]">
-              <label className="text-xs font-semibold text-neutral-500">{L.keyword}</label>
-              <div className="relative">
-                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                <input
-                  type="text"
-                  value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
-                  placeholder={L.keywordPh}
-                  className="w-full rounded-lg border border-neutral-300 pl-9 pr-3 py-2 text-sm text-neutral-800 focus:border-neutral-500 focus:outline-none"
-                />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-neutral-500">{L.system}</label>
-              <select value={system} onChange={(e) => setSystem(e.target.value)} className={selectCls}>
-                <option value="">{L.all}</option>
-                {systemOptions.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1.5 relative" ref={monthPickerRef}>
-              <label className="text-xs font-semibold text-neutral-500">{L.month}</label>
+        {/* Filter */}
+        <div className="bg-white border border-neutral-200 rounded-xl shadow-sm">
+          <div className="px-5 py-3 border-b border-neutral-100 flex items-center justify-between">
+            <span className="text-sm font-medium text-neutral-700">{L.filterLabel}</span>
+            {hasFilter && (
               <button
                 type="button"
-                onClick={() => setMonthPickerOpen((v) => !v)}
-                className="flex items-center gap-2 bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm text-neutral-700 hover:border-neutral-400 focus:border-neutral-500 focus:outline-none min-w-[120px]"
+                onClick={handleClear}
+                className="inline-flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
               >
-                <Calendar size={14} className="text-neutral-400" />
-                <span className="flex-1 text-left">{month || L.all}</span>
-                <ChevronDown size={14} className={`text-neutral-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
+                <X size={13} />
+                {L.clear}
               </button>
-              {monthPickerOpen && (
-                <div className="absolute top-full right-0 mt-1 z-20 bg-white border border-neutral-200 rounded-xl shadow-lg p-3 w-[260px]">
-                  <div className="flex items-center justify-between mb-2">
-                    <button type="button" onClick={() => setMonthPickerYear((y) => y - 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronLeft size={16} /></button>
-                    <span className="text-sm font-semibold text-neutral-800">{monthPickerYear}</span>
-                    <button type="button" onClick={() => setMonthPickerYear((y) => y + 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronRight size={16} /></button>
+            )}
+          </div>
+          <div className="px-5 py-4">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-x-4 gap-y-3 items-end">
+              {/* Keyword */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-neutral-500">{L.keyword}</label>
+                <div className="relative">
+                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    type="text"
+                    value={keyword}
+                    onChange={(e) => setKeyword(e.target.value)}
+                    placeholder={L.keywordPh}
+                    className="w-full rounded-lg border border-neutral-300 pl-9 pr-3 py-2 text-sm text-neutral-800 focus:border-neutral-500 focus:outline-none hover:border-neutral-400 transition-colors"
+                  />
+                </div>
+              </div>
+              {/* System */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-neutral-500">{L.system}</label>
+                <select value={system} onChange={(e) => setSystem(e.target.value)} className={selectCls}>
+                  <option value="">{L.all}</option>
+                  {systemOptions.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+              {/* Month picker */}
+              <div className="space-y-1.5 relative" ref={monthPickerRef}>
+                <label className="text-xs font-medium text-neutral-500">{L.month}</label>
+                <button
+                  type="button"
+                  onClick={() => setMonthPickerOpen((v) => !v)}
+                  className="flex items-center gap-2 bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm text-neutral-700 hover:border-neutral-400 focus:border-neutral-500 focus:outline-none min-w-[120px] transition-colors"
+                >
+                  <Calendar size={14} className="text-neutral-400" />
+                  <span className="flex-1 text-left">{month ? `${month.slice(0, 4)}/${month.slice(4)}` : L.all}</span>
+                  <ChevronDown size={14} className={`text-neutral-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {monthPickerOpen && (
+                  <div className="absolute top-full right-0 mt-1 z-20 bg-white border border-neutral-200 rounded-xl shadow-lg p-3 w-[260px]">
+                    <div className="flex items-center justify-between mb-2">
+                      <button type="button" onClick={() => setMonthPickerYear((y) => y - 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronLeft size={16} /></button>
+                      <span className="text-sm font-semibold text-neutral-800">{monthPickerYear}</span>
+                      <button type="button" onClick={() => setMonthPickerYear((y) => y + 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronRight size={16} /></button>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {Array.from({ length: 12 }, (_, i) => {
+                        const m = i + 1;
+                        const key = `${monthPickerYear}${String(m).padStart(2, '0')}`;
+                        const isActive = month === key;
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => { setMonth(key); setMonthPickerOpen(false); }}
+                            className={`rounded-lg py-1.5 text-sm font-medium transition-colors ${
+                              isActive
+                                ? 'bg-neutral-900 text-white'
+                                : 'text-neutral-600 hover:bg-neutral-100'
+                            }`}
+                          >
+                            {m}月
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {month && (
+                      <button
+                        type="button"
+                        onClick={() => { setMonth(''); setMonthPickerOpen(false); }}
+                        className="w-full mt-2 rounded-lg border border-neutral-200 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50 transition-colors"
+                      >
+                        {L.clear}
+                      </button>
+                    )}
                   </div>
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {Array.from({ length: 12 }, (_, i) => {
-                      const m = i + 1;
-                      const key = `${monthPickerYear}${String(m).padStart(2, '0')}`;
-                      const isActive = month === key;
+                )}
+              </div>
+              {/* Status */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-neutral-500">{L.status}</label>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} className={selectCls}>
+                  <option value="">{L.all}</option>
+                  {statusOptions.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            {/* Judgment toggles */}
+            {judgmentOptions.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-neutral-100">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-medium text-neutral-500 shrink-0">{L.judgment}</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {judgmentOptions.map((j) => {
+                      const on = judgments.includes(j);
                       return (
                         <button
-                          key={m}
+                          key={j}
                           type="button"
-                          onClick={() => { setMonth(key); setMonthPickerOpen(false); }}
-                          className={`rounded-lg py-1.5 text-sm font-medium transition-colors ${
-                            isActive
-                              ? 'bg-neutral-900 text-white'
-                              : 'text-neutral-600 hover:bg-neutral-100'
+                          onClick={() =>
+                            setJudgments((prev) => (prev.includes(j) ? prev.filter((x) => x !== j) : [...prev, j]))
+                          }
+                          className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                            on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50 hover:border-neutral-300'
                           }`}
                         >
-                          {m}月
+                          {j}
                         </button>
                       );
                     })}
                   </div>
-                  {month && (
-                    <button
-                      type="button"
-                      onClick={() => { setMonth(''); setMonthPickerOpen(false); }}
-                      className="w-full mt-2 rounded-lg border border-neutral-200 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50 transition-colors"
-                    >
-                      {L.clear}
-                    </button>
-                  )}
                 </div>
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-neutral-500">{L.judgment}</label>
-              <div className="flex flex-wrap gap-1.5">
-                {judgmentOptions.map((j) => {
-                  const on = judgments.includes(j);
-                  return (
-                    <button
-                      key={j}
-                      type="button"
-                      onClick={() =>
-                        setJudgments((prev) => (prev.includes(j) ? prev.filter((x) => x !== j) : [...prev, j]))
-                      }
-                      className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                        on ? 'border-blue-300 bg-blue-50 text-blue-700 font-medium' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'
-                      }`}
-                    >
-                      {j}
-                    </button>
-                  );
-                })}
               </div>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-neutral-500">{L.status}</label>
-              <select value={status} onChange={(e) => setStatus(e.target.value)} className={selectCls}>
-                <option value="">{L.all}</option>
-                {statusOptions.map((s) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-            <button
-              type="button"
-              onClick={handleClear}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
-            >
-              <X size={15} />
-              {L.clear}
-            </button>
+            )}
           </div>
         </div>
 
@@ -429,134 +469,150 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           </div>
         )}
 
-        {/* 結果 */}
-        <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b border-neutral-100 flex items-center justify-between gap-3">
-            <div className="text-sm text-neutral-600">
-              {L.result} <span className="font-bold text-neutral-900">{filtered.length}</span> {L.count}
-            </div>
-            <button
-              type="button"
-              onClick={handleExportHtml}
-              disabled={filtered.length === 0 || exporting}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:bg-neutral-200 disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
-            >
-              {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-              {L.exportHtml}
-            </button>
+        {/* Results */}
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm text-neutral-500">{L.result}</span>
+            <span className="text-sm font-bold text-neutral-900 tabular-nums">{filtered.length}</span>
+            <span className="text-sm text-neutral-500">{L.count}</span>
           </div>
 
-          {loading ? (
-            <p className="px-5 py-10 text-center text-sm text-neutral-400 flex items-center justify-center gap-2">
-              <Loader2 size={16} className="animate-spin" />
-              {L.loading}
-            </p>
-          ) : filtered.length === 0 ? (
-            <p className="px-5 py-10 text-center text-sm text-neutral-400">{L.noData}</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <div className="min-w-[760px]">
-                {/* 列ヘッダー */}
-                <div
-                  className="grid bg-neutral-50 border-b border-neutral-100 text-[11px] font-semibold text-neutral-500"
-                  style={{ gridTemplateColumns: GRID_COLS }}
-                >
-                  <div className="px-3 py-2">{L.colNo}</div>
-                  <div className="px-3 py-2">{L.colSystem}</div>
-                  <div className="px-3 py-2">{L.colDesc}</div>
-                  <div className="px-3 py-2">{L.colJudg}</div>
-                  <div className="px-3 py-2">{L.colStatus}</div>
-                  <div className="px-3 py-2">{L.colAssignee}</div>
-                  <div />
-                </div>
+          <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
+            {loading ? (
+              <p className="px-5 py-12 text-center text-sm text-neutral-400 flex items-center justify-center gap-2">
+                <Loader2 size={16} className="animate-spin" />
+                {L.loading}
+              </p>
+            ) : filtered.length === 0 ? (
+              <p className="px-5 py-12 text-center text-sm text-neutral-400">{L.noData}</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <div className="min-w-[720px]">
+                  {/* Column header */}
+                  <div
+                    className="grid bg-neutral-50/80 border-b border-neutral-200 text-xs font-medium text-neutral-500"
+                    style={{ gridTemplateColumns: GRID_COLS }}
+                  >
+                    <div className="px-3 py-2.5">{L.colNo}</div>
+                    <div className="px-3 py-2.5">{L.colSystem}</div>
+                    <div className="px-3 py-2.5">{L.colDesc}</div>
+                    <div className="px-3 py-2.5">{L.colJudg}</div>
+                    <div className="px-3 py-2.5">{L.colStatus}</div>
+                    <div className="px-3 py-2.5">{L.colAssignee}</div>
+                    <div />
+                  </div>
 
-                {filtered.map((bug) => {
-                  const isOpen = openId === bug.id;
-                  return (
-                    <div key={bug.id} className="border-b border-neutral-100 last:border-b-0">
-                      <div
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => toggleRow(bug)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            toggleRow(bug);
-                          }
-                        }}
-                        className={`grid items-center cursor-pointer transition-colors ${
-                          isOpen ? 'bg-neutral-50' : 'bg-white hover:bg-neutral-50/70'
-                        }`}
-                        style={{ gridTemplateColumns: GRID_COLS }}
-                      >
-                        <div className="px-3 py-2.5 text-xs font-semibold text-blue-600">{bug.no || '-'}</div>
-                        <div className="px-3 py-2.5 text-xs text-neutral-600 truncate" title={bug.system}>{bug.system || '-'}</div>
-                        <div className="px-3 py-2.5 text-sm text-neutral-800 truncate" title={bug.bugDesc}>{bug.bugDesc || '-'}</div>
-                        <div className="px-3 py-2.5">
-                          {bug.judgment ? (
-                            <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${badge(bug.judgment, JUDGMENT_COLOR)}`}>
-                              {bug.judgment}
-                            </span>
-                          ) : '-'}
+                  {filtered.map((bug) => {
+                    const isOpen = openId === bug.id;
+                    return (
+                      <div key={bug.id} className="border-b border-neutral-100 last:border-b-0">
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => toggleRow(bug)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleRow(bug);
+                            }
+                          }}
+                          className={`grid items-center cursor-pointer transition-colors ${
+                            isOpen ? 'bg-neutral-50' : 'bg-white hover:bg-neutral-50/60'
+                          }`}
+                          style={{ gridTemplateColumns: GRID_COLS }}
+                        >
+                          <div className="px-3 py-3 text-xs font-semibold text-blue-600 tabular-nums">{bug.no || '-'}</div>
+                          <div className="px-3 py-3 text-xs text-neutral-500 truncate" title={bug.system}>{bug.system || '-'}</div>
+                          <div className="px-3 py-3 text-sm text-neutral-800 truncate" title={bug.bugDesc}>{bug.bugDesc || '-'}</div>
+                          <div className="px-3 py-3">
+                            {bug.judgment ? (
+                              <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.judgment, JUDGMENT_COLOR)}`}>
+                                {bug.judgment}
+                              </span>
+                            ) : '-'}
+                          </div>
+                          <div className="px-3 py-3">
+                            {bug.status ? (
+                              <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.status, STATUS_COLOR)}`}>
+                                {bug.status}
+                              </span>
+                            ) : '-'}
+                          </div>
+                          <div className="px-3 py-3 text-xs text-neutral-600 truncate" title={bug.assignee}>{bug.assignee || '-'}</div>
+                          <div className="flex items-center justify-center text-neutral-400">
+                            <ChevronDown size={16} className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
+                          </div>
                         </div>
-                        <div className="px-3 py-2.5">
-                          {bug.status ? (
-                            <span className={`inline-block rounded-full border px-2 py-0.5 text-xs font-medium ${badge(bug.status, STATUS_COLOR)}`}>
-                              {bug.status}
-                            </span>
-                          ) : '-'}
-                        </div>
-                        <div className="px-3 py-2.5 text-xs text-neutral-600 truncate" title={bug.assignee}>{bug.assignee || '-'}</div>
-                        <div className="flex items-center justify-center text-neutral-400">
-                          <ChevronDown size={16} className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-                        </div>
-                      </div>
 
-                      {isOpen && (
-                        <div className="bg-neutral-50 border-t border-neutral-100 px-5 py-4 space-y-4">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <Field label={L.dCase} value={bug.testCaseName} />
-                            <Field label={L.colSystem} value={bug.system} />
-                          </div>
-                          <Field label={L.dDesc} value={bug.bugDesc} block />
-                          <Field label={L.dReproSteps} value={bug.reproSteps} block pre />
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <Field label={L.dExpected} value={bug.expectedResult} block />
-                            <Field label={L.dActual} value={bug.actualResult} block />
-                          </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <Field label={L.colDate} value={fmtDate(bug.execDate)} />
-                            <Field label={L.colAssignee} value={bug.assignee} />
-                            <Field label={L.colMonth} value={bug.month} />
-                            {bug.caseNumber && <Field label={L.caseNo} value={bug.caseNumber} />}
-                          </div>
-                          <Field label={L.dRemarks} value={bug.remarks} block />
+                        {isOpen && (
+                          <div className="bg-neutral-50/60 border-t border-neutral-100">
+                            {/* Bug core info */}
+                            <div className="px-5 py-4 space-y-4">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <Field label={L.dCase} value={bug.testCaseName} />
+                                <Field label={L.colSystem} value={bug.system} />
+                              </div>
+                              <Field label={L.dDesc} value={bug.bugDesc} block />
+                            </div>
 
-                          {/* 子ページ内容 */}
-                          <div className="space-y-1.5">
-                            <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{L.dChild}</p>
-                            {childLoading ? (
-                              <p className="text-sm text-neutral-400 flex items-center gap-2">
-                                <Loader2 size={14} className="animate-spin" />
-                                {L.loading}
-                              </p>
-                            ) : childHtml.trim() ? (
-                              <div
-                                className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white"
-                                dangerouslySetInnerHTML={{ __html: childHtml }}
-                              />
-                            ) : (
-                              <p className="text-sm text-neutral-400">{L.dChildEmpty}</p>
+                            {/* Repro / Expected / Actual — grouped as comparison */}
+                            <div className="mx-5 mb-4 border border-neutral-200 rounded-lg bg-white overflow-hidden">
+                              <div className="px-4 py-3 border-b border-neutral-100">
+                                <Field label={L.dReproSteps} value={bug.reproSteps} block pre />
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-neutral-100">
+                                <div className="px-4 py-3">
+                                  <Field label={L.dExpected} value={bug.expectedResult} block />
+                                </div>
+                                <div className="px-4 py-3">
+                                  <Field label={L.dActual} value={bug.actualResult} block />
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Metadata row */}
+                            <div className="px-5 pb-4">
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <Field label={L.colDate} value={fmtDate(bug.execDate)} />
+                                <Field label={L.colAssignee} value={bug.assignee} />
+                                <Field label={L.colMonth} value={bug.month} />
+                                {bug.caseNumber && <Field label={L.caseNo} value={bug.caseNumber} />}
+                              </div>
+                            </div>
+
+                            {/* Remarks */}
+                            {bug.remarks && (
+                              <div className="px-5 pb-4">
+                                <Field label={L.dRemarks} value={bug.remarks} block />
+                              </div>
                             )}
+
+                            {/* Child page content */}
+                            <div className="mx-5 mb-4 pt-3 border-t border-neutral-200 space-y-1.5">
+                              <p className="text-xs font-medium text-neutral-400">{L.dChild}</p>
+                              {childLoading ? (
+                                <p className="text-sm text-neutral-400 flex items-center gap-2">
+                                  <Loader2 size={14} className="animate-spin" />
+                                  {L.loading}
+                                </p>
+                              ) : childHtml.trim() ? (
+                                <div
+                                  className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white"
+                                  dangerouslySetInnerHTML={{ __html: childHtml }}
+                                />
+                              ) : (
+                                <p className="text-sm text-neutral-400">{L.dChildEmpty}</p>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         <div className="pt-4 border-t border-neutral-200">{breadcrumb}</div>
@@ -565,12 +621,12 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
   );
 }
 
-const GRID_COLS = '72px 96px minmax(0,1fr) 88px 92px 96px 32px';
+const GRID_COLS = '56px 88px minmax(0,1fr) 96px 96px 88px 32px';
 
 function Field({ label, value, block, pre }: { label: string; value: string; block?: boolean; pre?: boolean }) {
   return (
     <div className="space-y-1">
-      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{label}</p>
+      <p className="text-xs font-medium text-neutral-400">{label}</p>
       <p className={`text-sm text-neutral-700 ${block ? '' : 'break-all'} ${pre ? 'whitespace-pre-wrap' : 'whitespace-pre-wrap'}`}>
         {value || '-'}
       </p>

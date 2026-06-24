@@ -22,6 +22,7 @@ import {
   ArrowRight,
   Cloud,
   SlidersHorizontal,
+  ChevronRight,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import MonthlyReport from './MonthlyReport';
@@ -908,14 +909,15 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
   }, [minDate, maxDate]);
 
   const { monthTicks, dayTicks } = useMemo(() => {
-    const months: { date: Date; label: string }[] = [];
+    const months: { date: Date; label: string; endDate: Date }[] = [];
     const days: { date: Date; label: string; isFirst: boolean }[] = [];
     const cur = new Date(minDate);
     cur.setDate(1);
     if (cur < minDate) cur.setMonth(cur.getMonth() + 1);
     while (cur <= maxDate) {
       const monthLabel = `${cur.getMonth() + 1}月`;
-      months.push({ date: new Date(cur), label: monthLabel });
+      const endOfMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+      months.push({ date: new Date(cur), label: monthLabel, endDate: endOfMonth > maxDate ? maxDate : endOfMonth });
       for (const day of [1, 5, 10, 15, 20, 25]) {
         const d = new Date(cur.getFullYear(), cur.getMonth(), day);
         if (d >= minDate && d <= maxDate) {
@@ -941,7 +943,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
         const right = Math.min(100, toPct(m));
         if (right > left) {
           segments.push(
-            <div key="design" className="absolute top-0.5 h-4 rounded-l" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '3px' }} title={`${labelPrefix}(設計): ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(m)}`} />
+            <div key="design" className="absolute h-[7px] rounded-l-sm" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '4px' }} title={`${labelPrefix}(設計): ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(m)}`} />
           );
         }
         if (e) {
@@ -949,7 +951,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
           const right2 = Math.min(100, toPct(e));
           if (right2 > left2) {
             segments.push(
-              <div key="exec" className="absolute top-0.5 h-4 rounded-r" style={{ left: `${left2}%`, width: `${Math.max(right2 - left2, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
+              <div key="exec" className="absolute h-[7px] rounded-r-sm" style={{ left: `${left2}%`, width: `${Math.max(right2 - left2, 0.3)}%`, backgroundColor: color2, minWidth: '4px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
             );
           }
         }
@@ -958,76 +960,78 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
         const right = Math.min(100, toPct(effectiveEnd));
         if (right > left || (s && e)) {
           segments.push(
-            <div key="full" className="absolute top-0.5 h-4 rounded" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '3px' }} title={`${labelPrefix}: ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(effectiveEnd)}`} />
+            <div key="full" className="absolute h-[7px] rounded-sm" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '4px' }} title={`${labelPrefix}: ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(effectiveEnd)}`} />
           );
         }
       }
     }
-    return segments.length > 0 ? <div className="relative h-5">{segments}</div> : null;
+    return segments.length > 0 ? segments : null;
   };
 
   const todayPct = toPct(new Date());
   const monthNums = Array.from({ length: 12 }, (_, i) => i + 1);
-  const selectClass = 'px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400';
+  const selectClass = 'px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 hover:border-neutral-300 transition-colors';
 
   return (
     <div className="space-y-4">
-      <nav className="flex items-center gap-2 text-sm text-neutral-500">
-        <button type="button" onClick={onHome} className="hover:text-neutral-900">{lang === 'zh' ? '首页' : 'ホーム'}</button>
-        <span>&gt;&gt;</span>
-        <button type="button" onClick={onBack} className="hover:text-neutral-900">TestCenter</button>
-        <span>&gt;&gt;</span>
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-sm text-neutral-500">
+        <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">{lang === 'zh' ? '首页' : 'ホーム'}</button>
+        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+        <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">TestCenter</button>
+        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
         <span className="text-neutral-900 font-medium">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</span>
       </nav>
 
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button type="button" onClick={onBack} className="p-1.5 rounded-lg hover:bg-neutral-100 text-neutral-500 hover:text-neutral-900">
-            <ArrowLeft size={20} />
-          </button>
-          <h2 className="text-xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
-          <span className="text-sm text-neutral-400">({filtered.length}{lang === 'zh' ? '件' : '件'})</span>
+      {/* Title bar */}
+      <div className="flex items-end justify-between">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-2xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
+          <span className="text-sm text-neutral-400 tabular-nums">{filtered.length}{lang === 'zh' ? '件' : '件'}</span>
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${showFilters ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}>
+          <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${showFilters ? 'bg-neutral-900 border-neutral-900 text-white' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}>
             <SlidersHorizontal size={14} />{lang === 'zh' ? '筛选' : 'フィルター'}
           </button>
-          <button type="button" onClick={handleRefresh} disabled={refreshing} className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50 disabled:opacity-50">
+          <button type="button" onClick={handleRefresh} disabled={refreshing} className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors">
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />{lang === 'zh' ? '更新' : '更新'}
           </button>
         </div>
       </div>
 
+      {/* Filters */}
       {showFilters && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-xl text-xs text-neutral-600">
-          <label className="flex items-center gap-1.5">
-            <Calendar size={13} className="text-neutral-400" />
-            <span>{lang === 'zh' ? '月份' : '月'}:</span>
-            <select className={selectClass} value={fMonthFrom} onChange={(e) => setFMonthFrom(Number(e.target.value))}>
-              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
-            </select>
-            <span>~</span>
-            <select className={selectClass} value={fMonthTo} onChange={(e) => setFMonthTo(Number(e.target.value))}>
-              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5">
-            <span>{lang === 'zh' ? '状态' : 'ステータス'}:</span>
-            <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-              <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
-              {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          <label className="flex items-center gap-1.5">
-            <span>{lang === 'zh' ? '系统' : 'システム'}:</span>
-            <select className={selectClass} value={fArea} onChange={(e) => setFArea(e.target.value)}>
-              <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
-              {areaOptions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
-            </select>
-          </label>
-          <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatus('all'); setFArea('all'); }} className="ml-auto text-[11px] text-blue-500 hover:text-blue-700">
-            {lang === 'zh' ? '重置' : 'リセット'}
-          </button>
+        <div className="bg-white border border-neutral-200 rounded-xl shadow-sm">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-xs text-neutral-600">
+            <label className="flex items-center gap-1.5">
+              <Calendar size={13} className="text-neutral-400" />
+              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '月份' : '月'}:</span>
+              <select className={selectClass} value={fMonthFrom} onChange={(e) => setFMonthFrom(Number(e.target.value))}>
+                {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+              </select>
+              <span className="text-neutral-400">~</span>
+              <select className={selectClass} value={fMonthTo} onChange={(e) => setFMonthTo(Number(e.target.value))}>
+                {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '状态' : 'ステータス'}:</span>
+              <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+                <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
+                {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1.5">
+              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '系统' : 'システム'}:</span>
+              <select className={selectClass} value={fArea} onChange={(e) => setFArea(e.target.value)}>
+                <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
+                {areaOptions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+              </select>
+            </label>
+            <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatus('all'); setFArea('all'); }} className="ml-auto text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
+              {lang === 'zh' ? '重置' : 'リセット'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1037,19 +1041,37 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
         <p className="text-neutral-400 text-center py-16">{t('noData')}</p>
       ) : (
         <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          {/* Legend — sticky at top */}
+          <div className="flex items-center gap-5 px-4 py-2 border-b border-neutral-200 bg-neutral-50/80 text-[11px] text-neutral-500">
+            <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bfdbfe' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#3b82f6' }} /><span>{lang === 'zh' ? '予定(設計/実施)' : '予定(設計/実施)'}</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bbf7d0' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#16a34a' }} /><span>{lang === 'zh' ? '実績(設計/実施)' : '実績(設計/実施)'}</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-0.5 h-3 bg-red-500 rounded-full" /><span>{lang === 'zh' ? '今日' : '今日'}</span></div>
+          </div>
+
           <div className="overflow-x-auto">
-            <div style={{ minWidth: '900px' }}>
-              {/* Header */}
-              <div className="flex border-b border-neutral-200 bg-neutral-50 text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
-                <div className="w-52 shrink-0 px-4 py-2.5 border-r border-neutral-200">{lang === 'zh' ? '案件名' : '案件名'}</div>
-                <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-center">{lang === 'zh' ? '区分' : '区分'}</div>
-                <div className="w-16 shrink-0 px-2 py-2.5 border-r border-neutral-200 text-right">{lang === 'zh' ? '工数' : '工数'}</div>
-                <div className="flex-1 relative py-1 px-2" style={{ height: '36px' }}>
-                  {monthTicks.map((tick, i) => (
-                    <span key={`m${i}`} className="absolute text-[11px] font-semibold text-neutral-500" style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '2px' }}>{tick.label}</span>
-                  ))}
+            <div style={{ minWidth: '960px' }}>
+              {/* Timeline header — two rows: month + day */}
+              <div className="flex border-b border-neutral-200 bg-neutral-50/60">
+                <div className="w-60 shrink-0 px-4 py-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 flex items-end">{lang === 'zh' ? '案件名' : '案件名'}</div>
+                <div className="w-[72px] shrink-0 px-2 py-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 text-right flex items-end justify-end">{lang === 'zh' ? '工数' : '工数'}</div>
+                <div className="flex-1 relative" style={{ height: '44px' }}>
+                  {/* Month bands */}
+                  {monthTicks.map((tick, i) => {
+                    const left = toPct(tick.date);
+                    const right = toPct(tick.endDate);
+                    return (
+                      <div
+                        key={`mb${i}`}
+                        className={`absolute top-0 h-[22px] flex items-center justify-center text-[11px] font-medium text-neutral-600 border-r border-neutral-200 ${i % 2 === 0 ? 'bg-neutral-100/60' : 'bg-transparent'}`}
+                        style={{ left: `${left}%`, width: `${Math.max(right - left, 0)}%` }}
+                      >
+                        {tick.label}
+                      </div>
+                    );
+                  })}
+                  {/* Day ticks */}
                   {dayTicks.map((tick, i) => (
-                    <span key={`d${i}`} className={`absolute text-[9px] ${tick.isFirst ? 'text-neutral-400' : 'text-neutral-300'}`} style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '20px' }}>{tick.isFirst ? '' : tick.label}</span>
+                    <span key={`d${i}`} className={`absolute text-[10px] ${tick.isFirst ? 'text-neutral-500 font-medium' : 'text-neutral-400'}`} style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '25px' }}>{tick.label}</span>
                   ))}
                 </div>
               </div>
@@ -1057,47 +1079,49 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
               {/* Groups */}
               {grouped.map((group) => (
                 <div key={group.areaId}>
-                  <div className="flex items-center gap-2 px-4 py-1.5 bg-neutral-100 border-b border-neutral-200">
-                    <span className="text-[12px] font-bold text-neutral-700">{group.label}</span>
-                    <span className="text-[11px] text-neutral-400">({group.items.length}{lang === 'zh' ? '件' : '件'})</span>
+                  {/* Group header */}
+                  <div className="flex items-center gap-2 px-4 py-2 bg-neutral-100/80 border-b border-neutral-200 border-l-[3px] border-l-neutral-400">
+                    <span className="text-[13px] font-bold text-neutral-700">{group.label}</span>
+                    <span className="text-xs text-neutral-400 tabular-nums">{group.items.length}{lang === 'zh' ? '件' : '件'}</span>
                   </div>
                   {group.items.map((it, idx) => (
-                    <div key={it.id} className={`flex border-b border-neutral-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/50'}`}>
-                      <div className="w-52 shrink-0 px-4 py-2 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate" title={it.projectName}>
+                    <div key={it.id} className={`flex border-b border-neutral-100 hover:bg-blue-50/30 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/40'}`}>
+                      {/* Project name */}
+                      <div className="w-60 shrink-0 px-4 py-2.5 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate flex items-center" title={it.projectName}>
                         {it.projectName || '-'}
                       </div>
-                      <div className="w-16 shrink-0 border-r border-neutral-100">
-                        <div className="px-1 py-0.5 text-[10px] text-blue-600 text-center">予定</div>
-                        <div className="px-1 py-0.5 text-[10px] text-emerald-600 text-center">実績</div>
+                      {/* Man-hours (estimate / actual stacked) */}
+                      <div className="w-[72px] shrink-0 border-r border-neutral-100 flex flex-col justify-center">
+                        <div className="px-2 py-0.5 text-[11px] text-blue-600 text-right tabular-nums" title={lang === 'zh' ? '预定工数' : '予定工数'}>{fmtNum(parseNumber(it.estimateTotal))}</div>
+                        <div className="px-2 py-0.5 text-[11px] text-emerald-600 text-right tabular-nums" title={lang === 'zh' ? '实绩工数' : '実績工数'}>{fmtNum(parseNumber(it.actualTotal))}</div>
                       </div>
-                      <div className="w-16 shrink-0 border-r border-neutral-100 text-right">
-                        <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.estimateTotal))}</div>
-                        <div className="px-2 py-0.5 text-[11px] text-neutral-600">{fmtNum(parseNumber(it.actualTotal))}</div>
-                      </div>
-                      <div className="flex-1 relative px-1 py-0.5">
+                      {/* Gantt bars */}
+                      <div className="flex-1 relative px-1">
+                        {/* Grid lines */}
                         {dayTicks.map((tick, i) => (
-                          <div key={`dl${i}`} className={`absolute top-0 bottom-0 ${tick.isFirst ? 'border-l border-neutral-200' : 'border-l border-dashed border-neutral-100'}`} style={{ left: `${toPct(tick.date)}%` }} />
+                          <div key={`dl${i}`} className={`absolute top-0 bottom-0 ${tick.isFirst ? 'border-l border-neutral-200' : 'border-l border-dashed border-neutral-100/80'}`} style={{ left: `${toPct(tick.date)}%` }} />
                         ))}
+                        {/* Today line */}
                         {todayPct >= 0 && todayPct <= 100 && (
-                          <div className="absolute top-0 bottom-0 border-l-2 border-red-400 z-10" style={{ left: `${todayPct}%` }} title={lang === 'zh' ? '今日' : '今日'} />
+                          <div className="absolute top-0 bottom-0 z-10" style={{ left: `${todayPct}%` }}>
+                            <div className="absolute top-0 bottom-0 w-[2px] bg-red-500/80 -translate-x-1/2" />
+                            <div className="absolute -top-0.5 w-0 h-0 -translate-x-1/2" style={{ borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderTop: '5px solid #ef4444' }} />
+                          </div>
                         )}
-                        {renderSegments(it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, '#93c5fd', '#3b82f6', '予定') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
-                        {renderSegments(it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate, '#86efac', '#22c55e', '実績') || <div className="h-5 flex items-center text-[10px] text-neutral-300">-</div>}
+                        {/* Bars: plan row */}
+                        <div className="relative h-[22px] flex items-center">
+                          {renderSegments(it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, '#bfdbfe', '#3b82f6', '予定') || <span className="text-[10px] text-neutral-300 pl-1">-</span>}
+                        </div>
+                        {/* Bars: actual row */}
+                        <div className="relative h-[22px] flex items-center">
+                          {renderSegments(it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate, '#bbf7d0', '#16a34a', '実績') || <span className="text-[10px] text-neutral-300 pl-1">-</span>}
+                        </div>
                       </div>
                     </div>
                   ))}
                 </div>
               ))}
             </div>
-          </div>
-
-          {/* Legend */}
-          <div className="flex items-center gap-6 px-4 py-3 border-t border-neutral-200 bg-neutral-50 text-[11px] text-neutral-500">
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#93c5fd' }} />予定(設計)</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#3b82f6' }} />予定(実施)</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#86efac' }} />実績(設計)</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-2.5 rounded-sm" style={{ backgroundColor: '#22c55e' }} />実績(実施)</div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 bg-red-400" />{lang === 'zh' ? '今日' : '今日'}</div>
           </div>
         </div>
       )}
