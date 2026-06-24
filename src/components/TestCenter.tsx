@@ -792,6 +792,7 @@ type GanttViewProps = {
   onHome: () => void;
   fetchArea: (id: AreaId) => Promise<ProgressItem[]>;
   filterYear: number;
+  initialMonth?: number;
 };
 
 function parseDate(s: string): Date | null {
@@ -804,9 +805,18 @@ function fmtShortDate(d: Date): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+function isWeekend(d: Date): boolean {
+  const day = d.getDay();
+  return day === 0 || day === 6;
+}
+
+type BarMode = 'both' | 'plan' | 'actual';
+
 type GanttRow = ProgressItem & { _areaId: AreaId; _areaLabel: string };
 
-function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewProps) {
+const DAY_WIDTH = 28;
+
+function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }: GanttViewProps) {
   const [allItems, setAllItems] = useState<GanttRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -814,9 +824,14 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
 
   const [fMonthFrom, setFMonthFrom] = useState<number>(1);
   const [fMonthTo, setFMonthTo] = useState<number>(12);
-  const [fStatus, setFStatus] = useState<string>('all');
-  const [fArea, setFArea] = useState<string>('all');
+  const [fStatuses, setFStatuses] = useState<Set<string> | 'all'>('all');
+  const [fAreas, setFAreas] = useState<Set<string> | 'all'>('all');
   const [showFilters, setShowFilters] = useState(true);
+  const [barMode, setBarMode] = useState<BarMode>('both');
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   const loadAll = useCallback(async (useCache: boolean) => {
     const results: GanttRow[] = [];
@@ -862,6 +877,18 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
     return list;
   }, [allItems]);
 
+  useEffect(() => {
+    if (statusOptions.length > 0 && fStatuses === 'all') {
+      setFStatuses(new Set(statusOptions));
+    }
+  }, [statusOptions]);
+
+  useEffect(() => {
+    if (areaOptions.length > 0 && fAreas === 'all') {
+      setFAreas(new Set(areaOptions.map(a => a.id)));
+    }
+  }, [areaOptions]);
+
   const filtered = useMemo(() => {
     return allItems.filter((it) => {
       const mk = toMonthKey(it.month);
@@ -870,11 +897,11 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
       const m = parseInt(mk.slice(4), 10);
       if (y !== filterYear) return false;
       if (m < fMonthFrom || m > fMonthTo) return false;
-      if (fStatus !== 'all' && it.status !== fStatus) return false;
-      if (fArea !== 'all' && it._areaId !== fArea) return false;
+      if (fStatuses !== 'all' && !fStatuses.has(it.status)) return false;
+      if (fAreas !== 'all' && !fAreas.has(it._areaId)) return false;
       return true;
     });
-  }, [allItems, filterYear, fMonthFrom, fMonthTo, fStatus, fArea]);
+  }, [allItems, filterYear, fMonthFrom, fMonthTo, fStatuses, fAreas]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, { areaId: AreaId; label: string; items: GanttRow[] }>();
@@ -886,7 +913,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
     return Array.from(map.values());
   }, [filtered]);
 
-  const { minDate, maxDate } = useMemo(() => {
+  const { minDate, maxDate, totalDays } = useMemo(() => {
     const allDates: Date[] = [];
     for (const it of filtered) {
       for (const f of [it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate]) {
@@ -896,38 +923,48 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
     }
     if (allDates.length === 0) {
       const now = new Date();
-      return { minDate: now, maxDate: new Date(now.getTime() + 30 * 86400000) };
+      return { minDate: now, maxDate: new Date(now.getTime() + 30 * 86400000), totalDays: 30 };
     }
     const sorted = allDates.sort((a, b) => a.getTime() - b.getTime());
-    return { minDate: new Date(sorted[0].getTime() - 3 * 86400000), maxDate: new Date(sorted[sorted.length - 1].getTime() + 3 * 86400000) };
+    const mn = new Date(sorted[0].getFullYear(), sorted[0].getMonth(), sorted[0].getDate());
+    mn.setDate(mn.getDate() - 2);
+    const mx = new Date(sorted[sorted.length - 1].getFullYear(), sorted[sorted.length - 1].getMonth(), sorted[sorted.length - 1].getDate());
+    mx.setDate(mx.getDate() + 3);
+    const days = Math.ceil((mx.getTime() - mn.getTime()) / 86400000);
+    return { minDate: mn, maxDate: mx, totalDays: Math.max(days, 7) };
   }, [filtered]);
 
-  const toPct = useCallback((d: Date) => {
-    const range = maxDate.getTime() - minDate.getTime();
-    if (range <= 0) return 50;
-    return ((d.getTime() - minDate.getTime()) / range) * 100;
-  }, [minDate, maxDate]);
+  const ganttTotalWidth = totalDays * DAY_WIDTH;
 
-  const { monthTicks, dayTicks } = useMemo(() => {
-    const months: { date: Date; label: string; endDate: Date }[] = [];
-    const days: { date: Date; label: string; isFirst: boolean }[] = [];
+  const dayToX = useCallback((d: Date) => {
+    const diff = (d.getTime() - minDate.getTime()) / 86400000;
+    return diff * DAY_WIDTH;
+  }, [minDate]);
+
+  const allDays = useMemo(() => {
+    const days: Date[] = [];
     const cur = new Date(minDate);
-    cur.setDate(1);
-    if (cur < minDate) cur.setMonth(cur.getMonth() + 1);
-    while (cur <= maxDate) {
-      const monthLabel = `${cur.getMonth() + 1}月`;
-      const endOfMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
-      months.push({ date: new Date(cur), label: monthLabel, endDate: endOfMonth > maxDate ? maxDate : endOfMonth });
-      for (const day of [1, 5, 10, 15, 20, 25]) {
-        const d = new Date(cur.getFullYear(), cur.getMonth(), day);
-        if (d >= minDate && d <= maxDate) {
-          days.push({ date: d, label: String(day), isFirst: day === 1 });
-        }
-      }
-      cur.setMonth(cur.getMonth() + 1);
+    for (let i = 0; i < totalDays; i++) {
+      days.push(new Date(cur));
+      cur.setDate(cur.getDate() + 1);
     }
-    return { monthTicks: months, dayTicks: days };
-  }, [minDate, maxDate]);
+    return days;
+  }, [minDate, totalDays]);
+
+  const monthBands = useMemo(() => {
+    const bands: { label: string; startX: number; width: number }[] = [];
+    let i = 0;
+    while (i < allDays.length) {
+      const d = allDays[i];
+      const month = d.getMonth();
+      const label = `${d.getMonth() + 1}月`;
+      const startX = i * DAY_WIDTH;
+      let count = 0;
+      while (i < allDays.length && allDays[i].getMonth() === month) { count++; i++; }
+      bands.push({ label, startX, width: count * DAY_WIDTH });
+    }
+    return bands;
+  }, [allDays]);
 
   const renderSegments = (startStr: string, midStr: string, endStr: string, color1: string, color2: string, labelPrefix: string) => {
     const s = parseDate(startStr);
@@ -939,28 +976,28 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
     const effectiveStart = s || m || e;
     if (effectiveStart && effectiveEnd) {
       if (m) {
-        const left = Math.max(0, toPct(effectiveStart));
-        const right = Math.min(100, toPct(m));
+        const left = dayToX(effectiveStart);
+        const right = dayToX(m);
         if (right > left) {
           segments.push(
-            <div key="design" className="absolute h-[7px] rounded-l-sm" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color1, minWidth: '4px' }} title={`${labelPrefix}(設計): ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(m)}`} />
+            <div key="design" className="absolute h-[7px] rounded-l-sm" style={{ left: `${left}px`, width: `${Math.max(right - left, 4)}px`, backgroundColor: color1 }} title={`${labelPrefix}(設計): ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(m)}`} />
           );
         }
         if (e) {
-          const left2 = Math.max(0, toPct(m));
-          const right2 = Math.min(100, toPct(e));
+          const left2 = dayToX(m);
+          const right2 = dayToX(e);
           if (right2 > left2) {
             segments.push(
-              <div key="exec" className="absolute h-[7px] rounded-r-sm" style={{ left: `${left2}%`, width: `${Math.max(right2 - left2, 0.3)}%`, backgroundColor: color2, minWidth: '4px' }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
+              <div key="exec" className="absolute h-[7px] rounded-r-sm" style={{ left: `${left2}px`, width: `${Math.max(right2 - left2, 4)}px`, backgroundColor: color2 }} title={`${labelPrefix}(実施): ${fmtShortDate(m)} ~ ${fmtShortDate(e)}`} />
             );
           }
         }
       } else {
-        const left = Math.max(0, toPct(effectiveStart));
-        const right = Math.min(100, toPct(effectiveEnd));
+        const left = dayToX(effectiveStart);
+        const right = dayToX(effectiveEnd);
         if (right > left || (s && e)) {
           segments.push(
-            <div key="full" className="absolute h-[7px] rounded-sm" style={{ left: `${left}%`, width: `${Math.max(right - left, 0.3)}%`, backgroundColor: color2, minWidth: '4px' }} title={`${labelPrefix}: ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(effectiveEnd)}`} />
+            <div key="full" className="absolute h-[7px] rounded-sm" style={{ left: `${left}px`, width: `${Math.max(right - left, 4)}px`, backgroundColor: color2 }} title={`${labelPrefix}: ${fmtShortDate(effectiveStart)} ~ ${fmtShortDate(effectiveEnd)}`} />
           );
         }
       }
@@ -968,9 +1005,66 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
     return segments.length > 0 ? segments : null;
   };
 
-  const todayPct = toPct(new Date());
+  const todayX = dayToX(new Date());
   const monthNums = Array.from({ length: 12 }, (_, i) => i + 1);
   const selectClass = 'px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 hover:border-neutral-300 transition-colors';
+
+  const toggleGroup = (areaId: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(areaId)) next.delete(areaId); else next.add(areaId);
+      return next;
+    });
+  };
+
+  const toggleStatus = (s: string) => {
+    setFStatuses(prev => {
+      const set = prev === 'all' ? new Set(statusOptions) : new Set(prev);
+      if (set.has(s)) set.delete(s); else set.add(s);
+      return set;
+    });
+  };
+
+  const toggleArea = (id: string) => {
+    setFAreas(prev => {
+      const set = prev === 'all' ? new Set(areaOptions.map(a => a.id)) : new Set(prev);
+      if (set.has(id)) set.delete(id); else set.add(id);
+      return set;
+    });
+  };
+
+  const isAllStatuses = fStatuses === 'all' || (fStatuses instanceof Set && fStatuses.size === statusOptions.length);
+  const isAllAreas = fAreas === 'all' || (fAreas instanceof Set && fAreas.size === areaOptions.length);
+
+  useEffect(() => {
+    if (!loading && scrollRef.current && initialMonth) {
+      const targetDate = new Date(filterYear, initialMonth - 1, 1);
+      const x = dayToX(targetDate);
+      scrollRef.current.scrollLeft = Math.max(0, x - 40);
+    }
+  }, [loading, initialMonth, filterYear, dayToX]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handleScroll = () => { setScrollLeft(el.scrollLeft); };
+    const obs = new ResizeObserver(() => { setContainerWidth(el.clientWidth); });
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    obs.observe(el);
+    setContainerWidth(el.clientWidth);
+    return () => { el.removeEventListener('scroll', handleScroll); obs.disconnect(); };
+  }, [loading]);
+
+  const sliderMax = Math.max(0, ganttTotalWidth - containerWidth);
+  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = Number(e.target.value);
+    if (scrollRef.current) scrollRef.current.scrollLeft = v;
+  };
+
+  const showPlan = barMode === 'both' || barMode === 'plan';
+  const showActual = barMode === 'both' || barMode === 'actual';
+
+  const LEFT_W = 240 + 72;
 
   return (
     <div className="space-y-4">
@@ -1001,8 +1095,9 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
 
       {/* Filters */}
       {showFilters && (
-        <div className="bg-white border border-neutral-200 rounded-xl shadow-sm">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-xs text-neutral-600">
+        <div className="bg-white border border-neutral-200 rounded-xl shadow-sm px-4 py-3 space-y-3">
+          {/* Row 1: month range + bar mode */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-neutral-600">
             <label className="flex items-center gap-1.5">
               <Calendar size={13} className="text-neutral-400" />
               <span className="text-neutral-500 font-medium">{lang === 'zh' ? '月份' : '月'}:</span>
@@ -1014,23 +1109,35 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
                 {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
               </select>
             </label>
-            <label className="flex items-center gap-1.5">
-              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '状态' : 'ステータス'}:</span>
-              <select className={selectClass} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-                <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
-                {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </label>
-            <label className="flex items-center gap-1.5">
-              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '系统' : 'システム'}:</span>
-              <select className={selectClass} value={fArea} onChange={(e) => setFArea(e.target.value)}>
-                <option value="all">{lang === 'zh' ? '全部' : 'すべて'}</option>
-                {areaOptions.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
-              </select>
-            </label>
-            <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatus('all'); setFArea('all'); }} className="ml-auto text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
+            <div className="flex items-center gap-1.5">
+              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '表示' : '表示'}:</span>
+              <div className="flex rounded-lg border border-neutral-200 overflow-hidden">
+                {([['both', lang === 'zh' ? '予定と実績' : '予定と実績'], ['plan', lang === 'zh' ? '予定' : '予定'], ['actual', lang === 'zh' ? '実績' : '実績']] as [BarMode, string][]).map(([mode, label]) => (
+                  <button key={mode} type="button" onClick={() => setBarMode(mode)} className={`px-2.5 py-1 text-xs transition-colors ${barMode === mode ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-500 hover:bg-neutral-50'}`}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatuses(new Set(statusOptions)); setFAreas(new Set(areaOptions.map(a => a.id))); setBarMode('both'); }} className="ml-auto text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
               {lang === 'zh' ? '重置' : 'リセット'}
             </button>
+          </div>
+          {/* Row 2: status multi-select */}
+          <div className="flex items-center gap-2 text-xs border-t border-neutral-100 pt-3">
+            <span className="text-neutral-500 font-medium shrink-0">{lang === 'zh' ? '状态' : 'ステータス'}:</span>
+            <button type="button" onClick={() => setFStatuses(isAllStatuses ? new Set() : new Set(statusOptions))} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isAllStatuses ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{lang === 'zh' ? '全部' : 'すべて'}</button>
+            {statusOptions.map(s => {
+              const on = fStatuses === 'all' || fStatuses.has(s);
+              return <button key={s} type="button" onClick={() => toggleStatus(s)} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{s}</button>;
+            })}
+          </div>
+          {/* Row 3: area multi-select */}
+          <div className="flex items-center gap-2 text-xs border-t border-neutral-100 pt-3 flex-wrap">
+            <span className="text-neutral-500 font-medium shrink-0">{lang === 'zh' ? '系统' : 'システム'}:</span>
+            <button type="button" onClick={() => setFAreas(isAllAreas ? new Set() : new Set(areaOptions.map(a => a.id)))} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isAllAreas ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{lang === 'zh' ? '全部' : 'すべて'}</button>
+            {areaOptions.map(a => {
+              const on = fAreas === 'all' || fAreas.has(a.id);
+              return <button key={a.id} type="button" onClick={() => toggleArea(a.id)} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{a.label}</button>;
+            })}
           </div>
         </div>
       )}
@@ -1041,88 +1148,122 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear }: GanttViewPro
         <p className="text-neutral-400 text-center py-16">{t('noData')}</p>
       ) : (
         <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-sm">
-          {/* Legend — sticky at top */}
+          {/* Legend */}
           <div className="flex items-center gap-5 px-4 py-2 border-b border-neutral-200 bg-neutral-50/80 text-[11px] text-neutral-500">
-            <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bfdbfe' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#3b82f6' }} /><span>{lang === 'zh' ? '予定(設計/実施)' : '予定(設計/実施)'}</span></div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bbf7d0' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#16a34a' }} /><span>{lang === 'zh' ? '実績(設計/実施)' : '実績(設計/実施)'}</span></div>
+            {showPlan && <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bfdbfe' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#3b82f6' }} /><span>{lang === 'zh' ? '予定(設計/実施)' : '予定(設計/実施)'}</span></div>}
+            {showActual && <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bbf7d0' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#16a34a' }} /><span>{lang === 'zh' ? '実績(設計/実施)' : '実績(設計/実施)'}</span></div>}
             <div className="flex items-center gap-1.5"><div className="w-0.5 h-3 bg-red-500 rounded-full" /><span>{lang === 'zh' ? '今日' : '今日'}</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-neutral-100 border border-neutral-200" /><span>{lang === 'zh' ? '周末' : '土日'}</span></div>
           </div>
 
-          <div className="overflow-x-auto">
-            <div style={{ minWidth: '960px' }}>
-              {/* Timeline header — two rows: month + day */}
-              <div className="flex border-b border-neutral-200 bg-neutral-50/60">
-                <div className="w-60 shrink-0 px-4 py-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 flex items-end">{lang === 'zh' ? '案件名' : '案件名'}</div>
-                <div className="w-[72px] shrink-0 px-2 py-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 text-right flex items-end justify-end">{lang === 'zh' ? '工数' : '工数'}</div>
-                <div className="flex-1 relative" style={{ height: '44px' }}>
-                  {/* Month bands */}
-                  {monthTicks.map((tick, i) => {
-                    const left = toPct(tick.date);
-                    const right = toPct(tick.endDate);
-                    return (
-                      <div
-                        key={`mb${i}`}
-                        className={`absolute top-0 h-[22px] flex items-center justify-center text-[11px] font-medium text-neutral-600 border-r border-neutral-200 ${i % 2 === 0 ? 'bg-neutral-100/60' : 'bg-transparent'}`}
-                        style={{ left: `${left}%`, width: `${Math.max(right - left, 0)}%` }}
-                      >
-                        {tick.label}
-                      </div>
-                    );
-                  })}
-                  {/* Day ticks */}
-                  {dayTicks.map((tick, i) => (
-                    <span key={`d${i}`} className={`absolute text-[10px] ${tick.isFirst ? 'text-neutral-500 font-medium' : 'text-neutral-400'}`} style={{ left: `${toPct(tick.date)}%`, transform: 'translateX(-50%)', top: '25px' }}>{tick.label}</span>
-                  ))}
-                </div>
+          <div className="flex">
+            {/* Left fixed panel */}
+            <div className="shrink-0" style={{ width: `${LEFT_W}px` }}>
+              {/* Header */}
+              <div className="flex border-b border-neutral-200 bg-neutral-50/60" style={{ height: '44px' }}>
+                <div className="w-60 shrink-0 px-4 border-r border-neutral-200 text-xs font-medium text-neutral-500 flex items-end pb-2">{lang === 'zh' ? '案件名' : '案件名'}</div>
+                <div className="w-[72px] shrink-0 px-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 text-right flex items-end justify-end pb-2">{lang === 'zh' ? '工数' : '工数'}</div>
               </div>
-
-              {/* Groups */}
+              {/* Rows */}
               {grouped.map((group) => (
                 <div key={group.areaId}>
-                  {/* Group header */}
-                  <div className="flex items-center gap-2 px-4 py-2 bg-neutral-100/80 border-b border-neutral-200 border-l-[3px] border-l-neutral-400">
+                  <div
+                    className="flex items-center gap-2 px-4 py-2 bg-neutral-100/80 border-b border-neutral-200 border-l-[3px] border-l-neutral-400 cursor-pointer hover:bg-neutral-200/60 select-none"
+                    onClick={() => toggleGroup(group.areaId)}
+                  >
+                    <ChevronDown size={14} className={`text-neutral-400 transition-transform ${collapsedGroups.has(group.areaId) ? '-rotate-90' : ''}`} />
                     <span className="text-[13px] font-bold text-neutral-700">{group.label}</span>
                     <span className="text-xs text-neutral-400 tabular-nums">{group.items.length}{lang === 'zh' ? '件' : '件'}</span>
                   </div>
-                  {group.items.map((it, idx) => (
-                    <div key={it.id} className={`flex border-b border-neutral-100 hover:bg-blue-50/30 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/40'}`}>
-                      {/* Project name */}
-                      <div className="w-60 shrink-0 px-4 py-2.5 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate flex items-center" title={it.projectName}>
-                        {it.projectName || '-'}
-                      </div>
-                      {/* Man-hours (estimate / actual stacked) */}
-                      <div className="w-[72px] shrink-0 border-r border-neutral-100 flex flex-col justify-center">
-                        <div className="px-2 py-0.5 text-[11px] text-blue-600 text-right tabular-nums" title={lang === 'zh' ? '预定工数' : '予定工数'}>{fmtNum(parseNumber(it.estimateTotal))}</div>
-                        <div className="px-2 py-0.5 text-[11px] text-emerald-600 text-right tabular-nums" title={lang === 'zh' ? '实绩工数' : '実績工数'}>{fmtNum(parseNumber(it.actualTotal))}</div>
-                      </div>
-                      {/* Gantt bars */}
-                      <div className="flex-1 relative px-1">
-                        {/* Grid lines */}
-                        {dayTicks.map((tick, i) => (
-                          <div key={`dl${i}`} className={`absolute top-0 bottom-0 ${tick.isFirst ? 'border-l border-neutral-200' : 'border-l border-dashed border-neutral-100/80'}`} style={{ left: `${toPct(tick.date)}%` }} />
-                        ))}
-                        {/* Today line */}
-                        {todayPct >= 0 && todayPct <= 100 && (
-                          <div className="absolute top-0 bottom-0 z-10" style={{ left: `${todayPct}%` }}>
-                            <div className="absolute top-0 bottom-0 w-[2px] bg-red-500/80 -translate-x-1/2" />
-                            <div className="absolute -top-0.5 w-0 h-0 -translate-x-1/2" style={{ borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderTop: '5px solid #ef4444' }} />
-                          </div>
-                        )}
-                        {/* Bars: plan row */}
-                        <div className="relative h-[22px] flex items-center">
-                          {renderSegments(it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, '#bfdbfe', '#3b82f6', '予定') || <span className="text-[10px] text-neutral-300 pl-1">-</span>}
+                  {!collapsedGroups.has(group.areaId) && group.items.map((it, idx) => {
+                    const rowH = barMode === 'both' ? 44 : 22;
+                    return (
+                      <div key={it.id} className={`flex border-b border-neutral-100 ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/40'}`} style={{ height: `${rowH}px` }}>
+                        <div className="w-60 shrink-0 px-4 border-r border-neutral-100 text-[13px] text-neutral-800 font-medium truncate flex items-center" title={it.projectName}>
+                          {it.projectName || '-'}
                         </div>
-                        {/* Bars: actual row */}
-                        <div className="relative h-[22px] flex items-center">
-                          {renderSegments(it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate, '#bbf7d0', '#16a34a', '実績') || <span className="text-[10px] text-neutral-300 pl-1">-</span>}
+                        <div className="w-[72px] shrink-0 border-r border-neutral-100 flex flex-col justify-center">
+                          {showPlan && <div className="px-2 py-0.5 text-[11px] text-blue-600 text-right tabular-nums">{fmtNum(parseNumber(it.estimateTotal))}</div>}
+                          {showActual && <div className="px-2 py-0.5 text-[11px] text-emerald-600 text-right tabular-nums">{fmtNum(parseNumber(it.actualTotal))}</div>}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ))}
             </div>
+
+            {/* Right scrollable gantt area */}
+            <div className="flex-1 overflow-x-auto border-l border-neutral-200" ref={scrollRef} style={{ scrollbarWidth: 'none' }}>
+              <div style={{ width: `${ganttTotalWidth}px`, minWidth: `${ganttTotalWidth}px` }}>
+                {/* Timeline header */}
+                <div className="relative border-b border-neutral-200 bg-neutral-50/60" style={{ height: '44px' }}>
+                  {/* Month bands */}
+                  {monthBands.map((band, i) => (
+                    <div
+                      key={`mb${i}`}
+                      className={`absolute top-0 h-[22px] flex items-center justify-center text-[11px] font-medium text-neutral-600 border-r border-neutral-200 ${i % 2 === 0 ? 'bg-neutral-100/60' : 'bg-transparent'}`}
+                      style={{ left: `${band.startX}px`, width: `${band.width}px` }}
+                    >
+                      {band.label}
+                    </div>
+                  ))}
+                  {/* Day numbers */}
+                  {allDays.map((d, i) => (
+                    <span key={`dn${i}`} className={`absolute text-[10px] ${d.getDate() === 1 ? 'text-neutral-600 font-medium' : isWeekend(d) ? 'text-neutral-300' : 'text-neutral-400'}`} style={{ left: `${i * DAY_WIDTH + DAY_WIDTH / 2}px`, transform: 'translateX(-50%)', top: '25px' }}>{d.getDate()}</span>
+                  ))}
+                </div>
+
+                {/* Data rows */}
+                {grouped.map((group) => (
+                  <div key={group.areaId}>
+                    {/* Group header spacer */}
+                    <div className="border-b border-neutral-200 bg-neutral-100/80" style={{ height: '34px' }} />
+                    {!collapsedGroups.has(group.areaId) && group.items.map((it, idx) => {
+                      const rowH = barMode === 'both' ? 44 : 22;
+                      return (
+                        <div key={it.id} className={`relative border-b border-neutral-100 hover:bg-blue-50/30 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-neutral-50/40'}`} style={{ height: `${rowH}px` }}>
+                          {/* Weekend bands */}
+                          {allDays.map((d, di) => isWeekend(d) ? (
+                            <div key={`we${di}`} className="absolute top-0 bottom-0 bg-neutral-100/50" style={{ left: `${di * DAY_WIDTH}px`, width: `${DAY_WIDTH}px` }} />
+                          ) : null)}
+                          {/* Day grid lines */}
+                          {allDays.map((d, di) => (
+                            <div key={`gl${di}`} className={`absolute top-0 bottom-0 ${d.getDate() === 1 ? 'border-l border-neutral-200' : 'border-l border-neutral-100/60'}`} style={{ left: `${di * DAY_WIDTH}px` }} />
+                          ))}
+                          {/* Today line */}
+                          {todayX >= 0 && todayX <= ganttTotalWidth && (
+                            <div className="absolute top-0 bottom-0 z-10" style={{ left: `${todayX}px` }}>
+                              <div className="absolute top-0 bottom-0 w-[2px] bg-red-500/80 -translate-x-1/2" />
+                            </div>
+                          )}
+                          {/* Bars */}
+                          {showPlan && (
+                            <div className="relative flex items-center" style={{ height: '22px' }}>
+                              {renderSegments(it.tcStartDate, it.tcDesignCompleteDate, it.tcExecutionCompleteDate, '#bfdbfe', '#3b82f6', '予定') || <span className="text-[10px] text-neutral-300 pl-1">-</span>}
+                            </div>
+                          )}
+                          {showActual && (
+                            <div className="relative flex items-center" style={{ height: '22px' }}>
+                              {renderSegments(it.actualStartDate, it.actualDesignCompleteDate, it.actualExecutionCompleteDate, '#bbf7d0', '#16a34a', '実績') || <span className="text-[10px] text-neutral-300 pl-1">-</span>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
+
+          {/* Scroll slider */}
+          {sliderMax > 0 && (
+            <div className="px-4 py-2 border-t border-neutral-200 bg-neutral-50/80 flex items-center gap-3">
+              <span className="text-[10px] text-neutral-400 shrink-0">{lang === 'zh' ? '拖动查看' : 'スクロール'}</span>
+              <input type="range" min={0} max={sliderMax} value={scrollLeft} onChange={handleSliderChange} className="flex-1 h-1.5 accent-neutral-400 cursor-pointer" style={{ marginLeft: `${LEFT_W}px` }} />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1949,6 +2090,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           return data.items ?? [];
         }}
         filterYear={filterYear}
+        initialMonth={typeof filterMonth === 'number' ? filterMonth : undefined}
       />
     );
   }

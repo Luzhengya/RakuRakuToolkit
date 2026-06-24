@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { AlertCircle, CheckCircle2, FileText, Loader2, Search, X } from 'lucide-react';
+import { AlertCircle, Calendar, CheckCircle2, ChevronRight, FileText, Loader2, Search, X } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
 import { buildMonthlyReportHtml, monthlyReportTitle, systemLabel, type ReportItem } from './monthlyReportTemplate';
 
@@ -28,11 +28,16 @@ function defaultMonth(): string {
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
-// 数値を小数2桁で表示。空欄は '-'
 function fmt2(value: string): string {
   if (value === null || value === undefined || String(value).trim() === '') return '-';
   const n = Number(String(value).replace(/[^\d.-]/g, ''));
   return Number.isFinite(n) ? n.toFixed(2) : '-';
+}
+
+function isNgVal(value: string, threshold: number, mode: 'gte' | 'lt'): boolean {
+  const n = Number(String(value).replace(/[^\d.-]/g, ''));
+  if (!Number.isFinite(n)) return false;
+  return mode === 'gte' ? n >= threshold : n < threshold;
 }
 
 export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportProps) {
@@ -58,6 +63,12 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
     [selected]
   );
   const allChecked = selectedSystems.length === SYSTEMS.length;
+
+  const monthYear = parseInt(month.slice(0, 4), 10) || new Date().getFullYear();
+  const monthNum = parseInt(month.slice(4), 10) || (new Date().getMonth() + 1);
+  const yearOptions = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 3 + i);
+  const monthNums = Array.from({ length: 12 }, (_, i) => i + 1);
+  const selectClass = 'px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 hover:border-neutral-300 transition-colors';
 
   const checkedCount = useMemo(
     () => items.filter((it) => checkedMap[it.id]).length,
@@ -193,15 +204,15 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
   };
 
   const breadcrumb = (
-    <nav className="flex items-center gap-2 text-sm">
-      <button type="button" onClick={onHome} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
+    <nav className="flex items-center gap-1.5 text-sm text-neutral-500">
+      <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">
         {homeLabel}
       </button>
-      <span className="text-neutral-400">{'>>'}</span>
-      <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
+      <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+      <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">
         {lang === 'zh' ? '测试中心' : '測試中心'}
       </button>
-      <span className="text-neutral-400">{'>>'}</span>
+      <ChevronRight size={14} className="text-neutral-300 shrink-0" />
       <span className="text-neutral-900 font-medium">月次報告</span>
     </nav>
   );
@@ -217,84 +228,54 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
       </div>
 
       {/* 検索条件 */}
-      <div className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-5">
-        <div className="flex flex-col md:flex-row md:items-start gap-6">
-          {/* 月 */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-neutral-500">
-              月 <span className="text-red-500">*</span> <span className="text-neutral-400 font-normal">YYYYMM 形式</span>
-            </label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              placeholder="202606"
-              className="w-40 rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-800 focus:border-neutral-500 focus:outline-none"
-            />
-          </div>
-
-          {/* システム */}
-          <div className="space-y-2 flex-1">
-            <div className="flex items-center gap-3">
-              <label className="text-xs font-semibold text-neutral-500">
-                システム <span className="text-red-500">*</span>
-              </label>
-              <button
-                type="button"
-                onClick={toggleAll}
-                className="text-xs text-blue-600 hover:text-blue-700 hover:underline"
-              >
-                {allChecked ? '全解除' : '全選択'}
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {SYSTEMS.map((sys) => {
-                const checked = !!selected[sys.name];
-                return (
-                  <button
-                    key={sys.name}
-                    type="button"
-                    onClick={() => setSelected((prev) => ({ ...prev, [sys.name]: !prev[sys.name] }))}
-                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                      checked
-                        ? 'border-blue-300 bg-blue-50 text-neutral-800'
-                        : 'border-neutral-200 bg-white text-neutral-400'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      readOnly
-                      checked={checked}
-                      className="h-3.5 w-3.5 rounded border-neutral-300 text-blue-600 pointer-events-none"
-                    />
-                    <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: sys.color }} />
-                    {sys.name}
-                  </button>
-                );
-              })}
-            </div>
+      <div className="bg-white border border-neutral-200 rounded-xl shadow-sm px-4 py-3 space-y-3">
+        {/* Row 1: month + actions */}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-neutral-600">
+          <label className="flex items-center gap-1.5">
+            <Calendar size={13} className="text-neutral-400" />
+            <span className="text-neutral-500 font-medium">{lang === 'zh' ? '月份' : '月'}:</span>
+            <select className={selectClass} value={monthYear} onChange={(e) => setMonth(`${e.target.value}${String(monthNum).padStart(2, '0')}`)}>
+              {yearOptions.map((y) => <option key={y} value={y}>{y}年</option>)}
+            </select>
+            <select className={selectClass} value={monthNum} onChange={(e) => setMonth(`${monthYear}${String(Number(e.target.value)).padStart(2, '0')}`)}>
+              {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+          </label>
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              type="button"
+              onClick={handleSearch}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-neutral-900 font-medium text-white hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors"
+            >
+              {loading ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+              {lang === 'zh' ? '检索' : '検索'}
+            </button>
+            <button type="button" onClick={handleClear} className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
+              {lang === 'zh' ? '重置' : 'リセット'}
+            </button>
           </div>
         </div>
-
-        <div className="flex items-center gap-3 pt-4 border-t border-neutral-100">
-          <button
-            type="button"
-            onClick={handleSearch}
-            disabled={loading}
-            className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-5 py-2.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors"
-          >
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
-            検索
+        {/* Row 2: system pills */}
+        <div className="flex items-center gap-2 text-xs border-t border-neutral-100 pt-3 flex-wrap">
+          <span className="text-neutral-500 font-medium shrink-0">{lang === 'zh' ? '系统' : 'システム'}:</span>
+          <button type="button" onClick={toggleAll} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${allChecked ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>
+            {lang === 'zh' ? '全部' : 'すべて'}
           </button>
-          <button
-            type="button"
-            onClick={handleClear}
-            className="inline-flex items-center gap-2 rounded-lg border border-neutral-300 px-4 py-2.5 text-sm font-medium text-neutral-600 hover:bg-neutral-50 transition-colors"
-          >
-            <X size={15} />
-            条件クリア
-          </button>
+          {SYSTEMS.map((sys) => {
+            const on = !!selected[sys.name];
+            return (
+              <button
+                key={sys.name}
+                type="button"
+                onClick={() => setSelected((prev) => ({ ...prev, [sys.name]: !prev[sys.name] }))}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}
+              >
+                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: on ? '#fff' : sys.color, opacity: on ? 0.7 : 1 }} />
+                {sys.name}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -324,7 +305,7 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
               type="button"
               onClick={handleCreateReport}
               disabled={checkedCount === 0}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:bg-neutral-200 disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-neutral-200 px-4 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-not-allowed transition-colors"
             >
               <FileText size={16} />
               月次報告書 作成
@@ -353,10 +334,10 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
                     </th>
                     <th className="px-3 py-2.5 text-left font-semibold">案件名</th>
                     <th className="px-3 py-2.5 text-left font-semibold whitespace-nowrap">テスト種類</th>
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">理想ケース差<br/>（10以上NG）</th>
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">理想NG差<br/>（1以上NG）</th>
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">実施テスト件数<br/>（0以上NG）</th>
-                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">効率<br/>（20以下NG）</th>
+                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">理想ケース差<br/><span className="text-[10px] text-neutral-400 font-normal">≥10 NG</span></th>
+                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">理想NG差<br/><span className="text-[10px] text-neutral-400 font-normal">≥1 NG</span></th>
+                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">実施テスト件数差<br/><span className="text-[10px] text-neutral-400 font-normal">&lt;0 NG</span></th>
+                    <th className="px-3 py-2.5 text-right font-semibold whitespace-nowrap">効率<br/><span className="text-[10px] text-neutral-400 font-normal">&lt;20 NG</span></th>
                     <th className="px-3 py-2.5 text-left font-semibold">コメント</th>
                   </tr>
                 </thead>
@@ -376,10 +357,10 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
                         <span className="block whitespace-pre-wrap break-words">{item.content || '-'}</span>
                       </td>
                       <td className="px-3 py-2.5 whitespace-nowrap text-neutral-600">{item.testType || '-'}</td>
-                      <td className="px-3 py-2.5 text-right text-neutral-700">{fmt2(item.idealCaseDiff)}</td>
-                      <td className="px-3 py-2.5 text-right text-neutral-700">{fmt2(item.idealNgDiff)}</td>
-                      <td className="px-3 py-2.5 text-right text-neutral-700">{fmt2(item.execTestCount)}</td>
-                      <td className="px-3 py-2.5 text-right text-neutral-700">{fmt2(item.efficiency)}</td>
+                      <td className={`px-3 py-2.5 text-right tabular-nums ${isNgVal(item.idealCaseDiff, 10, 'gte') ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>{fmt2(item.idealCaseDiff)}</td>
+                      <td className={`px-3 py-2.5 text-right tabular-nums ${isNgVal(item.idealNgDiff, 1, 'gte') ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>{fmt2(item.idealNgDiff)}</td>
+                      <td className={`px-3 py-2.5 text-right tabular-nums ${isNgVal(item.execTestCount, 0, 'lt') ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>{fmt2(item.execTestCount)}</td>
+                      <td className={`px-3 py-2.5 text-right tabular-nums ${isNgVal(item.efficiency, 20, 'lt') ? 'text-red-600 font-semibold' : 'text-neutral-700'}`}>{fmt2(item.efficiency)}</td>
                       <td className="px-3 py-2.5 text-neutral-600 min-w-[160px]">
                         {item.comments.length ? (
                           <span className="block whitespace-pre-wrap break-words">{item.comments.join('\n')}</span>
@@ -396,7 +377,6 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
         </div>
       )}
 
-      <div className="pt-4 border-t border-neutral-200">{breadcrumb}</div>
     </div>
 
     {reportOpen && (
