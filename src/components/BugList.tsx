@@ -47,6 +47,12 @@ const STATUS_COLOR: Record<string, string> = {
   '対応完了': 'bg-emerald-50 text-emerald-700 border-emerald-200',
 };
 
+const PRIORITY_COLOR: Record<string, string> = {
+  '高': 'bg-red-50 text-red-700 border-red-200',
+  '中': 'bg-amber-50 text-amber-700 border-amber-200',
+  '低': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+};
+
 function badge(value: string, palette: Record<string, string>): string {
   return palette[value] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200';
 }
@@ -87,7 +93,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           all: '全部', clear: '清除条件', search: '检索', result: '检索结果', count: '件', exportHtml: '导出 HTML',
           sumTotal: '合计件数', sumNg: 'NG件数', sumIncomplete: '未完成', sumDone: '已完成',
           colNo: 'NO', colSystem: '系统区分', colCase: '测试案件名', colDesc: 'BUG概要',
-          colJudg: '判定', colStatus: '状态', colDate: '测试时间', colAssignee: '测试担当者', colMonth: '月份',
+          colJudg: '判定', colStatus: '状态', colPriority: '优先度', colDate: '测试时间', colAssignee: '测试担当者', colMonth: '月份',
           noData: '暂无符合条件的数据。', loading: '加载中...',
           dReproSteps: '再现手顺', dExpected: '预定结果', dActual: '实际结果', dRemarks: '备注',
           dCase: '测试案件名', dDesc: 'BUG概要', dChild: '子页面内容', dChildEmpty: '无子页面内容',
@@ -101,7 +107,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           all: 'すべて', clear: '条件クリア', search: '検索', result: '検索結果', count: '件', exportHtml: 'HTML出力',
           sumTotal: '合計件数', sumNg: 'NG件数', sumIncomplete: '未完了', sumDone: '対応完了',
           colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'BUG説明',
-          colJudg: '判定', colStatus: 'ステータス', colDate: '実施日', colAssignee: '担当者', colMonth: '月次',
+          colJudg: '判定', colStatus: 'ステータス', colPriority: '優先度', colDate: '実施日', colAssignee: '担当者', colMonth: '月次',
           noData: '条件に一致するデータがありません。', loading: '読み込み中...',
           dReproSteps: '再現ステップ', dExpected: '予定結果', dActual: '実際結果', dRemarks: '備考欄',
           dCase: 'テスト案件名', dDesc: 'BUG説明', dChild: '子ページ内容', dChildEmpty: '子ページの内容はありません',
@@ -498,6 +504,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
                     <div className="px-3 py-2.5">{L.colDesc}</div>
                     <div className="px-3 py-2.5">{L.colJudg}</div>
                     <div className="px-3 py-2.5">{L.colStatus}</div>
+                    <div className="px-3 py-2.5">{L.colPriority}</div>
                     <div className="px-3 py-2.5">{L.colAssignee}</div>
                     <div />
                   </div>
@@ -535,6 +542,13 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
                             {bug.status ? (
                               <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.status, STATUS_COLOR)}`}>
                                 {bug.status}
+                              </span>
+                            ) : '-'}
+                          </div>
+                          <div className="px-3 py-3">
+                            {bug.priority ? (
+                              <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.priority, PRIORITY_COLOR)}`}>
+                                {bug.priority}
                               </span>
                             ) : '-'}
                           </div>
@@ -621,7 +635,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
   );
 }
 
-const GRID_COLS = '56px 88px minmax(0,1fr) 96px 96px 88px 32px';
+const GRID_COLS = '56px 88px minmax(0,1fr) 96px 96px 72px 88px 32px';
 
 function Field({ label, value, block, pre }: { label: string; value: string; block?: boolean; pre?: boolean }) {
   return (

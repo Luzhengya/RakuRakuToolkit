@@ -51,6 +51,18 @@ const PRIORITY_DONUT_COLOR: Record<string, string> = {
   '低': '#22c55e',
 };
 
+const PRIORITY_PILL_COLOR: Record<string, { bg: string; fg: string; border: string }> = {
+  '高': { bg: '#fef2f2', fg: '#dc2626', border: '#fecaca' },
+  '中': { bg: '#fffbeb', fg: '#d97706', border: '#fde68a' },
+  '低': { bg: '#f0fdf4', fg: '#16a34a', border: '#bbf7d0' },
+};
+
+const FALLBACK_PALETTE = ['#6366f1', '#ec4899', '#14b8a6', '#f97316', '#8b5cf6', '#06b6d4', '#84cc16', '#e11d48'];
+
+function priorityColor(key: string, index: number): string {
+  return PRIORITY_DONUT_COLOR[key] || FALLBACK_PALETTE[index % FALLBACK_PALETTE.length];
+}
+
 function esc(text: string): string {
   return String(text ?? '')
     .replace(/&/g, '&amp;')
@@ -69,6 +81,12 @@ function judgPill(value: string): string {
 function statusPill(value: string): string {
   if (!value) return '-';
   const c = STATUS_COLOR[value] ?? { bg: '#f3f4f6', fg: '#4b5563', border: '#d1d5db' };
+  return `<span class="tag-pill" style="background:${c.bg};color:${c.fg};border-color:${c.border};">${esc(value)}</span>`;
+}
+
+function priorityPill(value: string): string {
+  if (!value) return '-';
+  const c = PRIORITY_PILL_COLOR[value] ?? { bg: '#f3f4f6', fg: '#4b5563', border: '#d1d5db' };
   return `<span class="tag-pill" style="background:${c.bg};color:${c.fg};border-color:${c.border};">${esc(value)}</span>`;
 }
 
@@ -193,12 +211,21 @@ export function buildBugListHtml(
       return `<div class="bar-row"><span class="bar-label">${esc(mod)}</span><div class="bar-track"><div class="bar-fill" style="width:${pct.toFixed(1)}%"></div></div><span class="bar-count">${cnt}</span></div>`;
     }).join('');
 
-  const donutSvg = buildDonutSvg(priorityCounts, total, PRIORITY_DONUT_COLOR);
-  const legendHtml = Array.from(priorityCounts.entries())
-    .sort(([, a], [, b]) => b - a)
+  const priorityEntries = Array.from(priorityCounts.entries()).sort(([, a], [, b]) => b - a);
+  const dynamicColorMap: Record<string, string> = {};
+  priorityEntries.forEach(([k], i) => { dynamicColorMap[k] = priorityColor(k, i); });
+
+  const donutSvg = buildDonutSvg(priorityCounts, total, dynamicColorMap);
+  const legendHtml = priorityEntries
     .map(([k, c]) => {
-      const color = PRIORITY_DONUT_COLOR[k] || '#94a3b8';
+      const color = dynamicColorMap[k];
       return `<div class="legend-item"><span class="legend-dot" style="background:${color}"></span><span class="legend-label">${esc(k)}</span><span class="legend-count">${c}</span></div>`;
+    }).join('');
+
+  const priorityFilterBtns = priorityEntries
+    .map(([k]) => {
+      const color = dynamicColorMap[k];
+      return `<button class="filter-btn active" data-priority="${esc(k)}" onclick="togglePriority(this)" style="--dot-color:${color}"><span class="filter-dot" style="background:${color}"></span>${esc(k)}</button>`;
     }).join('');
 
   const bugItems = items.map((it) => {
@@ -213,13 +240,14 @@ export function buildBugListHtml(
       : `<div class="detail-section"><h5>${esc(L.screenshots)}</h5><p class="text-muted">${esc(L.noChild)}</p></div>`;
 
     return `
-    <details class="bug-item" id="bug-${esc(it.no || it.id)}">
+    <details class="bug-item" id="bug-${esc(it.no || it.id)}" data-priority="${esc(it.priority || '-')}">
       <summary class="bug-row">
         <span class="bug-id">${esc(it.no || '-')}</span>
         <span class="bug-desc">${esc(it.bugDesc || it.testCaseName || '-')}</span>
         <span class="bug-tags">
           ${judgPill(it.judgment)}
           ${statusPill(it.status)}
+          ${priorityPill(it.priority)}
         </span>
         <span class="bug-arrow">›</span>
       </summary>
@@ -314,6 +342,13 @@ export function buildBugListHtml(
   .list-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
   .list-header h3 { font-size:16px; font-weight:700; color:#111827; }
   .list-header h3 span { font-weight:400; color:#6b7280; margin-left:6px; font-size:14px; }
+  .list-header-actions { display:flex; align-items:center; gap:12px; }
+  .priority-filters { display:flex; gap:6px; }
+  .filter-btn { display:inline-flex; align-items:center; gap:5px; padding:4px 12px; font-size:12px; font-weight:500; border:1px solid #d1d5db; border-radius:9999px; background:#fff; color:#6b7280; cursor:pointer; transition:all 0.15s; }
+  .filter-btn:hover { background:#f9fafb; }
+  .filter-btn.active { background:#111827; color:#fff; border-color:#111827; }
+  .filter-dot { width:8px; height:8px; border-radius:3px; flex-shrink:0; }
+  .filter-btn.active .filter-dot { opacity:0.7; background:#fff !important; }
   .toggle-btn { padding:6px 16px; font-size:12px; font-weight:500; border:1px solid #d1d5db; border-radius:6px; background:#fff; color:#374151; cursor:pointer; }
   .toggle-btn:hover { background:#f9fafb; }
 
@@ -444,7 +479,10 @@ export function buildBugListHtml(
     <section>
       <div class="list-header">
         <h3>${esc(L.bugList)}<span>（${total}${esc(L.count)}）</span></h3>
-        <button class="toggle-btn" onclick="(function(){var ds=document.querySelectorAll('details.bug-item');var allOpen=Array.from(ds).every(function(d){return d.open});ds.forEach(function(d){d.open=!allOpen});this.textContent=allOpen?'${esc(L.expandAll)}':'${esc(L.collapseAll)}';}).call(this)">${esc(L.expandAll)}</button>
+        <div class="list-header-actions">
+          <div class="priority-filters">${priorityFilterBtns}</div>
+          <button class="toggle-btn" onclick="(function(){var ds=document.querySelectorAll('details.bug-item');var allOpen=Array.from(ds).every(function(d){return d.open&&d.style.display!=='none'});ds.forEach(function(d){if(d.style.display!=='none')d.open=!allOpen});this.textContent=allOpen?'${esc(L.expandAll)}':'${esc(L.collapseAll)}';}).call(this)">${esc(L.expandAll)}</button>
+        </div>
       </div>
       ${bugItems}
     </section>
@@ -468,6 +506,18 @@ export function buildBugListHtml(
         lb.classList.add('active');
       });
     });
+    function togglePriority(btn) {
+      btn.classList.toggle('active');
+      var activeSet = new Set();
+      document.querySelectorAll('.filter-btn').forEach(function(b) {
+        if (b.classList.contains('active')) activeSet.add(b.getAttribute('data-priority'));
+      });
+      var allInactive = activeSet.size === 0;
+      document.querySelectorAll('details.bug-item').forEach(function(d) {
+        var p = d.getAttribute('data-priority') || '-';
+        d.style.display = (allInactive || activeSet.has(p)) ? '' : 'none';
+      });
+    }
   </script>
 </body>
 </html>`;
