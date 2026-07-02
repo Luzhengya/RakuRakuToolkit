@@ -1481,6 +1481,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
   const reloadAreaData = async () => {
     if (!selectedAreaId) return;
+    setResultDraftMap({});
     await fetchAreaFromNotion(selectedAreaId);
   };
 
