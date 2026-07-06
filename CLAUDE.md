@@ -49,11 +49,13 @@ Full-stack TypeScript app ("ToolSetLimo") — one Express server serves both the
 
 - **Development**: `server.ts` imports the Express app from `api/index.ts`, wraps it with Vite dev middleware, and listens on PORT (default 5173).
 - **Production/Vercel**: `api/index.ts` is the Express app exported as a serverless function. `vercel.json` rewrites `/api/*` to this single function (maxDuration 90s, 1024 MB memory).
-- **All API routes live in `api/index.ts`** (single file, ~1800 lines). File uploads use in-memory storage only (`multer.memoryStorage`) — no disk I/O, required for Vercel serverless.
+- **All API routes live in `api/index.ts`** (single file, ~2100 lines). File uploads use in-memory storage only (`multer.memoryStorage`) — no disk I/O, required for Vercel serverless.
 
 ### Frontend
 
 - **Routing**: `App.tsx` holds a `view` string state and renders the matching component. No router library. Each tool component receives an `onBack` callback.
+- **TestCenter is the largest component** (`src/components/TestCenter.tsx`, ~2850 lines) — it internally renders `MonthlyReport.tsx` and `BugList.tsx` as tabs; those two are not separate top-level `view`s in `App.tsx`.
+- **PdfEditor is client-side only** — uses `pdf-lib`/`pdfjs-dist` in the browser to render and edit PDF text regions; the only server involvement is `GET /api/pdf-status` (checks whether Adobe credentials are configured, used by PdfToWord).
 - **Styling**: Tailwind CSS v4 via `@tailwindcss/vite` plugin — no `tailwind.config.js` or PostCSS config.
 - **Animations**: `motion` (Framer Motion) for view transitions.
 - **i18n**: `src/i18n/testcenter.ts` provides zh/ja translations for the TestCenter module via a `createT(lang)` helper. Not all components are i18n-aware.
@@ -71,13 +73,19 @@ All configured via env vars (see `.env.example`):
 
 ### API Routes
 
-| Prefix | Purpose |
+| Route | Purpose |
 |---|---|
+| `GET /api/pdf-status` | Whether Adobe PDF Services credentials are configured |
+| `GET /api/test-center` | Progress list from Notion progress DB |
+| `GET /api/test-center/overview` | Aggregated overview stats |
+| `GET /api/test-center/monthly-report` | Monthly report data from Notion achievement DB |
+| `GET /api/test-center/bugs` | Bug list from Notion bug DB |
+| `GET /api/test-center/bugs/:id/children` | Child bug records for a given bug page |
+| `POST /api/test-center/results` | Update test results |
+| `GET/POST /api/test-center/history` | List / create history snapshots |
+| `GET/DELETE /api/test-center/history/:id` | Fetch / delete a single history snapshot |
 | `POST /api/upload` | File upload (Excel metadata extraction) |
 | `POST /api/convert` | Excel → Markdown conversion |
 | `POST /api/pdf-convert` | PDF → Word (Adobe) |
 | `POST /api/pdf-merge` | Merge multiple PDFs |
-| `GET/POST /api/test-center/*` | TestCenter CRUD: progress list, overview, results update, history |
-| `GET /api/test-center/monthly-report` | Monthly report data from Notion achievement DB |
-| `GET /api/test-center/bugs` | Bug list from Notion bug DB |
 | `POST /api/jiji-search` | 時事速報 scraping via Browserless |

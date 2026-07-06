@@ -961,6 +961,14 @@ function richTextToHtml(rich: any[] = []): string {
     .join("");
 }
 
+async function imageUrlToDataUri(url: string): Promise<string> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Failed to fetch image: ${r.status}`);
+  const contentType = r.headers.get("content-type") ?? "image/png";
+  const buffer = Buffer.from(await r.arrayBuffer());
+  return `data:${contentType};base64,${buffer.toString("base64")}`;
+}
+
 async function renderTableBlock(tableId: string): Promise<string> {
   if (!notion) return "";
   const r: any = await notion.blocks.children.list({ block_id: tableId, page_size: 100 });
@@ -1081,6 +1089,38 @@ app.get("/api/test-center/bugs/:id/children", async (req, res) => {
   } catch (error) {
     console.error("Bug children error:", error);
     return res.status(500).json({ error: "Failed to load bug detail children" });
+  }
+});
+
+// Proxy a single Notion-hosted image and return it inlined as a base64 data URI.
+// Used by the HTML export so downloaded reports stay viewable after Notion's
+// ~1h pre-signed S3 URLs expire. One image per request keeps each response well
+// under Vercel's 4.5MB body limit.
+app.get("/api/test-center/notion-image", async (req, res) => {
+  const url = typeof req.query.url === "string" ? req.query.url : "";
+  if (!url) return res.status(400).json({ error: "Missing url" });
+
+  let host = "";
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") throw new Error("protocol");
+    host = parsed.hostname;
+  } catch {
+    return res.status(400).json({ error: "Invalid url" });
+  }
+
+  // Only proxy Notion's own uploaded files (S3). External images keep their
+  // original URL on the client. This also prevents SSRF against arbitrary hosts.
+  if (!host.endsWith(".amazonaws.com")) {
+    return res.status(400).json({ error: "Host not allowed" });
+  }
+
+  try {
+    const dataUri = await imageUrlToDataUri(url);
+    return res.json({ dataUri });
+  } catch (error) {
+    console.error("Notion image proxy error:", error);
+    return res.status(502).json({ error: "Failed to fetch image" });
   }
 });
 
