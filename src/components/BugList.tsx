@@ -83,6 +83,62 @@ const SUMMARY_CARDS = [
   { key: 'done', accent: 'border-l-emerald-500', numColor: 'text-emerald-600' },
 ] as const;
 
+// Replace Notion-hosted (S3) <img> URLs in the child HTML fragments with base64
+// data URIs, so the exported report keeps showing images after Notion's ~1h
+// pre-signed URLs expire. Mutates childMap in place. Each image is fetched via a
+// dedicated request (one image per response) and deduped across all fragments.
+async function inlineChildImages(childMap: Record<string, string>): Promise<void> {
+  const parser = new DOMParser();
+  const docs: Record<string, Document> = {};
+  const urls = new Set<string>();
+
+  for (const [id, html] of Object.entries(childMap)) {
+    if (!html) continue;
+    const doc = parser.parseFromString(html, 'text/html');
+    docs[id] = doc;
+    doc.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') ?? '';
+      // img.src is already HTML-entity-decoded by the parser.
+      if (/\.amazonaws\.com/.test(src)) urls.add(src);
+    });
+  }
+
+  if (urls.size === 0) return;
+
+  const dataUriByUrl: Record<string, string> = {};
+  const list = [...urls];
+  const batchSize = 8;
+  for (let i = 0; i < list.length; i += batchSize) {
+    const batch = list.slice(i, i + batchSize);
+    const results = await Promise.allSettled(
+      batch.map(async (u) => {
+        const res = await fetch(`/api/test-center/notion-image?url=${encodeURIComponent(u)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (typeof data.dataUri === 'string') return { url: u, dataUri: data.dataUri };
+        }
+        throw new Error('fetch failed');
+      })
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled') dataUriByUrl[r.value.url] = r.value.dataUri;
+    }
+  }
+
+  // Rewrite the fragments; images that failed to fetch keep their original URL.
+  for (const [id, doc] of Object.entries(docs)) {
+    let changed = false;
+    doc.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') ?? '';
+      if (dataUriByUrl[src]) {
+        img.setAttribute('src', dataUriByUrl[src]);
+        changed = true;
+      }
+    });
+    if (changed) childMap[id] = doc.body.innerHTML;
+  }
+}
+
 export default function BugList({ lang, onHome, onBack, initialMonth = '' }: BugListProps) {
   const L =
     lang === 'zh'
@@ -232,6 +288,11 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           if (r.status === 'fulfilled') childMap[r.value.id] = r.value.html;
         }
       }
+
+      // Inline Notion-hosted images as base64 so the exported HTML stays
+      // viewable after Notion's ~1h S3 URLs expire. One request per image
+      // (deduped) keeps each response under Vercel's 4.5MB body limit.
+      await inlineChildImages(childMap);
 
       const html = buildBugListHtml(filtered, { keyword, system, month, judgments, status }, lang, childMap);
       const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
