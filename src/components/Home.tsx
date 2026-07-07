@@ -4,18 +4,20 @@ import {
   Layers,
   LayoutGrid,
   FilePen,
+  Newspaper,
   Loader2,
   ExternalLink,
   ChevronRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import type { ReactNode } from 'react';
 
 interface Tool {
   id: string;
   title: string;
   description: string;
   category: '文档类' | '管理类' | 'データ収集类';
-  icon: React.ReactNode;
+  icon: ReactNode;
   onClick: () => void;
 }
 
@@ -74,11 +76,19 @@ export default function Home({ category, onSelectTool }: HomeProps) {
     },
     {
       id: 'data-collection',
-      title: 'データ収集',
-      description: '時事速報・界面新聞などのウェブ情報をキーワードや日付・地域条件で自動収集します。',
+      title: '不安情報収集',
+      description: '月次不安情報を集計・検索し、詳細確認やCSV出力ができます。',
       category: 'データ収集类',
       icon: <LayoutGrid className="text-emerald-600" size={24} />,
       onClick: () => onSelectTool('data-collection'),
+    },
+    {
+      id: 'daily-news',
+      title: '毎日ニュース',
+      description: '毎日のニュースを収集・整理します（開発中）。',
+      category: 'データ収集类',
+      icon: <Newspaper className="text-amber-600" size={24} />,
+      onClick: () => onSelectTool('daily-news'),
     },
   ];
 

@@ -35,7 +35,7 @@ export default function DataCollection({ onBack }: DataCollectionProps) {
             onClick={jijiDetail.back}
             className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
           >
-            データ収集
+            不安情報収集
           </button>
           <span className="text-neutral-400">{'>>'}</span>
           <span className="text-neutral-900 font-medium" title={jijiDetail.title}>
@@ -43,7 +43,7 @@ export default function DataCollection({ onBack }: DataCollectionProps) {
           </span>
         </>
       ) : (
-        <span className="text-neutral-900 font-medium">データ収集</span>
+        <span className="text-neutral-900 font-medium">不安情報収集</span>
       )}
     </nav>
   );
