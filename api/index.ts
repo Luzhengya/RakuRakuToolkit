@@ -21,7 +21,6 @@ import {
   ExportPDFResult,
 } from "@adobe/pdfservices-node-sdk";
 import { PassThrough } from "stream";
-import type { Page, BrowserContext } from "playwright-core";
 
 // Loads .env in local dev; Vercel injects env vars at runtime, dotenv.config() is a no-op there
 dotenv.config();
@@ -1631,531 +1630,93 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
   }
 });
 
-// ── 時事速報 収集 ──────────────────────────────────────────────────────
+// ── 時事速報 (jijinews Notion DB 読み取り) ──────────────────────────────
 
-const JIJI_LOGIN_URL = "https://jijiweb.jiji.jp/login/sokuhou/index.html";
-const JIJI_SEARCH_URL = "https://jijiweb.jiji.jp/apps/contents/genresearch/";
-const JIJI_RESULT_ROOT = "https://jijiweb.jiji.jp";
+type JijiScreenshot = { name: string; url: string };
 
-const JIJI_RESULT_SELECTORS = [
-  "#resultList li",
-  "article#resultList li",
-  "ul.article-list li",
-  ".article-list li",
-];
-
-const REGION_LABEL_MAP: Record<string, string> = {
-  china: "中国",
-  "beijing-tianjin": "北京・天津",
-  "dalian-shenyang": "大連・瀋陽・東北",
-  "qingdao-shandong": "青島・山東省",
-  "shanghai-east": "上海・華東",
-  "sichuan-west": "四川・中西部",
-  "hongkong-south": "香港・華南",
+type JijiItem = {
+  id: string;
+  title: string;
+  body: string;
+  publishedAt: string;   // 掲載日時 (ISO)
+  url: string;
+  aiSummary: string;     // AI概要 → 不安情報内容
+  companyName: string;   // 会社名
+  companyProfile: string; // 会社概要
+  creditCode: string;    // 統一会社信用コード
+  category: string;      // 不安情報分類 (自由テキスト)
+  screenshots: JijiScreenshot[]; // スクリーンショット
 };
 
-const REGION_CHECKBOX_VALUE_MAP: Record<string, string> = {
-  "中国": "CHN",
-  "北京・天津": "PKN",
-  "大連・瀋陽・東北": "DALIAN",
-  "青島・山東省": "SHANDONG",
-  "上海・華東": "SHH",
-  "四川・中西部": "SICHUAN",
-  "香港・華南": "HKG",
-};
-
-function jijiCleanText(text: string): string {
-  return (text || "").replace(/[ \t]+/g, " ").trim();
+function filesToScreenshots(prop: any): JijiScreenshot[] {
+  if (!prop || prop.type !== "files") return [];
+  return (prop.files ?? [])
+    .map((f: any) => ({
+      name: f?.name ?? "",
+      url: f?.type === "external" ? (f.external?.url ?? "") : (f.file?.url ?? ""),
+    }))
+    .filter((s: JijiScreenshot) => !!s.url);
 }
 
-function jijiParseTime(timeText: string): { publishedDate: string | null } {
-  const m = (timeText || "").trim().match(/(\d{2,4})\/(\d{1,2})\/(\d{1,2})-(\d{1,2}):(\d{2})/);
-  if (!m) return { publishedDate: null };
-  let year = parseInt(m[1], 10);
-  if (year < 100) year += 2000;
-  const month = parseInt(m[2], 10);
-  const day = parseInt(m[3], 10);
+function parseJijiItem(page: any): JijiItem {
+  const p = page?.properties ?? {};
   return {
-    publishedDate: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    id: page?.id ?? "",
+    title: propertyToPlainText(p["タイトル"]),
+    body: propertyToPlainText(p["本文"]),
+    publishedAt: p["掲載日時"]?.date?.start ?? "",
+    url: p["URL"]?.url ?? "",
+    aiSummary: propertyToPlainText(p["AI概要"]),
+    companyName: propertyToPlainText(p["会社名"]),
+    companyProfile: propertyToPlainText(p["会社概要"]),
+    creditCode: propertyToPlainText(p["統一会社信用コード"]),
+    category: propertyToPlainText(p["不安情報分類"]),
+    screenshots: filesToScreenshots(p["スクリーンショット"]),
   };
 }
 
-function jijiExtractDetailPath(href: string): string | null {
-  if (!href) return null;
-  if (href.startsWith("http://") || href.startsWith("https://")) return href;
-  const m = href.match(/shownews\('([^']+)'\)/);
-  if (m) return new URL(m[1], JIJI_RESULT_ROOT).href;
-  if (href.startsWith("/")) return new URL(href, JIJI_RESULT_ROOT).href;
-  return null;
-}
+async function queryAllJijiItems(databaseId: string): Promise<JijiItem[]> {
+  if (!notion) return [];
 
-function jijiRegionFromTitle(title: string, regionLabels: string[]): string {
-  for (const region of regionLabels) {
-    if (title.includes(region)) return region;
-  }
-  return "";
-}
-
-async function jijiFillInput(page: Page, selectors: string[], value: string): Promise<boolean> {
-  for (const sel of selectors) {
-    const loc = page.locator(sel);
-    const cnt = await loc.count();
-    if (cnt === 0) continue;
-    for (let i = 0; i < cnt; i++) {
-      const el = loc.nth(i);
-      try {
-        if (await el.isVisible() && await el.isEditable()) {
-          await el.fill(value);
-          return true;
-        }
-      } catch { continue; }
-    }
-  }
-  return false;
-}
-
-async function jijiSetKeyword(page: Page, keyword: string): Promise<boolean> {
-  const candidates = [
-    "#searchFrm input[name='keyword'][type='text']",
-    "#searchFrm input.search-txt",
-    "#searchFrm textarea[name='keyword']",
-  ];
-  for (const sel of candidates) {
-    const loc = page.locator(sel);
-    const cnt = await loc.count();
-    if (cnt === 0) continue;
-    for (let i = 0; i < cnt; i++) {
-      const el = loc.nth(i);
-      try {
-        if (!await el.isEditable()) continue;
-        await el.fill(keyword);
-        if (((await el.inputValue()) || "").trim() === keyword) return true;
-      } catch { continue; }
-    }
-  }
-  return false;
-}
-
-async function jijiClickFirst(page: Page, selectors: string[]): Promise<boolean> {
-  for (const sel of selectors) {
-    const loc = page.locator(sel);
-    if (await loc.count() > 0) {
-      await loc.first().click();
-      return true;
-    }
-  }
-  return false;
-}
-
-async function jijiEnsureTermselectFromto(page: Page): Promise<boolean> {
-  const radios = page.locator("#searchFrm input[type='radio'][name='termselect'][value='fromto']");
-  if (await radios.count() === 0) return false;
-  const cnt = await radios.count();
-  for (let i = 0; i < cnt; i++) {
-    const r = radios.nth(i);
-    try { await r.click({ force: true }); } catch { /* ignore */ }
-    try { await r.check({ force: true }); } catch { /* ignore */ }
-  }
-  for (let i = 0; i < cnt; i++) {
-    try { if (await radios.nth(i).isChecked()) return true; } catch { continue; }
-  }
-  return false;
-}
-
-async function jijiSetSelectByName(page: Page, name: string, value: number | string): Promise<boolean> {
-  const selects = page.locator(`#searchFrm select[name='${name}']`);
-  if (await selects.count() === 0) return false;
-  const optionVal = String(value);
-  let anyOk = false;
-  const cnt = await selects.count();
-  for (let i = 0; i < cnt; i++) {
-    const sel = selects.nth(i);
-    try {
-      const ok = await sel.evaluate(
-        (el: HTMLSelectElement, val: string) => {
-          const has = Array.from(el.options).some(o => o.value === val);
-          if (!has) return false;
-          el.value = val;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          return true;
-        },
-        optionVal,
-      );
-      if (!ok) await sel.selectOption(optionVal, { force: true });
-      anyOk = true;
-    } catch { continue; }
-  }
-  return anyOk;
-}
-
-async function jijiGetSelectValue(page: Page, name: string): Promise<string | null> {
-  const select = page.locator(`#searchFrm select[name='${name}']`);
-  if (await select.count() === 0) return null;
-  try {
-    return await select.first().evaluate((el: HTMLSelectElement) => String(el.value));
-  } catch { return null; }
-}
-
-async function jijiVerifyDateRange(
-  page: Page,
-  start: { year: number; month: number; day: number },
-  end: { year: number; month: number; day: number },
-): Promise<{ ok: boolean; msg: string }> {
-  const expected: Record<string, string> = {
-    termStartYear: String(start.year),
-    termStartMonth: String(start.month),
-    termStartDay: String(start.day),
-    termEndYear: String(end.year),
-    termEndMonth: String(end.month),
-    termEndDay: String(end.day),
-  };
-  const mismatches: string[] = [];
-  for (const [k, v] of Object.entries(expected)) {
-    const actual = await jijiGetSelectValue(page, k);
-    if (actual !== v) mismatches.push(`${k}=${actual}(exp:${v})`);
-  }
-  return mismatches.length === 0
-    ? { ok: true, msg: "" }
-    : { ok: false, msg: mismatches.join("; ") };
-}
-
-async function jijiIsRegionChecked(page: Page, regionText: string): Promise<boolean> {
-  const around = page.locator(`li:has-text('${regionText}') input[type='checkbox']`);
-  const cnt = await around.count();
-  for (let i = 0; i < cnt; i++) {
-    try { if (await around.nth(i).isChecked()) return true; } catch { continue; }
-  }
-  return false;
-}
-
-async function jijiCheckRegionCheckbox(page: Page, regionText: string): Promise<boolean> {
-  if (await jijiIsRegionChecked(page, regionText)) return true;
-
-  const mapped = REGION_CHECKBOX_VALUE_MAP[regionText];
-  if (mapped) {
-    const byVal = page.locator(`input[type='checkbox'][value='${mapped}']`);
-    const cnt = await byVal.count();
-    for (let i = 0; i < cnt; i++) {
-      try {
-        await byVal.nth(i).check({ force: true });
-        if (await jijiIsRegionChecked(page, regionText)) return true;
-      } catch { continue; }
-    }
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) {
+    throw new Error("No data source found in NOTION_JIJI_DATABASE_ID");
   }
 
-  const label = page.locator(`label:has-text('${regionText}')`);
-  const labelCnt = await label.count();
-  for (let i = 0; i < labelCnt; i++) {
-    const item = label.nth(i);
-    try {
-      if (!await item.isVisible()) continue;
-      const targetId = await item.getAttribute("for");
-      if (targetId) {
-        const cb = page.locator(`input[type='checkbox']#${targetId}`);
-        if (await cb.count() > 0) {
-          await cb.first().check({ force: true });
-          if (await jijiIsRegionChecked(page, regionText)) return true;
-        }
-      }
-      await item.click();
-      if (await jijiIsRegionChecked(page, regionText)) return true;
-    } catch { continue; }
-  }
-  try {
-    await label.first().click({ force: true });
-    if (await jijiIsRegionChecked(page, regionText)) return true;
-  } catch { /* ignore */ }
-
-  const around = page.locator(`li:has-text('${regionText}') input[type='checkbox']`);
-  const aroundCnt = await around.count();
-  for (let i = 0; i < aroundCnt; i++) {
-    try {
-      await around.nth(i).check({ force: true });
-      if (await jijiIsRegionChecked(page, regionText)) return true;
-    } catch { continue; }
-  }
-  return false;
-}
-
-async function jijiExpandCountryRegionPanel(page: Page): Promise<void> {
-  const toggleCandidates = [
-    "h4:has-text('国・地域から検索')",
-    "h4:has-text('国・地域')",
-    ".acordion-hd:has-text('国・地域')",
-    ".accordion-hd:has-text('国・地域')",
-    ".search-option h4:has-text('国・地域')",
-  ];
-  for (const sel of toggleCandidates) {
-    const loc = page.locator(sel);
-    if (await loc.count() === 0) continue;
-    try {
-      await loc.first().click({ force: true });
-      await page.waitForTimeout(120);
-      break;
-    } catch { continue; }
-  }
-  await page.evaluate(() => {
-    const nodes = Array.from(
-      document.querySelectorAll(".acordion-list, .accordion-list")
-    ) as HTMLElement[];
-    for (const n of nodes) {
-      n.style.display = "block";
-      n.style.overflow = "visible";
-      n.classList.remove("close");
-      if (!n.classList.contains("open")) n.classList.add("open");
-    }
-  });
-  await page.waitForTimeout(120);
-}
-
-async function jijiGetFirstMatchingItems(page: Page) {
-  for (const sel of JIJI_RESULT_SELECTORS) {
-    const loc = page.locator(sel);
-    if (await loc.count() > 0) return loc;
-  }
-  return page.locator(JIJI_RESULT_SELECTORS[0]);
-}
-
-async function jijiFetchDetailBody(context: BrowserContext, url: string): Promise<string | null> {
-  const detailPage = await context.newPage();
-  try {
-    await detailPage.goto(url, { waitUntil: "domcontentloaded" });
-    const bodyLoc = detailPage.locator("#mainArticle article.news-wrap");
-    if (await bodyLoc.count() > 0) {
-      return jijiCleanText(await bodyLoc.first().innerText());
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    await detailPage.close();
-  }
-}
-
-app.post("/api/jiji-search", async (req, res) => {
-  const { keywords, dateFrom, dateTo, regions: regionIds } = req.body as {
-    keywords?: string;
-    dateFrom?: string;
-    dateTo?: string;
-    regions?: string[];
-  };
-
-  const token = process.env.BROWSERLESS_TOKEN;
-  const loginId = process.env.JIJI_LOGIN_ID;
-  const password = process.env.JIJI_PASSWORD;
-
-  if (!token) {
-    res.status(500).json({ error: "BROWSERLESS_TOKEN が設定されていません" });
-    return;
-  }
-  if (!loginId || !password) {
-    res.status(500).json({ error: "JIJI_LOGIN_ID / JIJI_PASSWORD が設定されていません" });
-    return;
-  }
-
-  const regionLabels = (regionIds ?? [])
-    .map(id => REGION_LABEL_MAP[id])
-    .filter((label): label is string => !!label);
-  if (regionLabels.length === 0) {
-    res.status(400).json({ error: "地域を1つ以上選択してください" });
-    return;
-  }
-
-  const parseIsoDate = (s: string) => {
-    const [year, month, day] = s.split("-").map(Number);
-    return { year, month, day };
-  };
-  const startDate = parseIsoDate(dateFrom ?? new Date().toISOString().slice(0, 10));
-  const endDate   = parseIsoDate(dateTo   ?? new Date().toISOString().slice(0, 10));
-  const keyword = keywords || "倒産 or 破産 or 廃業 or 撤退 or 経営難 or 閉鎖 or 債務 or 不渡 or 負債";
-  const MAX_PAGES = 10;
-  const DETAIL_CONCURRENCY = 5;
-
-  let browser: import("playwright-core").Browser | undefined;
-  try {
-    const { chromium } = await import("playwright-core");
-    // Playwright WebSocket protocol (same as Python p.chromium.connect)
-    browser = await chromium.connect(`wss://production-sfo.browserless.io?token=${token}`);
-    const context = await browser.newContext({ locale: "ja-JP" });
-    await context.addInitScript(
-      "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-    );
-    const page = await context.newPage();
-    page.setDefaultTimeout(30000);
-
-    // Step 1: Login
-    await page.goto(JIJI_LOGIN_URL, { waitUntil: "domcontentloaded" });
-    await jijiFillInput(page, [
-      "input[name='loginid']", "input#idtxt", "input[name='id']",
-      "input[name='login_id']", "input[type='text']",
-    ], loginId);
-    await jijiFillInput(page, ["input[name='password']", "input[type='password']"], password);
-
-    const idInput  = page.locator("input[name='loginid']");
-    const pwdInput = page.locator("input[name='password']");
-    const idLen  = await idInput.count()  > 0 ? (await idInput.first().inputValue()).length  : 0;
-    const pwdLen = await pwdInput.count() > 0 ? (await pwdInput.first().inputValue()).length : 0;
-    if (idLen === 0 || pwdLen === 0) {
-      throw new Error("ログイン情報の入力に失敗しました。アカウント設定を確認してください。");
-    }
-
-    const loginClicked = await jijiClickFirst(page, [
-      "form#loginForm input.login-btn[type='submit']",
-      "button[type='submit']",
-      "input[type='submit']",
-      "button:has-text('ログイン')",
-    ]);
-    if (!loginClicked) throw new Error("ログインボタンが見つかりません");
-
-    try {
-      await page.locator("form#loginForm").first().evaluate(
-        (form: HTMLFormElement) => form.requestSubmit()
-      );
-    } catch { /* ignore */ }
-
-    try {
-      await page.waitForLoadState("networkidle", { timeout: 15000 });
-    } catch {
-      await page.waitForLoadState("domcontentloaded");
-    }
-
-    await page.goto(JIJI_SEARCH_URL, { waitUntil: "domcontentloaded" });
-    if (page.url().toLowerCase().includes("login")) {
-      throw new Error("ログインに失敗しました。アカウントとパスワードを確認してください。");
-    }
-
-    // Step 2: Fill search form
-    if (!await jijiSetKeyword(page, keyword)) {
-      throw new Error("キーワードの入力に失敗しました");
-    }
-    if (!await jijiEnsureTermselectFromto(page)) {
-      throw new Error("日付指定の選択に失敗しました");
-    }
-
-    await jijiSetSelectByName(page, "termStartYear",  startDate.year);
-    await jijiSetSelectByName(page, "termStartMonth", startDate.month);
-    await jijiSetSelectByName(page, "termStartDay",   startDate.day);
-    await jijiSetSelectByName(page, "termEndYear",    endDate.year);
-    await jijiSetSelectByName(page, "termEndMonth",   endDate.month);
-    await jijiSetSelectByName(page, "termEndDay",     endDate.day);
-
-    const { ok: dateOk, msg: dateMsg } = await jijiVerifyDateRange(page, startDate, endDate);
-    if (!dateOk) {
-      throw new Error(`日付条件の設定が一致しません: ${dateMsg}`);
-    }
-
-    await jijiExpandCountryRegionPanel(page);
-
-    const failedRegions: string[] = [];
-    for (const regionText of regionLabels) {
-      const ok = await jijiCheckRegionCheckbox(page, regionText);
-      if (!ok || !await jijiIsRegionChecked(page, regionText)) {
-        failedRegions.push(regionText);
-      }
-    }
-    if (failedRegions.length > 0) {
-      throw new Error(`地域チェックに失敗しました: ${failedRegions.join(", ")}`);
-    }
-    await page.waitForTimeout(300);
-
-    // Step 3: Submit search
-    const searchClicked = await jijiClickFirst(page, [
-      "input.search-btn[value*='この条件で検索']",
-      "input[value*='この条件で検索']",
-      "button:has-text('検索')",
-      "button:has-text('检索')",
-      "input[value*='検索']",
-    ]);
-    if (!searchClicked) {
-      await page.evaluate("if (typeof search === 'function') { search(); }");
-    }
-    await page.waitForLoadState("domcontentloaded");
-    await page.waitForTimeout(1200);
-
-    // Step 4: Paginate result list
-    const collectedItems: Array<{
-      title: string;
-      detailUrl: string;
-      publishedTimeRaw: string;
-    }> = [];
-    let pageNo = 1;
-
-    while (pageNo <= MAX_PAGES) {
-      let found = false;
-      for (const sel of JIJI_RESULT_SELECTORS) {
-        try { await page.waitForSelector(sel, { timeout: 5000 }); found = true; break; }
-        catch { continue; }
-      }
-      if (!found) {
-        if (pageNo === 1) throw new Error("検索結果が見つかりません。条件を確認してください。");
-        break;
-      }
-
-      const items = await jijiGetFirstMatchingItems(page);
-      const count = await items.count();
-      for (let i = 0; i < count; i++) {
-        const li = items.nth(i);
-        const a = li.locator("a").first();
-        const title     = await a.count() > 0 ? jijiCleanText(await a.innerText()) : "";
-        const href      = await a.count() > 0 ? (await a.getAttribute("href") ?? "") : "";
-        const detailUrl = jijiExtractDetailPath(href);
-        if (!detailUrl) continue;
-        const timeLoc = li.locator("time");
-        const timeText = await timeLoc.count() > 0 ? jijiCleanText(await timeLoc.first().innerText()) : "";
-        collectedItems.push({ title, detailUrl, publishedTimeRaw: timeText });
-      }
-
-      const nextBtn = page.locator("nav.pager-box a.btn").filter({
-        has: page.locator("i.fa-angle-right"),
-      });
-      const fallbackNext = await nextBtn.count() > 0
-        ? nextBtn
-        : page.locator("a:has-text('次へ'), button:has-text('次へ')");
-      if (await fallbackNext.count() === 0) break;
-      if (await fallbackNext.first().getAttribute("disabled") !== null) break;
-      await fallbackNext.first().click();
-      await page.waitForLoadState("domcontentloaded");
-      await page.waitForTimeout(600);
-      pageNo++;
-    }
-
-    // Step 5: Fetch detail pages in parallel batches
-    const allResults: Array<{
-      title: string; date: string; region: string; url: string; summary: string;
-    }> = [];
-
-    for (let i = 0; i < collectedItems.length; i += DETAIL_CONCURRENCY) {
-      const batch = collectedItems.slice(i, i + DETAIL_CONCURRENCY);
-      const batchResults = await Promise.all(
-        batch.map(async (item) => {
-          const { publishedDate } = jijiParseTime(item.publishedTimeRaw);
-          const body = await jijiFetchDetailBody(context, item.detailUrl);
-          return {
-            title:   item.title,
-            date:    publishedDate ?? item.publishedTimeRaw,
-            region:  jijiRegionFromTitle(item.title, regionLabels),
-            url:     item.detailUrl,
-            summary: body ? body.slice(0, 200) : "",
-          };
-        })
-      );
-      allResults.push(...batchResults);
-    }
-
-    res.json({ results: allResults });
-  } catch (err: any) {
-    console.error("jiji-search error:", err);
-    const msg: string = err.message ?? "";
-    const isTimeout = msg.includes("Timeout") || msg.includes("timeout");
-    res.status(500).json({
-      error: isTimeout
-        ? "タイムアウトしました。条件を絞って再試行してください。"
-        : msg || "データ収集に失敗しました",
+  const pages: any[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+  while (hasMore) {
+    const r: any = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
     });
-  } finally {
-    await browser?.close();
+    pages.push(...r.results);
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+
+  return pages.map(parseJijiItem);
+}
+
+app.get("/api/jiji-list", async (_req, res) => {
+  const databaseId = process.env.NOTION_JIJI_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_JIJI_DATABASE_ID",
+    });
+  }
+  try {
+    const items = await queryAllJijiItems(databaseId);
+    return res.json({ items, total: items.length });
+  } catch (error) {
+    console.error("Jiji list query error:", error);
+    return res.status(500).json({ error: "Failed to query Notion jiji database" });
   }
 });
 
 export default app;
+

@@ -66,10 +66,8 @@ Full-stack TypeScript app ("ToolSetLimo") — one Express server serves both the
 
 All configured via env vars (see `.env.example`):
 
-- **Notion API** — TestCenter progress data, history storage, monthly achievement reports, bug list (multiple database IDs).
+- **Notion API** — TestCenter progress data, history storage, monthly achievement reports, bug list, 時事速報 (jijinews DB) (multiple database IDs).
 - **Adobe PDF Services** — PDF → Word conversion.
-- **Browserless (Playwright)** — headless browser for 時事速報 data collection scraping.
-- **時事通信社 (jijiweb)** — login credentials for news article scraping.
 
 ### API Routes
 
@@ -88,4 +86,4 @@ All configured via env vars (see `.env.example`):
 | `POST /api/convert` | Excel → Markdown conversion |
 | `POST /api/pdf-convert` | PDF → Word (Adobe) |
 | `POST /api/pdf-merge` | Merge multiple PDFs |
-| `POST /api/jiji-search` | 時事速報 scraping via Browserless |
+| `GET /api/jiji-list` | 時事速報 list from Notion jijinews DB |
