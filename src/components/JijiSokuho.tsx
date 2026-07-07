@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Download, Loader2, Search } from 'lucide-react';
 import JSZip from 'jszip';
 import JijiDetail from './JijiDetail';
@@ -46,7 +46,11 @@ function csvCell(value: string): string {
   return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
-export default function JijiSokuho() {
+interface JijiSokuhoProps {
+  onDetailChange?: (detail: { title: string; back: () => void } | null) => void;
+}
+
+export default function JijiSokuho({ onDetailChange }: JijiSokuhoProps) {
   const [allItems, setAllItems] = useState<JijiItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +70,11 @@ export default function JijiSokuho() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<JijiItem | null>(null);
   const [exporting, setExporting] = useState(false);
+
+  // 詳細から戻った際に元の行へ自動スクロール＆一時ハイライトするための状態
+  const [pendingScrollId, setPendingScrollId] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
 
   useEffect(() => {
     let aborted = false;
@@ -90,6 +99,26 @@ export default function JijiSokuho() {
       aborted = true;
     };
   }, []);
+
+  // 詳細画面の開閉を親(パンくず)へ通知。戻る操作では元の行を記憶しておく。
+  useEffect(() => {
+    if (!onDetailChange) return;
+    if (selected) {
+      const id = selected.id;
+      onDetailChange({
+        title: selected.title || '(無題)',
+        back: () => {
+          setPendingScrollId(id);
+          setSelected(null);
+        },
+      });
+    } else {
+      onDetailChange(null);
+    }
+  }, [selected, onDetailChange]);
+
+  // アンマウント時にパンくずの詳細表示をクリア
+  useEffect(() => () => onDetailChange?.(null), [onDetailChange]);
 
   const toggleCat = (c: string) => {
     setDraftCats((prev) => {
@@ -135,6 +164,28 @@ export default function JijiSokuho() {
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // 戻った後、対象行のあるページへ移動しスクロール＆ハイライト
+  useEffect(() => {
+    if (!pendingScrollId) return;
+    const idx = filtered.findIndex((x) => x.id === pendingScrollId);
+    if (idx < 0) {
+      setPendingScrollId(null);
+      return;
+    }
+    const targetPage = Math.floor(idx / PAGE_SIZE) + 1;
+    if (page !== targetPage) {
+      setPage(targetPage);
+      return; // ページ更新後の再レンダリングで再実行
+    }
+    const el = rowRefs.current.get(pendingScrollId);
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      setHighlightId(pendingScrollId);
+      setTimeout(() => setHighlightId(null), 1600);
+    }
+    setPendingScrollId(null);
+  }, [pendingScrollId, page, filtered]);
 
   const handleExportCsv = async () => {
     if (filtered.length === 0) return;
@@ -215,7 +266,7 @@ export default function JijiSokuho() {
   };
 
   if (selected) {
-    return <JijiDetail item={selected} onBack={() => setSelected(null)} />;
+    return <JijiDetail item={selected} />;
   }
 
   return (
@@ -342,7 +393,20 @@ export default function JijiSokuho() {
                 </thead>
                 <tbody>
                   {paged.map((it, i) => (
-                    <tr key={it.id} className={i % 2 === 0 ? 'bg-white' : 'bg-neutral-50/50'}>
+                    <tr
+                      key={it.id}
+                      ref={(el) => {
+                        if (el) rowRefs.current.set(it.id, el);
+                        else rowRefs.current.delete(it.id);
+                      }}
+                      className={`transition-colors ${
+                        highlightId === it.id
+                          ? 'bg-amber-100'
+                          : i % 2 === 0
+                            ? 'bg-white'
+                            : 'bg-neutral-50/50'
+                      }`}
+                    >
                       <td className="px-4 py-3 text-neutral-500 whitespace-nowrap align-top">
                         {it.publishedAt ? it.publishedAt.slice(0, 10) : '-'}
                       </td>

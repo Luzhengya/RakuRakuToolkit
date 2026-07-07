@@ -1,27 +1,17 @@
-import { ChevronLeft, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import { CAT_COLOR, toBigCategory, type JijiItem } from './jijiShared';
 
 interface JijiDetailProps {
   item: JijiItem;
-  onBack: () => void;
 }
 
 function catBadgeClass(raw: string): string {
   return CAT_COLOR[toBigCategory(raw)] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200';
 }
 
-export default function JijiDetail({ item, onBack }: JijiDetailProps) {
+export default function JijiDetail({ item }: JijiDetailProps) {
   return (
     <div className="space-y-6">
-      <button
-        type="button"
-        onClick={onBack}
-        className="inline-flex items-center gap-1.5 text-sm text-neutral-500 hover:text-neutral-900 transition-colors"
-      >
-        <ChevronLeft size={16} />
-        一覧へ戻る
-      </button>
-
       <div className="space-y-1.5">
         <h2 className="text-2xl font-bold text-neutral-900">{item.title || '(無題)'}</h2>
         <p className="text-sm text-neutral-400">{item.publishedAt ? item.publishedAt.slice(0, 10) : '-'}</p>
