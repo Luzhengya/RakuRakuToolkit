@@ -48,9 +48,12 @@ function csvCell(value: string): string {
 
 interface JijiSokuhoProps {
   onDetailChange?: (detail: { title: string; back: () => void } | null) => void;
+  // データ取得先とCSVファイル名の接頭辞（時事速報/界面新聞で切り替え）
+  endpoint?: string;
+  csvPrefix?: string;
 }
 
-export default function JijiSokuho({ onDetailChange }: JijiSokuhoProps) {
+export default function JijiSokuho({ onDetailChange, endpoint = '/api/jiji-list', csvPrefix = 'jiji' }: JijiSokuhoProps) {
   const [allItems, setAllItems] = useState<JijiItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -78,11 +81,14 @@ export default function JijiSokuho({ onDetailChange }: JijiSokuhoProps) {
 
   useEffect(() => {
     let aborted = false;
+    // データ取得先が変わったら（タブ切替）詳細・ページを初期化し残留状態を消す
+    setSelected(null);
+    setPage(1);
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch('/api/jiji-list');
+        const res = await fetch(endpoint);
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.error || `Request failed (${res.status})`);
@@ -98,7 +104,7 @@ export default function JijiSokuho({ onDetailChange }: JijiSokuhoProps) {
     return () => {
       aborted = true;
     };
-  }, []);
+  }, [endpoint]);
 
   // 詳細画面の開閉を親(パンくず)へ通知。戻る操作では元の行を記憶しておく。
   useEffect(() => {
@@ -247,13 +253,13 @@ export default function JijiSokuho({ onDetailChange }: JijiSokuhoProps) {
       const pad = (n: number) => String(n).padStart(2, '0');
       const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
       // UTF-8 BOM を付与して Excel の文字化けを防ぐ
-      zip.file(`jiji_${stamp}.csv`, '﻿' + rows.join('\r\n'));
+      zip.file(`${csvPrefix}_${stamp}.csv`, '﻿' + rows.join('\r\n'));
 
       const blob = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `jiji_${stamp}.zip`;
+      a.download = `${csvPrefix}_${stamp}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

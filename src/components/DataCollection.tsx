@@ -74,9 +74,11 @@ export default function DataCollection({ onBack }: DataCollectionProps) {
       {activeTab === 'jiji' ? (
         <JijiSokuho onDetailChange={setJijiDetail} />
       ) : (
-        <div className="flex items-center justify-center py-20 text-neutral-400 text-sm">
-          界面新聞 — 開発中
-        </div>
+        <JijiSokuho
+          endpoint="/api/jiemian-list"
+          csvPrefix="jiemian"
+          onDetailChange={setJijiDetail}
+        />
       )}
 
       <div className="pt-4 border-t border-neutral-200">

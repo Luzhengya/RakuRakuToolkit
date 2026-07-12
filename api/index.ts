@@ -1718,5 +1718,23 @@ app.get("/api/jiji-list", async (_req, res) => {
   }
 });
 
+// ── 界面新聞 (jiemian Notion DB 読み取り、jijinews と同一スキーマを再利用) ──
+app.get("/api/jiemian-list", async (_req, res) => {
+  const databaseId = process.env.NOTION_JIEMIAN_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_JIEMIAN_DATABASE_ID",
+    });
+  }
+  try {
+    const items = await queryAllJijiItems(databaseId);
+    return res.json({ items, total: items.length });
+  } catch (error) {
+    console.error("Jiemian list query error:", error);
+    return res.status(500).json({ error: "Failed to query Notion jiemian database" });
+  }
+});
+
 export default app;
 
