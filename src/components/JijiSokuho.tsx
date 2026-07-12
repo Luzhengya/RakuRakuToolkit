@@ -10,17 +10,25 @@ import {
   type JijiItem,
 } from './jijiShared';
 
+// ローカル日付(JST)を YYYY-MM-DD で返す。toISOString はUTC変換で日付がずれるため使わない。
+function toLocalYmd(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function getFirstDayOfLastMonth(): string {
   const d = new Date();
   d.setDate(1);
   d.setMonth(d.getMonth() - 1);
-  return d.toISOString().split('T')[0];
+  return toLocalYmd(d);
 }
 
 function getLastDayOfLastMonth(): string {
   const d = new Date();
   d.setDate(0);
-  return d.toISOString().split('T')[0];
+  return toLocalYmd(d);
 }
 
 const PAGE_SIZE = 20;
