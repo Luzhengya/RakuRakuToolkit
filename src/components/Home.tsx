@@ -4,6 +4,7 @@ import {
   Layers,
   LayoutGrid,
   FilePen,
+  ClipboardList,
   Newspaper,
   Loader2,
   ExternalLink,
@@ -73,6 +74,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <LayoutGrid className="text-sky-600" size={24} />,
       onClick: () => onSelectTool('test-center'),
+    },
+    {
+      id: 'testcase-organize',
+      title: 'Testcase Format',
+      description: '上传测试用例 CSV，整形为标准 Excel 格式并按需求分组汇总测试结果。',
+      category: '管理类',
+      icon: <ClipboardList className="text-teal-600" size={24} />,
+      onClick: () => onSelectTool('testcase-organize'),
     },
     {
       id: 'data-collection',

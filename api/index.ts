@@ -184,16 +184,8 @@ function findDateProperty(properties: Record<string, any>, keywords: string[]): 
   return undefined;
 }
 
-let _loggedProps = false;
 function parseProgressItem(page: any): ProgressItem {
   const properties = page?.properties ?? {};
-  if (!_loggedProps) {
-    _loggedProps = true;
-    const dateProps = Object.entries(properties)
-      .filter(([, v]: [string, any]) => v?.type === 'date' || v?.type === 'formula')
-      .map(([k, v]: [string, any]) => `${k}(${v.type})`);
-    console.log('[parseProgressItem] date/formula props:', dateProps.join(', '));
-  }
   const childProjectIds = extractChildProjectIds(properties);
   return {
     id: page?.id ?? "",
@@ -1733,6 +1725,283 @@ app.get("/api/jiemian-list", async (_req, res) => {
   } catch (error) {
     console.error("Jiemian list query error:", error);
     return res.status(500).json({ error: "Failed to query Notion jiemian database" });
+  }
+});
+
+// ── Testcase Format (テストケース CSV を整形し Excel 出力 + 結果集計) ──
+
+// 引用符・改行入りセルに対応した最小 CSV パーサ (UTF-8 前提, 先頭 BOM 除去)
+// ユーザー入力による無制限ループ (DoS) を防ぐため、解析対象を定数上限で制限する。
+// multerの50MB制限(バイト数)に合わせる: 文字数は必ずバイト数以下なので合法ファイルを弾かない。
+const MAX_CSV_CHARS = 50 * 1024 * 1024;
+
+function parseCsv(text: string): string[][] {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  if (text.length > MAX_CSV_CHARS) {
+    throw new Error("CSV file too large");
+  }
+  const len = Math.min(text.length, MAX_CSV_CHARS);
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < len; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ",") { row.push(field); field = ""; }
+      else if (c === "\r") { /* CRLF: \n 側で処理 */ }
+      else if (c === "\n") { row.push(field); field = ""; rows.push(row); row = []; }
+      else field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+const TESTCASE_HEADERS = [
+  "ケース番号", "システム", "機能名", "要件名", "テスト内容",
+  "前提", "ステップ", "予期結果", "ポイント", "優先級",
+  "対応", "適用段階", "状態", "テスト結果", "作成者",
+  "作成日", "更新者", "更新日", "バージョン", "関連NO", "備考",
+];
+const TESTCASE_COL_COUNT = TESTCASE_HEADERS.length; // 21
+const RESULT_COL = 13;   // テスト結果 (0-based, CSV「结果」)
+const GROUP_COL = 3;     // 要件名 (0-based, CSV「相关需求」)
+const CASENO_COL = 0;    // ケース番号 (0-based, CSV「用例编号」)
+const KEYWORD_COL = 8;   // ポイント (0-based, CSV「关键词」)
+
+function mapTestResult(v: string): string {
+  const s = (v ?? "").trim();
+  if (s === "通过") return "OK";
+  if (s === "阻塞") return "テスト不可";
+  if (s === "失败") return "NG";
+  if (s === "") return "未実施";
+  return s;
+}
+
+type TestCaseGroupStat = {
+  label: string;         // 相关需求(要件名) の値
+  total: number;
+  ok: number;
+  block: number;
+  ng: number;
+  un: number;
+  shimateki: number;
+  blockCases: string[];
+  ngCases: string[];
+  unCases: string[];
+  shimatekiCases: string[];
+};
+
+// 1つの CSV → { xlsx バッファ, グループ統計, 出力ファイル名 }
+async function buildTestCaseXlsx(originalName: string, csvText: string) {
+  const rows = parseCsv(csvText);
+  const dataRows = rows
+    .slice(1) // 先頭は中国語ヘッダ
+    .filter((r) => r.some((c) => (c ?? "").trim() !== "")); // 空行除去
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Sheet");
+
+  // ケース内容部分 (ヘッダ + データ行) の罫線
+  const cellBorder: Partial<ExcelJS.Borders> = {
+    top: { style: "thin" }, left: { style: "thin" },
+    bottom: { style: "thin" }, right: { style: "thin" },
+  };
+
+  // ヘッダ (深藍 + 白字 + 罫線)
+  ws.addRow(TESTCASE_HEADERS);
+  ws.getRow(1).eachCell((cell) => {
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003366" } };
+    cell.font = { color: { argb: "FFFFFFFF" } };
+    cell.border = cellBorder;
+  });
+
+  const FILL = {
+    OK: "FFD3D3D3",
+    "テスト不可": "FFFFFF00",
+    NG: "FFFF0000",
+  } as const;
+
+  // グループ統計 (相关需求ごと, 出現順)
+  const groupMap = new Map<string, TestCaseGroupStat>();
+  const groupOrder: string[] = [];
+
+  for (const r of dataRows) {
+    const out = new Array(TESTCASE_COL_COUNT).fill("");
+    for (let i = 0; i < TESTCASE_COL_COUNT; i++) out[i] = r[i] ?? "";
+    const mapped = mapTestResult(out[RESULT_COL]);
+    out[RESULT_COL] = mapped;
+
+    const added = ws.addRow(out);
+    const fillColor = (FILL as Record<string, string>)[mapped];
+    added.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = cellBorder;
+      if (fillColor) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
+      }
+    });
+
+    const key = (r[GROUP_COL] ?? "").trim();
+    let g = groupMap.get(key);
+    if (!g) {
+      g = { label: key, total: 0, ok: 0, block: 0, ng: 0, un: 0, shimateki: 0,
+        blockCases: [], ngCases: [], unCases: [], shimatekiCases: [] };
+      groupMap.set(key, g);
+      groupOrder.push(key);
+    }
+    const caseNo = (r[CASENO_COL] ?? "").trim();
+    g.total++;
+    if (mapped === "OK") g.ok++;
+    else if (mapped === "テスト不可") { g.block++; g.blockCases.push(caseNo); }
+    else if (mapped === "NG") { g.ng++; g.ngCases.push(caseNo); }
+    else if (mapped === "未実施") { g.un++; g.unCases.push(caseNo); }
+    if ((r[KEYWORD_COL] ?? "").trim() === "指摘修正") { g.shimateki++; g.shimatekiCases.push(caseNo); }
+  }
+
+  const baseName = originalName.replace(/\.[^.]+$/, "");
+  const groups = groupOrder.map((k) => groupMap.get(k)!);
+
+  // 統計ブロック (データ行の下, 相关需求ごと)
+  const paren = (cases: string[]) => (cases.length ? ` （${cases.join(",")}）` : "");
+  ws.addRow([]);
+  ws.addRow([`文件名：${baseName}`]);
+  groups.forEach((g, idx) => {
+    ws.addRow([`用例${idx + 1}：${g.label}`]);
+    ws.addRow([`テスト件数総計: ${g.total}`]);
+    ws.addRow([`テストOK: ${g.ok}`]);
+    ws.addRow([`テスト不可: ${g.block}${paren(g.blockCases)}`]);
+    ws.addRow([`テストNG: ${g.ng}${paren(g.ngCases)}`]);
+    ws.addRow([`未実施: ${g.un}${paren(g.unCases)}`]);
+    ws.addRow([`指摘修正: ${g.shimateki}${paren(g.shimatekiCases)}`]);
+  });
+
+  // 列幅: ケース番号(A列)は固定10。他列は自動調整 (過大化を防ぐため上限 80)
+  ws.columns.forEach((col, i) => {
+    if (i === 0) { col.width = 10; return; }
+    let maxLen = 0;
+    col.eachCell?.({ includeEmpty: true }, (cell) => {
+      const len = cell.value == null ? 0 : String(cell.value).length;
+      if (len > maxLen) maxLen = len;
+    });
+    col.width = Math.min((maxLen + 2) * 1.2, 80);
+  });
+
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+  return {
+    outputName: `【試験仕様書TestCenter】${baseName}.xlsx`,
+    buffer,
+    groups,
+  };
+}
+
+app.post("/api/testcase-format", upload.array("files", 20), async (req, res) => {
+  const multerFiles = req.files as Express.Multer.File[];
+  if (!multerFiles || multerFiles.length === 0) {
+    return res.status(400).json({ error: "No files provided" });
+  }
+  try {
+    const built: { outputName: string; buffer: Buffer; groups: TestCaseGroupStat[]; inputName: string }[] = [];
+    for (const file of multerFiles) {
+      const inputName = Buffer.from(file.originalname, "latin1").toString("utf8");
+      const csvText = file.buffer.toString("utf8");
+      const { outputName, buffer, groups } = await buildTestCaseXlsx(inputName, csvText);
+      built.push({ inputName, outputName, buffer, groups });
+    }
+
+    const results = built.map((b) => ({
+      inputName: b.inputName,
+      outputName: b.outputName,
+      groups: b.groups,
+    }));
+
+    let downloadBase64: string;
+    let downloadName: string;
+    let downloadMime: string;
+    if (built.length === 1) {
+      downloadBase64 = built[0].buffer.toString("base64");
+      downloadName = built[0].outputName;
+      downloadMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    } else {
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
+      for (const b of built) {
+        // 同名 CSV が複数あっても zip 内で上書きされないよう連番を付与
+        let name = b.outputName;
+        if (usedNames.has(name)) {
+          const dot = name.lastIndexOf(".");
+          const stem = dot >= 0 ? name.slice(0, dot) : name;
+          const ext = dot >= 0 ? name.slice(dot) : "";
+          let n = 1;
+          do { name = `${stem}_${n}${ext}`; n++; } while (usedNames.has(name));
+        }
+        usedNames.add(name);
+        zip.file(name, b.buffer);
+      }
+      const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+      downloadBase64 = zipBuffer.toString("base64");
+      downloadName = "testcase_formatted.zip";
+      downloadMime = "application/zip";
+    }
+
+    return res.json({ results, downloadBase64, downloadName, downloadMime });
+  } catch (error) {
+    console.error("TestCase format error:", error);
+    return res.status(500).json({ error: "Failed to format testcase CSV" });
+  }
+});
+
+// ── 環境バージョン設定 (Chrome / iOS / Android を Notion で一元管理) ──
+// 取得できない場合のフォールバック。報告資料が欠けないよう常にこの値を返す。
+const DEFAULT_ENV_VERSIONS: Record<string, string> = {
+  chrome: "150.0.7871.115",
+  IOS: "26.1",
+  Android: "16",
+};
+
+// name → version のマップを返す (name/version 属性を持つ Notion DB を読む)
+async function queryEnvVersions(databaseId: string): Promise<Record<string, string>> {
+  if (!notion) return {};
+
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) {
+    throw new Error("No data source found in NOTION_ENV_VERSION_DATABASE_ID");
+  }
+
+  const r: any = await notion.dataSources.query({
+    data_source_id: dataSourceId,
+    page_size: 100,
+  });
+
+  const map: Record<string, string> = {};
+  for (const page of r.results ?? []) {
+    const p = page?.properties ?? {};
+    const name = propertyToPlainText(p["name"]).trim();
+    const version = propertyToPlainText(p["version"]).trim();
+    if (name && version) map[name] = version;
+  }
+  return map;
+}
+
+app.get("/api/config/env-versions", async (_req, res) => {
+  const databaseId = process.env.NOTION_ENV_VERSION_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ ...DEFAULT_ENV_VERSIONS });
+  }
+  try {
+    const map = await queryEnvVersions(databaseId);
+    // 既定値をベースに、表で取得できた値だけ上書き
+    return res.json({ ...DEFAULT_ENV_VERSIONS, ...map });
+  } catch (error) {
+    console.error("Env versions query error:", error);
+    return res.json({ ...DEFAULT_ENV_VERSIONS });
   }
 });
 
