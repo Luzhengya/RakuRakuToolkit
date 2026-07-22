@@ -262,10 +262,20 @@ function replaceToken(source: string, token: string, value: string): string {
   return source.replace(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
 }
 
-function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
+type EnvVersions = { chrome: string; IOS: string; Android: string };
+
+// Notion 取得失敗時のフォールバック。api/index.ts の DEFAULT_ENV_VERSIONS と揃える。
+const DEFAULT_ENV_VERSIONS: EnvVersions = {
+  chrome: '150.0.7871.115',
+  IOS: '26.1',
+  Android: '16',
+};
+
+function getDefaultTestEnvironmentHtml(areaId: AreaId, versions: EnvVersions = DEFAULT_ENV_VERSIONS): string {
+  const { chrome, IOS, Android } = versions;
   const byArea: Record<AreaId, string[]> = {
     jmotto: [
-      '☑ [ブラウザ] Chrome（149.0.7827.156）',
+      `☑ [ブラウザ] Chrome（${chrome}）`,
       '☑ [ポータル] https://www1-v2stg100.j-motto.co.jp/web/doLogin',
       '☑ [ GW ] https://gws85.j-motto.co.jp/cgi-bin/',
       '□ [ポータル申込画面] https://www1-v2stg100.j-motto.co.jp/web2/entrRegist',
@@ -273,18 +283,18 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
       '□ [ WPDL ] https://www1-v2stg101.j-motto.co.jp/00000000/wp/',
     ],
     univ: [
-      '☑ [ブラウザ] Chrome (149.0.7827.156)',
-      '☑ [ スマホ ] IOS26.1 ｜ android16',
+      `☑ [ブラウザ] Chrome (${chrome})`,
+      `☑ [ スマホ ] IOS${IOS} ｜ android${Android}`,
       '☑ [ UNIV2 ] https://54.64.96.104/login',
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     credit: [
-      '☑ [ブラウザ] Chrome (149.0.7827.156)',
+      `☑ [ブラウザ] Chrome (${chrome})`,
       '☑ [利用者] https://test-alb.kigyo-joho.com/login/1DCCyG3Xe1',
       '☑ [管理者] http://10.240.14.166/login/',
     ],
     overseas: [
-      '☑ [ChromeVersion] 149.0.7827.156',
+      `☑ [ChromeVersion] ${chrome}`,
       '☑ [管理] http://54.92.97.142/report/inner/index.html',
       '☑ [利墨] https://140.179.40.134/ssoLogin/login',
       '☑ [与信・RM] http://172.26.4.109:8080/rismon_ukeire/',
@@ -292,42 +302,42 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId): string {
     ],
     'jmotto-app': [
       '[本番環境]',
-      '☑ IOS26.1.0（iphone13）',
-      '☑ Android16（Pixel 6A）',
+      `☑ IOS${IOS}（iphone13）`,
+      `☑ Android${Android}（Pixel 6A）`,
       '[テストアカウント]',
       '☑ JM0000017 / 00391 / test1234',
     ],
     'univ-app': [
       '[検証環境]',
-      '☑ IOS26.1.0（iphone13）(safari)',
-      '☑ Android16（Pixel 6A）(chrome)',
+      `☑ IOS${IOS}（iphone13）(safari)`,
+      `☑ Android${Android}（Pixel 6A）(chrome)`,
       '☑ [ UNIV２ ] https://18.178.87.210/',
       '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     'univ-contents': [
-      '☑ [ブラウザ] Chrome (149.0.7827.156)',
-      '☑ [ スマホ ] IOS26.1 ｜ android16',
+      `☑ [ブラウザ] Chrome (${chrome})`,
+      `☑ [ スマホ ] IOS${IOS} ｜ android${Android}`,
       '☑ [ スマホ ] IOS18 ｜ android12（比較バージョン）',
       '☑ [ UNIVコンテンツ ] https://www.cybaxuniv.com/',
       '☑ [ UNIV２ ] https://54.64.96.104/login',
     ],
     'nayose': [
-      '☑ [ブラウザ] Chrome（149.0.7827.156）',
+      `☑ [ブラウザ] Chrome（${chrome}）`,
       '☑ [URL] https://test-nayose.riskmonster.net/login',
       '☑ [URL] http://172.26.4.109:8080/rismon_ukeire/',
     ],
     'gyoshu': [
-      '☑ Chrome（149.0.7827.156）',
-      '☑ IOS26.1.0（iphone13）',
-      '☑ Android16（Pixel 6A）',
+      `☑ Chrome（${chrome}）`,
+      `☑ IOS${IOS}（iphone13）`,
+      `☑ Android${Android}（Pixel 6A）`,
       '☑ https://test-gyoushu.riskmonster.net/',
     ],
     'ros': [
-      '☑ [ブラウザ] Chrome（149.0.7827.156）',
+      `☑ [ブラウザ] Chrome（${chrome}）`,
       '☑ [URL] http://10.240.14.201:8080/mkt/login.html',
     ],
     'meikancho': [
-      '☑ [ブラウザ] Chrome（149.0.7827.156）',
+      `☑ [ブラウザ] Chrome（${chrome}）`,
       '☑ [URL] （名館長クラウドのテストURLを入力してください）',
     ],
   };
@@ -417,7 +427,8 @@ function buildPlanHtml(
   template: string,
   selectedItems: ProgressItem[],
   monthKey: string,
-  areaId: AreaId
+  areaId: AreaId,
+  versions: EnvVersions
 ): string {
   if (selectedItems.length === 0) return template;
 
@@ -453,7 +464,7 @@ function buildPlanHtml(
 
   let html = template;
   html = replaceToken(html, '{{PROJECT_LIST}}', projectListHtml);
-  html = replaceToken(html, '{{TEST_ENVIRONMENT_BLOCK}}', getDefaultTestEnvironmentHtml(areaId));
+  html = replaceToken(html, '{{TEST_ENVIRONMENT_BLOCK}}', getDefaultTestEnvironmentHtml(areaId, versions));
   html = replaceToken(html, '{{WORK_BLOCKS}}', workBlocksHtml);
   html = replaceToken(html, '{{Today}}', formatToday());
   html = replaceToken(html, '{{YYYY}}', yyyy);
@@ -482,7 +493,8 @@ function buildResultReportHtml(
   template: string,
   selectedItems: ProgressItem[],
   monthKey: string,
-  areaId: AreaId
+  areaId: AreaId,
+  versions: EnvVersions
 ): string {
   if (selectedItems.length === 0) return template;
 
@@ -609,7 +621,7 @@ function buildResultReportHtml(
   html = replaceToken(html, '{{MM}}', mm);
   html = replaceToken(html, '{{AREA_RELEASE_NAME}}', areaMeta.releaseNameJa);
   html = replaceToken(html, '{{PROJECT_LIST}}', projectListHtml);
-  html = replaceToken(html, '{{TEST_ENVIRONMENT_BLOCK}}', getDefaultTestEnvironmentHtml(areaId));
+  html = replaceToken(html, '{{TEST_ENVIRONMENT_BLOCK}}', getDefaultTestEnvironmentHtml(areaId, versions));
   html = replaceToken(html, '{{TC開始予定日}}', first.tcStartDate || '');
   html = replaceToken(html, '{{TC設計書完了予定日}}', tcDesign);
   html = replaceToken(html, '{{TC実施完了予定日}}', tcExec);
@@ -1344,6 +1356,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<ProgressItem[]>([]);
+  const [envVersions, setEnvVersions] = useState<EnvVersions>(DEFAULT_ENV_VERSIONS);
   const [activeMonthTab, setActiveMonthTab] = useState<string>('');
   const [checkedMap, setCheckedMap] = useState<Record<string, boolean>>({});
   const [planHtml, setPlanHtml] = useState('');
@@ -1433,6 +1446,27 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   );
   const isAreaSelected = !!selectedAreaId;
 
+  // 報告資料の環境バージョン (Chrome / iOS / Android) を Notion から取得。
+  // 失敗時は既定値のまま (report が欠けないよう state は初期値を維持)。
+  const fetchEnvVersions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/config/env-versions');
+      if (!res.ok) return;
+      const data = await res.json();
+      setEnvVersions({
+        chrome: data.chrome || DEFAULT_ENV_VERSIONS.chrome,
+        IOS: data.IOS || DEFAULT_ENV_VERSIONS.IOS,
+        Android: data.Android || DEFAULT_ENV_VERSIONS.Android,
+      });
+    } catch {
+      // 既定値を維持
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchEnvVersions();
+  }, [fetchEnvVersions]);
+
   const fetchAreaFromNotion = async (areaId: AreaId) => {
     setLoading(true);
     setError(null);
@@ -1482,7 +1516,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const reloadAreaData = async () => {
     if (!selectedAreaId) return;
     setResultDraftMap({});
-    await fetchAreaFromNotion(selectedAreaId);
+    await Promise.all([fetchAreaFromNotion(selectedAreaId), fetchEnvVersions()]);
   };
 
   const renderField = (label: string, value: string) => (
@@ -1879,7 +1913,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         setTemplateHtml(template);
       }
 
-      const html = buildPlanHtml(template, selectedItems, currentMonthKey, selectedAreaId);
+      const html = buildPlanHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions);
       setPlanHtml(html);
       setPlanOpen(true);
     } catch (e) {
@@ -1942,7 +1976,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         setReportTemplateHtml(template);
       }
 
-      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId);
+      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions);
       setReportHtml(html);
       setReportOpen(true);
     } catch (e) {
