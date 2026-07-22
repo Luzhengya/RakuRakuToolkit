@@ -1731,13 +1731,21 @@ app.get("/api/jiemian-list", async (_req, res) => {
 // ── Testcase Format (テストケース CSV を整形し Excel 出力 + 結果集計) ──
 
 // 引用符・改行入りセルに対応した最小 CSV パーサ (UTF-8 前提, 先頭 BOM 除去)
+// ユーザー入力による無制限ループ (DoS) を防ぐため、解析対象を定数上限で制限する。
+// multerの50MB制限(バイト数)に合わせる: 文字数は必ずバイト数以下なので合法ファイルを弾かない。
+const MAX_CSV_CHARS = 50 * 1024 * 1024;
+
 function parseCsv(text: string): string[][] {
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  if (text.length > MAX_CSV_CHARS) {
+    throw new Error("CSV file too large");
+  }
+  const len = Math.min(text.length, MAX_CSV_CHARS);
   const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
   let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < len; i++) {
     const c = text[i];
     if (inQuotes) {
       if (c === '"') {
