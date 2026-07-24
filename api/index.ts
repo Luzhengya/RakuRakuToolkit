@@ -104,6 +104,13 @@ type ProgressItem = {
   actualDesignCompleteDate: string;
   actualExecutionCompleteDate: string;
   system: string;
+  assignee: string;
+  manager: string;
+  designActual: string;
+  implActual: string;
+  execActual: string;
+  reviewActual: string;
+  comment: string;
   childProjectIds: string[];
 };
 
@@ -224,6 +231,13 @@ function parseProgressItem(page: any): ProgressItem {
       findDateProperty(properties, ["実際実施完了日", "実績実施完了日", "実際TC実施完了日", "TC実際実施完了日"])
     ),
     system: propertyToPlainText(properties["System"]),
+    assignee: propertyToPlainText(pickProperty(properties, ["担当者", "担当"])),
+    manager: propertyToPlainText(pickProperty(properties, ["管理者", "管理"])),
+    designActual: propertyToPlainText(pickProperty(properties, ["工数実績(設計書)", "工数実績(設計書) ", "工数実績(設計)"])),
+    implActual: propertyToPlainText(pickProperty(properties, ["工数実績(実装)", "工数実績(実装) "])),
+    execActual: propertyToPlainText(pickProperty(properties, ["工数実績(実施)", "工数実績(実施) "])),
+    reviewActual: propertyToPlainText(pickProperty(properties, ["review実績工数", "Review実績工数", "レビュー実績工数"])),
+    comment: propertyToPlainText(pickProperty(properties, ["コメント", "備考"])),
     childProjectIds,
   };
 }
@@ -344,23 +358,39 @@ async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]
   return items;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Notion のレート制限(約3 req/s)を避けるため、ページ取得を少数ずつ直列化し、
+// rate_limited は指数バックオフで再試行する。
+async function retrievePageWithRetry(pageId: string, maxRetries = 4): Promise<ProgressItem | null> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const page = await notion!.pages.retrieve({ page_id: pageId });
+      return parseProgressItem(page);
+    } catch (error: any) {
+      if (error?.code === "rate_limited" && attempt < maxRetries) {
+        await sleep(1000 * (attempt + 1));
+        continue;
+      }
+      console.error(`Failed to retrieve Notion page ${pageId}:`, error);
+      return null;
+    }
+  }
+}
+
 async function retrievePagesByIds(pageIds: string[]): Promise<ProgressItem[]> {
   if (!notion || pageIds.length === 0) return [];
 
   const uniquePageIds = Array.from(new Set(pageIds));
-  const pages = await Promise.all(
-    uniquePageIds.map((pageId) =>
-      notion.pages
-        .retrieve({ page_id: pageId })
-        .then((page) => parseProgressItem(page))
-        .catch((error) => {
-          console.error(`Failed to retrieve Notion page ${pageId}:`, error);
-          return null;
-        })
-    )
-  );
+  const CONCURRENCY = 3; // 同時実行数を制限してレート制限を回避
+  const results: (ProgressItem | null)[] = [];
+  for (let i = 0; i < uniquePageIds.length; i += CONCURRENCY) {
+    const chunk = uniquePageIds.slice(i, i + CONCURRENCY);
+    const part = await Promise.all(chunk.map((id) => retrievePageWithRetry(id)));
+    results.push(...part);
+  }
 
-  return pages.filter((page): page is ProgressItem => !!page);
+  return results.filter((page): page is ProgressItem => !!page);
 }
 
 // ── History storage (Notion-backed) ───────────────────────────────────
@@ -622,6 +652,44 @@ app.get("/api/test-center", async (req, res) => {
   }
 });
 
+// 親案件のリレーションを辿り、エリア付きの「葉」案件(実データを持つ子案件)を解決する。
+// overview と case-stats で共用。
+async function resolveLeafCases(databaseId: string): Promise<{ item: ProgressItem; areaId: TestCenterArea }[]> {
+  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho"];
+  const allItems = await queryAllProgressItems(databaseId);
+  // 子案件は同じ進捗DBの行なので、全件取得結果から id 引きできる。
+  // これにより pages.retrieve の大量発行(=レート制限/遅延)を回避する。
+  const byId = new Map(allItems.map((it) => [it.id, it]));
+
+  const childAreaMap = new Map<string, TestCenterArea>();
+  for (const area of allAreas) {
+    const parents = allItems.filter((item) => isItemInArea(area, item.system) && item.childProjectIds.length > 0);
+    for (const parent of parents) {
+      for (const childId of parent.childProjectIds) {
+        if (!childAreaMap.has(childId)) childAreaMap.set(childId, area);
+      }
+    }
+  }
+
+  const childIds = Array.from(childAreaMap.keys());
+  // まず全件結果から解決し、見つからない id のみ個別取得(フォールバック)
+  const childItems: ProgressItem[] = [];
+  const missingIds: string[] = [];
+  for (const id of childIds) {
+    const found = byId.get(id);
+    if (found) childItems.push(found);
+    else missingIds.push(id);
+  }
+  if (missingIds.length > 0) {
+    childItems.push(...(await retrievePagesByIds(missingIds)));
+  }
+
+  return childItems
+    .filter((item) => item.childProjectIds.length === 0)
+    .map((item) => ({ item, areaId: childAreaMap.get(item.id) }))
+    .filter((x): x is { item: ProgressItem; areaId: TestCenterArea } => !!x.areaId);
+}
+
 app.get("/api/test-center/overview", async (_req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
@@ -631,41 +699,89 @@ app.get("/api/test-center/overview", async (_req, res) => {
     });
   }
 
-  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho"];
-
   try {
-    const allItems = await queryAllProgressItems(databaseId);
-
-    const childAreaMap = new Map<string, TestCenterArea>();
-    for (const area of allAreas) {
-      const parents = allItems.filter((item) => isItemInArea(area, item.system) && item.childProjectIds.length > 0);
-      for (const parent of parents) {
-        for (const childId of parent.childProjectIds) {
-          if (!childAreaMap.has(childId)) childAreaMap.set(childId, area);
-        }
-      }
-    }
-
-    const childIds = Array.from(childAreaMap.keys());
-    const childItems = await retrievePagesByIds(childIds);
-
-    const overviewItems = childItems
-      .filter((item) => item.childProjectIds.length === 0)
-      .map((item) => ({
-        id: item.id,
-        areaId: childAreaMap.get(item.id) ?? null,
-        month: item.month,
-        status: item.status,
-        projectName: item.projectName,
-        bugCount: item.bugCount,
-        testTotalCount: item.testTotalCount,
-      }))
-      .filter((item) => !!item.areaId);
-
+    const leaves = await resolveLeafCases(databaseId);
+    const overviewItems = leaves.map(({ item, areaId }) => ({
+      id: item.id,
+      areaId,
+      month: item.month,
+      status: item.status,
+      projectName: item.projectName,
+      bugCount: item.bugCount,
+      testTotalCount: item.testTotalCount,
+    }));
     return res.json({ items: overviewItems, total: overviewItems.length });
   } catch (error) {
     console.error("Test center overview error:", error);
     return res.status(500).json({ error: "Failed to query Notion progress overview" });
+  }
+});
+
+// 案件別統計: 葉案件 + 実績表(関連案件 relation で 1:1 join)
+app.get("/api/test-center/case-stats", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_PROGRESS_DATABASE_ID",
+    });
+  }
+
+  try {
+    const leaves = await resolveLeafCases(databaseId);
+
+    // 実績表を case id で引ける map に (関連案件 relation, 1:1 想定)
+    const achMap = new Map<string, AchievementItem>();
+    const achievementDbId = process.env.NOTION_ACHIEVEMENT_DATABASE_ID;
+    if (achievementDbId) {
+      try {
+        const achItems = await queryAllAchievementItems(achievementDbId);
+        for (const ach of achItems) {
+          for (const caseId of ach.relatedCaseIds) {
+            if (!achMap.has(caseId)) achMap.set(caseId, ach);
+          }
+        }
+      } catch (e) {
+        console.error("case-stats achievement join failed:", e);
+      }
+    }
+
+    const items = leaves.map(({ item, areaId }) => {
+      const ach = achMap.get(item.id);
+      return {
+        id: item.id,
+        areaId,
+        month: item.month,
+        projectName: item.projectName,
+        status: item.status,
+        system: item.system,
+        assignee: item.assignee,
+        manager: item.manager,
+        estimateTotal: item.estimateTotal,
+        actualTotal: item.actualTotal,
+        developmentEffort: item.developmentEffort,
+        testTotalCount: item.testTotalCount,
+        bugCount: item.bugCount,
+        testBlockedCount: item.testBlockedCount,
+        pendingConfirmCount: item.pendingConfirmCount,
+        designActual: item.designActual,
+        implActual: item.implActual,
+        execActual: item.execActual,
+        reviewActual: item.reviewActual,
+        comment: item.comment,
+        // 実績表 join (無ければ空文字)
+        expectedCase: ach?.expectedCase ?? "",
+        expectedNg: ach?.expectedNg ?? "",
+        japanNgCount: ach?.japanNgCount ?? "",
+        japanTestCount: ach?.japanTestCount ?? "",
+        tcNgCount: ach?.tcNgCount ?? "",
+      };
+    });
+
+    return res.json({ items, total: items.length });
+  } catch (error) {
+    console.error("Case stats error:", error);
+    return res.status(500).json({ error: "Failed to query Notion case stats" });
   }
 });
 
@@ -692,6 +808,9 @@ type AchievementItem = {
   idealNgDiff: string;
   execTestCount: string;
   efficiency: string;
+  tcNgCount: string;
+  japanTestCount: string;
+  relatedCaseIds: string[];
   comments: string[];
 };
 
@@ -718,6 +837,9 @@ function parseAchievementItem(page: any): AchievementItem {
     idealNgDiff: propertyToPlainText(p["理想NG差1以上はNG"]),
     execTestCount: propertyToPlainText(p["実施テスト件数0以下はNG"]),
     efficiency: propertyToPlainText(p["テストケース数/1人日"]),
+    tcNgCount: propertyToPlainText(pickProperty(p, ["TCNG数", "TC NG数", "TCNG件数"])),
+    japanTestCount: propertyToPlainText(pickProperty(p, ["日本実施テスト件数", "日本テスト件数"])),
+    relatedCaseIds: extractRelationIds(pickProperty(p, ["関連案件", "関連案件（案件）", "案件"])),
     comments: [],
   };
 }
