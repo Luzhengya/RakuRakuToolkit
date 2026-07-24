@@ -23,10 +23,12 @@ import {
   Cloud,
   SlidersHorizontal,
   ChevronRight,
+  BarChart3,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import MonthlyReport from './MonthlyReport';
 import BugList from './BugList';
+import CaseStats from './CaseStats';
 import {
   BarChart,
   Bar,
@@ -1404,6 +1406,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
   const [lang, setLang] = useState<Lang>('zh');
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
+  const [caseStatsOpen, setCaseStatsOpen] = useState(false);
   const [bugListOpen, setBugListOpen] = useState(false);
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
   const [ganttOpen, setGanttOpen] = useState(false);
@@ -2101,6 +2104,17 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     );
   }
 
+  if (caseStatsOpen) {
+    return (
+      <CaseStats
+        lang={lang}
+        onBack={() => setCaseStatsOpen(false)}
+        initialYear={filterYear}
+        initialMonth={filterMonth}
+      />
+    );
+  }
+
   if (bugListOpen) {
     return (
       <BugList
@@ -2531,6 +2545,27 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             </div>
             <span className="inline-flex items-center gap-2 rounded-lg bg-white/10 px-4 py-2 text-sm font-medium whitespace-nowrap">
               {t('monthlyReportEnter')}
+              <ArrowRight size={16} />
+            </span>
+          </button>
+
+          {/* 案件統計 入口バナー */}
+          <button
+            type="button"
+            onClick={() => setCaseStatsOpen(true)}
+            className="w-full flex items-center justify-between gap-4 rounded-2xl border border-neutral-200 bg-white px-6 py-5 text-left text-neutral-900 shadow-sm hover:border-neutral-300 hover:shadow-md transition-all"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-lg bg-neutral-100 flex items-center justify-center">
+                <BarChart3 size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-bold">{lang === 'zh' ? '案件统计' : '案件統計'}</h3>
+                <p className="text-sm text-neutral-500 mt-0.5">{lang === 'zh' ? '按案件汇总工数、测试与NG，含想定比较警告' : '案件別に工数・テスト・NGを集計、想定比較の警告付き'}</p>
+              </div>
+            </div>
+            <span className="inline-flex items-center gap-2 rounded-lg bg-neutral-100 px-4 py-2 text-sm font-medium whitespace-nowrap">
+              {lang === 'zh' ? '进入' : '開く'}
               <ArrowRight size={16} />
             </span>
           </button>
