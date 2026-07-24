@@ -1070,7 +1070,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
   }, [loading]);
 
   const sliderMax = Math.max(0, ganttTotalWidth - containerWidth);
-  const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSliderChange = (e: { target: { value: string } }) => {
     const v = Number(e.target.value);
     if (scrollRef.current) scrollRef.current.scrollLeft = v;
   };

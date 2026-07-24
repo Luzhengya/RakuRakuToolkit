@@ -42,7 +42,7 @@ async function renderThumbnail(
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  await page.render({ canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport: scaled }).promise;
+  await page.render({ canvas, canvasContext: ctx as unknown as CanvasRenderingContext2D, viewport: scaled }).promise;
   return canvas.toDataURL('image/jpeg', 0.75);
 }
 

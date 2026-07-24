@@ -68,6 +68,7 @@ async function renderAndExtract(
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({
+    canvas,
     canvasContext: ctx as unknown as CanvasRenderingContext2D,
     viewport,
   }).promise;
@@ -200,6 +201,8 @@ async function buildModifiedPdf(
 // ── EditableTextItem ───────────────────────────────────────────────────
 
 interface EditableTextItemProps {
+  // 本プロジェクトは @types/react 未導入で JSX が key を自動除去しないため明示的に許容
+  key?: string | number;
   item: TextItem;
   value: string;
   onChange: (v: string) => void;
