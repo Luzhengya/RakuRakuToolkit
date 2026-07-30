@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileText, Loader2, CheckCircle2 } from 'lucide-react';
+import { RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileText, Loader2, CheckCircle2 } from 'lucide-react';
+import {
+  ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+} from 'recharts';
 import { type Lang } from '../i18n/testcenter';
 import { buildCaseStatsReportHtml, caseStatsReportTitle, type ReportSystemGroup } from './caseStatsReportTemplate';
 
@@ -33,6 +37,7 @@ type CaseStatItem = {
 
 type CaseStatsProps = {
   onBack: () => void;
+  onHome: () => void;
   lang: Lang;
   initialYear: number;
   initialMonth: 'all' | number;
@@ -156,10 +161,28 @@ function matchPeriod(monthStr: string, year: number, month: 'all' | number): boo
   return true;
 }
 
-export default function CaseStats({ onBack, initialYear, initialMonth }: CaseStatsProps) {
+// 月次文字列から月(1-12)を抽出
+function extractMonth(monthStr: string): number | null {
+  const t = (monthStr || '').trim();
+  const compact = t.match(/^(\d{4})(\d{2})$/);
+  if (compact) return Number(compact[2]);
+  const full = t.match(/(\d{4})[\-/.年](\d{1,2})/);
+  if (full) return Number(full[2]);
+  const only = t.match(/(\d{1,2})月/);
+  if (only) return Number(only[1]);
+  return null;
+}
+
+// 年度チャート配色
+const PIE_COLORS = ['#6366f1', '#f97316', '#10b981', '#06b6d4', '#ec4899', '#8b5cf6', '#eab308', '#ef4444'];
+
+export default function CaseStats({ onBack, onHome, initialYear, initialMonth }: CaseStatsProps) {
   const initialCache = useMemo(() => loadCaseStatsCache(), []);
+  const [periodType, setPeriodType] = useState<'month' | 'year'>('month');
   const [year, setYear] = useState<number>(initialYear);
   const [month, setMonth] = useState<'all' | number>(initialMonth);
+  // 年度モードは通年集計 (月フィルタ無効)
+  const effectiveMonth: 'all' | number = periodType === 'year' ? 'all' : month;
   const [items, setItems] = useState<CaseStatItem[]>(initialCache?.items ?? []);
   const [updatedAt, setUpdatedAt] = useState<number | null>(initialCache?.updatedAt ?? null);
   const [loading, setLoading] = useState(false);
@@ -224,7 +247,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
   const periodRows = useMemo(() => {
     return items
-      .filter((it) => matchPeriod(it.month, year, month))
+      .filter((it) => matchPeriod(it.month, year, effectiveMonth))
       .map((it) => {
         const estimate = num(it.estimateTotal);
         const actual = num(it.actualTotal);
@@ -272,7 +295,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
           ngLeakRate: ngLeakDenom > 0 ? (japanNg / ngLeakDenom) * 100 : (hasNgData ? 0 : null),
         };
       });
-  }, [items, year, month]);
+  }, [items, year, effectiveMonth]);
 
   // 対象期間に存在するシステム一覧 (システム選択の候補)
   const allSystems = useMemo(
@@ -412,6 +435,45 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
       .sort((a, b) => b.count - a.count);
   }, [rows, th]);
 
+  // 年度: 月次(1-12)集計シリーズ
+  const monthlySeries = useMemo(() => {
+    const arr = Array.from({ length: 12 }, (_, i) => ({
+      month: i + 1,
+      label: `${i + 1}月`,
+      caseCount: 0,
+      testSum: 0,
+      ngSum: 0,
+      _actual: 0,
+      _tcng: 0,
+      _japanNg: 0,
+    }));
+    for (const r of rows) {
+      const mo = extractMonth(r.it.month);
+      if (mo === null || mo < 1 || mo > 12) continue;
+      const b = arr[mo - 1];
+      b.caseCount++;
+      b.testSum += r.testTotal;
+      b.ngSum += r.ng;
+      b._actual += r.actual;
+      b._tcng += r.tcng;
+      b._japanNg += r.japanNg;
+    }
+    return arr.map((b) => {
+      const leakDen = b._tcng + b._japanNg;
+      return {
+        ...b,
+        totalEff: b._actual > 0 ? Number((b.testSum / b._actual).toFixed(2)) : null,
+        ngLeakRate: leakDen > 0 ? Number(((b._japanNg / leakDen) * 100).toFixed(2)) : null,
+      };
+    });
+  }, [rows]);
+
+  // 年度: システム別案件数 (円グラフ)
+  const systemPie = useMemo(
+    () => rowsBySystem.map((g) => ({ name: g.system, value: g.count })),
+    [rowsBySystem]
+  );
+
   // 基本: 主要3指標 + 副次指標
   const primaryKpis = [
     { label: '要確認件数', value: fmt(kpi.attention), tone: kpi.attention > 0 ? 'alert' : 'ok' as const },
@@ -499,6 +561,18 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
       </div>
     </div>
   );
+
+  // 年度チャートカード
+  const ChartCard = ({ title, children }: { title: string; children: any }) => (
+    <div className="bg-white border border-neutral-200 rounded-xl p-4">
+      <h4 className="text-sm font-semibold text-neutral-700 mb-3">{title}</h4>
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>{children}</ResponsiveContainer>
+      </div>
+    </div>
+  );
+  const axisTick = { fontSize: 11, fill: '#94a3b8' };
+  const tipStyle = { borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' };
 
   const effHead = (
     <thead>
@@ -619,8 +693,30 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
   );
 
   // ── 報告書 ──
-  const reportMonthKey = `${year}${month === 'all' ? '' : String(month).padStart(2, '0')}`;
+  const reportMonthKey = periodType === 'year'
+    ? `${year}`
+    : `${year}${month === 'all' ? '' : String(month).padStart(2, '0')}`;
   const reportSystems = allSystems.filter((s) => !deselected.has(s));
+
+  // 確認要案件サマリー: 効率・品質の「確認要」を案件単位で統合 (原因ラベル結合・コメント=理由)
+  const confirmCases = useMemo(() => {
+    const map = new Map<string, { name: string; system: string; labels: string[]; comment: string }>();
+    for (const g of rowsBySystem) {
+      for (const a of [...g.effAttn, ...g.qualAttn]) {
+        if (a.status !== '確認要') continue;
+        const id = a.r.it.id;
+        const ex = map.get(id);
+        if (ex) ex.labels.push(...a.labels);
+        else map.set(id, {
+          name: a.r.it.projectName || '-',
+          system: a.r.it.system || '-',
+          labels: [...a.labels],
+          comment: a.r.it.comment || '',
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [rowsBySystem]);
 
   const buildReportGroups = (): ReportSystemGroup[] =>
     rowsBySystem.map((g) => ({
@@ -672,8 +768,10 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     if (rowsBySystem.length === 0) return;
     const html = buildCaseStatsReportHtml(buildReportGroups(), {
       monthKey: reportMonthKey,
+      periodType,
       systems: reportSystems,
       thresholds: th,
+      confirmCases,
       overall: {
         caseCount: kpi.caseCount,
         estimateSum: kpi.estimateSum,
@@ -695,7 +793,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     const iframe = reportIframeRef.current;
     const liveRoot = iframe?.contentDocument?.documentElement;
     const html = liveRoot ? `<!DOCTYPE html>\n${liveRoot.outerHTML}` : reportHtml;
-    const title = caseStatsReportTitle(reportSystems, reportMonthKey);
+    const title = caseStatsReportTitle(reportSystems, reportMonthKey, periodType);
     setSavingPdf(true);
     setHistoryNotice(null);
     try {
@@ -738,36 +836,53 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
   return (
     <>
     <div className="space-y-6">
-      {/* ヘッダ */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
-          >
-            <ArrowLeft size={16} />
-            {'戻る'}
-          </button>
-          <h2 className="text-xl font-bold text-neutral-900">{'案件統計'}</h2>
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-sm text-neutral-500">
+        <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
+        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+        <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">TestCenter</button>
+        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+        <span className="text-neutral-900 font-medium">案件一覧</span>
+      </nav>
+
+      {/* Title bar */}
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-2xl font-bold text-neutral-900">{'案件一覧'}</h2>
+          <span className="text-sm text-neutral-400 tabular-nums">{rows.length}件</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* 月次 / 年度 切替 */}
+          <div className="inline-flex rounded-lg border border-neutral-200 overflow-hidden">
+            {(['month', 'year'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setPeriodType(p)}
+                className={`px-3 py-1.5 text-sm font-medium transition-colors ${periodType === p ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50'}`}
+              >
+                {p === 'month' ? '月次' : '年度'}
+              </button>
+            ))}
+          </div>
           <select
             value={year}
             onChange={(e) => setYear(Number(e.target.value))}
             className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
           >
-            {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
+            {availableYears.map((y) => <option key={y} value={y}>{y}年</option>)}
           </select>
-          <select
-            value={month === 'all' ? 'all' : String(month)}
-            onChange={(e) => setMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-            className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
-          >
-            <option value="all">{'全月'}</option>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}月</option>)}
-          </select>
+          {periodType === 'month' && (
+            <select
+              value={month === 'all' ? 'all' : String(month)}
+              onChange={(e) => setMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+              className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
+            >
+              <option value="all">{'全月'}</option>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+          )}
           <button
             type="button"
             onClick={fetchStats}
@@ -777,15 +892,17 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             {'更新'}
           </button>
-          <button
-            type="button"
-            onClick={handleCreateReport}
-            disabled={rows.length === 0}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors"
-          >
-            <FileText size={14} />
-            報告書作成
-          </button>
+          {periodType === 'month' && (
+            <button
+              type="button"
+              onClick={handleCreateReport}
+              disabled={rows.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors"
+            >
+              <FileText size={14} />
+              報告書作成
+            </button>
+          )}
           {updatedAt && (
             <span className="text-[11px] text-neutral-400 whitespace-nowrap">
               {('最終更新 ') + new Date(updatedAt).toLocaleString('ja-JP')}
@@ -835,9 +952,11 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
         </div>
       )}
 
+      {periodType === 'month' ? (
+      <>
       {/* ═══ 基本 ═══ */}
       <section className="space-y-3">
-        <h3 className="inline-block rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-1.5">{'基本'}</h3>
+        <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">{'基本'}</h3>
         {/* 主要3指標 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {primaryKpis.map((c) => (
@@ -866,7 +985,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
       {/* ═══ 詳細 (案件別) ═══ */}
       <section className="space-y-4">
-        <h3 className="inline-block rounded-lg bg-blue-600 text-white text-sm font-bold px-4 py-1.5">
+        <h3 className="block w-full rounded-lg bg-blue-600 text-white text-sm font-bold px-4 py-2">
           {'詳細 / 案件別'}
         </h3>
 
@@ -1063,6 +1182,95 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
         </div>
 
       </section>
+      </>
+      ) : (
+      /* ═══ 年度: 月別トレンド ═══ */
+      <section className="space-y-4">
+        <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">{`年度サマリー (${year}年度)`}</h3>
+        {/* 年度累計 KPI */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            { label: '案件数(総)', value: fmt(kpi.caseCount) },
+            { label: '用例件数(総)', value: fmt(kpi.testSum) },
+            { label: 'NG件数(総)', value: fmt(kpi.ngSum) },
+            { label: '効率(総)', value: fmtEff(kpi.totalEff) },
+          ].map((c) => (
+            <div key={c.label} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+              <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{c.label}</p>
+              <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{c.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {rows.length === 0 ? (
+          <p className="text-center text-sm text-neutral-400 py-12">{loading ? '読み込み中...' : '該当データなし'}</p>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartCard title="月別案件数">
+              <BarChart data={monthlySeries} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={axisTick} />
+                <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={axisTick} />
+                <Tooltip contentStyle={tipStyle} />
+                <Bar dataKey="caseCount" name="案件数" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ChartCard>
+
+            <ChartCard title="月別テスト件数">
+              <BarChart data={monthlySeries} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={axisTick} />
+                <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={axisTick} />
+                <Tooltip contentStyle={tipStyle} />
+                <Bar dataKey="testSum" name="テスト件数" fill="#06b6d4" radius={[4, 4, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ChartCard>
+
+            <ChartCard title="月別NG件数">
+              <BarChart data={monthlySeries} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={axisTick} />
+                <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={axisTick} />
+                <Tooltip contentStyle={tipStyle} />
+                <Bar dataKey="ngSum" name="NG件数" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={28} />
+              </BarChart>
+            </ChartCard>
+
+            <ChartCard title="月別NG流出率(%)">
+              <LineChart data={monthlySeries} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={axisTick} />
+                <YAxis axisLine={false} tickLine={false} tick={axisTick} unit="%" />
+                <Tooltip contentStyle={tipStyle} formatter={(v: any) => (v === null ? '-' : `${v}%`)} />
+                <Line type="monotone" dataKey="ngLeakRate" name="NG流出率" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+              </LineChart>
+            </ChartCard>
+
+            <ChartCard title="月別総効率">
+              <LineChart data={monthlySeries} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={axisTick} />
+                <YAxis axisLine={false} tickLine={false} tick={axisTick} />
+                <Tooltip contentStyle={tipStyle} formatter={(v: any) => (v === null ? '-' : v)} />
+                <Line type="monotone" dataKey="totalEff" name="総効率" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+              </LineChart>
+            </ChartCard>
+
+            <ChartCard title="システム別案件数">
+              <PieChart>
+                <Tooltip contentStyle={tipStyle} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Pie data={systemPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={72} label={(e: any) => `${e.name}: ${e.value}`}>
+                  {systemPie.map((_, i) => (
+                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ChartCard>
+          </div>
+        )}
+      </section>
+      )}
     </div>
 
     {reportOpen && (
@@ -1070,7 +1278,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
         <div className="h-full max-w-[96rem] mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <h3 className="text-base font-semibold text-neutral-900 whitespace-nowrap">案件統計報告書</h3>
+              <h3 className="text-base font-semibold text-neutral-900 whitespace-nowrap">案件一覧報告書</h3>
               <span className="text-xs text-neutral-400 truncate">プレビュー内で直接編集してから PDF 保存できます</span>
               {historyNotice && (
                 <span className="inline-flex items-center gap-1 text-xs text-emerald-600 whitespace-nowrap">
