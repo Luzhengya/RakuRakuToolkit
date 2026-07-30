@@ -59,8 +59,11 @@ export type ReportSystemGroup = {
   rows: ReportCaseRow[];
 };
 
+export type ConfirmCase = { name: string; system: string; labels: string[]; comment: string };
+
 export type CaseStatsReportMeta = {
-  monthKey: string;   // YYYYMM
+  monthKey: string;   // 月次=YYYYMM / 年度=YYYY
+  periodType: 'month' | 'year';
   systems: string[];
   thresholds: {
     total: { high: number; mid: number };
@@ -71,6 +74,8 @@ export type CaseStatsReportMeta = {
     caseDiff: { high: number; mid: number };
     sensen: { high: number; mid: number };
   };
+  // 要確認案件 (効率・品質の確認要を案件単位で統合)
+  confirmCases: ConfirmCase[];
   // 本月全体概要の統計パネル値
   overall: {
     caseCount: number;
@@ -111,9 +116,10 @@ function bandCls(v: number | null, t: { high: number; mid: number }): string {
   return 'ng-text';
 }
 
-export function caseStatsReportTitle(systems: string[], monthKey: string): string {
+export function caseStatsReportTitle(systems: string[], periodKey: string, periodType: 'month' | 'year' = 'month'): string {
   const sys = systems.join('・');
-  return `TestCenter実績報告レポート_${sys}_${monthKey}`;
+  const period = periodType === 'year' ? `${periodKey}年度` : periodKey;
+  return `TestCenter実績報告レポート_${sys}_${period}`;
 }
 
 function formatNow(): string {
@@ -240,12 +246,33 @@ function qualSection(g: ReportSystemGroup, th: CaseStatsReportMeta['thresholds']
 }
 
 export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: CaseStatsReportMeta): string {
-  const title = caseStatsReportTitle(meta.systems, meta.monthKey);
+  const isYear = meta.periodType === 'year';
+  const title = caseStatsReportTitle(meta.systems, meta.monthKey, meta.periodType);
   const createdAt = formatNow();
   const y = meta.monthKey.slice(0, 4);
   const m = meta.monthKey.slice(4, 6);
+  const periodLabel = isYear ? `${y}年度` : `${y}年${Number(m)}月`;
+  const overviewTitle = isYear ? '本年度全体概要' : '本月全体概要';
   const o = meta.overall;
   const caseTotal = o.caseCount;
+
+  // 要確認案件サマリー (原因・コメント理由付き)
+  const confirmRows = meta.confirmCases
+    .map(
+      (c) => `<tr>
+      <td>${esc(c.name)}</td>
+      <td>${esc(c.system)}</td>
+      <td class="ng-text">${esc(c.labels.join(' / '))}</td>
+      <td class="cmt" contenteditable="true">${esc(c.comment)}</td>
+    </tr>`
+    )
+    .join('');
+  const confirmTable = meta.confirmCases.length
+    ? `<table class="data-table">
+      <thead><tr><th>案件名</th><th>システム</th><th>問題原因</th><th>理由(コメント)</th></tr></thead>
+      <tbody>${confirmRows}</tbody>
+    </table>`
+    : '<p class="muted" style="font-size:12px;">要確認案件はありません。</p>';
 
   // 本月全体概要 KPIパネル
   const kpiCards = [
@@ -324,6 +351,8 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   .attn ul { list-style:none; margin:0; padding:0; }
   .attn li { display:flex; justify-content:space-between; gap:12px; font-size:11px; padding:1px 0; }
   .incident-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:140px; padding:14px; font-size:13px; white-space:pre-wrap; }
+  .summary-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:80px; padding:14px; font-size:13px; white-space:pre-wrap; margin-bottom:8px; }
+  .summary-box:focus { outline:2px solid #93c5fd; background:#fff; }
   @media print {
     .page { padding: 14mm; }
     .cover { min-height: auto; height: 247mm; }
@@ -338,7 +367,7 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
     <h1>${esc(title)}</h1>
     <div class="line"></div>
     <div class="sub">
-      対象: ${y}年${Number(m)}月 / ${esc(meta.systems.join('、'))}<br>
+      対象: ${periodLabel} / ${esc(meta.systems.join('、'))}<br>
       対象案件数: ${caseTotal} 件<br>
       作成日時: ${esc(createdAt)}
     </div>
@@ -347,7 +376,7 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   <div class="page page-break">
     <h2 class="toc-title">目次</h2>
     <ol class="toc-list">
-      <li><a href="#sec-overview">本月全体概要</a></li>
+      <li><a href="#sec-overview">${esc(overviewTitle)}</a></li>
       <li><a href="#sec-incident">インシデント対応</a></li>
       <li><a href="#sec-detail">詳細分析</a>
         <ol>
@@ -359,8 +388,13 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   </div>
 
   <div class="page page-break" id="sec-overview">
-    <h2 class="sec-title">1. 本月全体概要</h2>
+    <h2 class="sec-title">1. ${esc(overviewTitle)}</h2>
     <div class="kpis">${kpiCards}</div>
+    <h3 class="sub-title">サマリー</h3>
+    <div class="summary-box" contenteditable="true">ここに全体の総括を記入してください（編集可）。</div>
+    <h3 class="sub-title">要確認案件 ${meta.confirmCases.length}件</h3>
+    <p class="muted" style="font-size:12px;margin:0 0 6px;">効率・品質で「確認要」と判定された案件です。問題原因と理由(コメント)をご確認ください。</p>
+    ${confirmTable}
   </div>
 
   <div class="page page-break" id="sec-incident">

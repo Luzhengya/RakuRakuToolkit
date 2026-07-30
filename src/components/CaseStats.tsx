@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileText, Loader2, CheckCircle2 } from 'lucide-react';
+import { RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileText, Loader2, CheckCircle2 } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
 import { buildCaseStatsReportHtml, caseStatsReportTitle, type ReportSystemGroup } from './caseStatsReportTemplate';
 
@@ -33,6 +33,7 @@ type CaseStatItem = {
 
 type CaseStatsProps = {
   onBack: () => void;
+  onHome: () => void;
   lang: Lang;
   initialYear: number;
   initialMonth: 'all' | number;
@@ -156,10 +157,13 @@ function matchPeriod(monthStr: string, year: number, month: 'all' | number): boo
   return true;
 }
 
-export default function CaseStats({ onBack, initialYear, initialMonth }: CaseStatsProps) {
+export default function CaseStats({ onBack, onHome, initialYear, initialMonth }: CaseStatsProps) {
   const initialCache = useMemo(() => loadCaseStatsCache(), []);
+  const [periodType, setPeriodType] = useState<'month' | 'year'>('month');
   const [year, setYear] = useState<number>(initialYear);
   const [month, setMonth] = useState<'all' | number>(initialMonth);
+  // 年度モードは通年集計 (月フィルタ無効)
+  const effectiveMonth: 'all' | number = periodType === 'year' ? 'all' : month;
   const [items, setItems] = useState<CaseStatItem[]>(initialCache?.items ?? []);
   const [updatedAt, setUpdatedAt] = useState<number | null>(initialCache?.updatedAt ?? null);
   const [loading, setLoading] = useState(false);
@@ -224,7 +228,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
   const periodRows = useMemo(() => {
     return items
-      .filter((it) => matchPeriod(it.month, year, month))
+      .filter((it) => matchPeriod(it.month, year, effectiveMonth))
       .map((it) => {
         const estimate = num(it.estimateTotal);
         const actual = num(it.actualTotal);
@@ -272,7 +276,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
           ngLeakRate: ngLeakDenom > 0 ? (japanNg / ngLeakDenom) * 100 : (hasNgData ? 0 : null),
         };
       });
-  }, [items, year, month]);
+  }, [items, year, effectiveMonth]);
 
   // 対象期間に存在するシステム一覧 (システム選択の候補)
   const allSystems = useMemo(
@@ -619,8 +623,30 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
   );
 
   // ── 報告書 ──
-  const reportMonthKey = `${year}${month === 'all' ? '' : String(month).padStart(2, '0')}`;
+  const reportMonthKey = periodType === 'year'
+    ? `${year}`
+    : `${year}${month === 'all' ? '' : String(month).padStart(2, '0')}`;
   const reportSystems = allSystems.filter((s) => !deselected.has(s));
+
+  // 確認要案件サマリー: 効率・品質の「確認要」を案件単位で統合 (原因ラベル結合・コメント=理由)
+  const confirmCases = useMemo(() => {
+    const map = new Map<string, { name: string; system: string; labels: string[]; comment: string }>();
+    for (const g of rowsBySystem) {
+      for (const a of [...g.effAttn, ...g.qualAttn]) {
+        if (a.status !== '確認要') continue;
+        const id = a.r.it.id;
+        const ex = map.get(id);
+        if (ex) ex.labels.push(...a.labels);
+        else map.set(id, {
+          name: a.r.it.projectName || '-',
+          system: a.r.it.system || '-',
+          labels: [...a.labels],
+          comment: a.r.it.comment || '',
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [rowsBySystem]);
 
   const buildReportGroups = (): ReportSystemGroup[] =>
     rowsBySystem.map((g) => ({
@@ -672,8 +698,10 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     if (rowsBySystem.length === 0) return;
     const html = buildCaseStatsReportHtml(buildReportGroups(), {
       monthKey: reportMonthKey,
+      periodType,
       systems: reportSystems,
       thresholds: th,
+      confirmCases,
       overall: {
         caseCount: kpi.caseCount,
         estimateSum: kpi.estimateSum,
@@ -695,7 +723,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     const iframe = reportIframeRef.current;
     const liveRoot = iframe?.contentDocument?.documentElement;
     const html = liveRoot ? `<!DOCTYPE html>\n${liveRoot.outerHTML}` : reportHtml;
-    const title = caseStatsReportTitle(reportSystems, reportMonthKey);
+    const title = caseStatsReportTitle(reportSystems, reportMonthKey, periodType);
     setSavingPdf(true);
     setHistoryNotice(null);
     try {
@@ -738,36 +766,53 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
   return (
     <>
     <div className="space-y-6">
-      {/* ヘッダ */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBack}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
-          >
-            <ArrowLeft size={16} />
-            {'戻る'}
-          </button>
-          <h2 className="text-xl font-bold text-neutral-900">{'案件統計'}</h2>
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-sm text-neutral-500">
+        <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
+        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+        <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">TestCenter</button>
+        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+        <span className="text-neutral-900 font-medium">案件一覧</span>
+      </nav>
+
+      {/* Title bar */}
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div className="flex items-baseline gap-3">
+          <h2 className="text-2xl font-bold text-neutral-900">{'案件一覧'}</h2>
+          <span className="text-sm text-neutral-400 tabular-nums">{rows.length}件</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* 月次 / 年度 切替 */}
+          <div className="inline-flex rounded-lg border border-neutral-200 overflow-hidden">
+            {(['month', 'year'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setPeriodType(p)}
+                className={`px-3 py-1.5 text-sm font-medium transition-colors ${periodType === p ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50'}`}
+              >
+                {p === 'month' ? '月次' : '年度'}
+              </button>
+            ))}
+          </div>
           <select
             value={year}
             onChange={(e) => setYear(Number(e.target.value))}
             className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
           >
-            {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
+            {availableYears.map((y) => <option key={y} value={y}>{y}年</option>)}
           </select>
-          <select
-            value={month === 'all' ? 'all' : String(month)}
-            onChange={(e) => setMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
-            className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
-          >
-            <option value="all">{'全月'}</option>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}月</option>)}
-          </select>
+          {periodType === 'month' && (
+            <select
+              value={month === 'all' ? 'all' : String(month)}
+              onChange={(e) => setMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+              className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
+            >
+              <option value="all">{'全月'}</option>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}月</option>)}
+            </select>
+          )}
           <button
             type="button"
             onClick={fetchStats}
@@ -837,7 +882,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
       {/* ═══ 基本 ═══ */}
       <section className="space-y-3">
-        <h3 className="inline-block rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-1.5">{'基本'}</h3>
+        <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">{'基本'}</h3>
         {/* 主要3指標 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {primaryKpis.map((c) => (
@@ -866,7 +911,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
       {/* ═══ 詳細 (案件別) ═══ */}
       <section className="space-y-4">
-        <h3 className="inline-block rounded-lg bg-blue-600 text-white text-sm font-bold px-4 py-1.5">
+        <h3 className="block w-full rounded-lg bg-blue-600 text-white text-sm font-bold px-4 py-2">
           {'詳細 / 案件別'}
         </h3>
 
@@ -1070,7 +1115,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
         <div className="h-full max-w-[96rem] mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
           <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <h3 className="text-base font-semibold text-neutral-900 whitespace-nowrap">案件統計報告書</h3>
+              <h3 className="text-base font-semibold text-neutral-900 whitespace-nowrap">案件一覧報告書</h3>
               <span className="text-xs text-neutral-400 truncate">プレビュー内で直接編集してから PDF 保存できます</span>
               {historyNotice && (
                 <span className="inline-flex items-center gap-1 text-xs text-emerald-600 whitespace-nowrap">
