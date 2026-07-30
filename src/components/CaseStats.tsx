@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileText, Loader2, CheckCircle2 } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
+import { buildCaseStatsReportHtml, caseStatsReportTitle, type ReportSystemGroup } from './caseStatsReportTemplate';
 
 type CaseStatItem = {
   id: string;
@@ -37,8 +38,8 @@ type CaseStatsProps = {
   initialMonth: 'all' | number;
 };
 
-const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v1';
-const TH_KEY = 'testcenter:casestats:thresholds:v1';
+const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v2';
+const TH_KEY = 'testcenter:casestats:thresholds:v2';
 
 type CaseStatsCache = { items: CaseStatItem[]; updatedAt: number };
 
@@ -61,14 +62,17 @@ function saveCaseStatsCache(cache: CaseStatsCache) {
 }
 
 // ─── 動的閾値 (localStorage 永続) ───
+// 効率: high 以上=良(緑) / low 未満=要確認(赤)
+// 品質(ngLeak/caseDiff/sensen): 値が大きいほど悪い → high 以上=要確認(赤) / mid 未満=安全(緑)
 type EffTh = { high: number; mid: number };
 type Thresholds = {
   total: EffTh;
   design: EffTh;
   exec: EffTh;
   review: EffTh;
-  sensen: number;   // 潜在見逃し 注意閾値 (>= で注意)
-  caseDiff: number; // 想定ケース差 注意閾値 (|差| >= で注意)
+  ngLeak: EffTh;   // NG流出率(%)  high以上=要確認
+  caseDiff: EffTh; // 想定ケース差 high以上=要確認
+  sensen: EffTh;   // 潜在見逃し   high以上=要確認
 };
 
 // 暫定の既定値 (画面で編集可)
@@ -77,8 +81,9 @@ const DEFAULT_TH: Thresholds = {
   design: { high: 15, mid: 8 },
   exec: { high: 30, mid: 15 },
   review: { high: 40, mid: 20 },
-  sensen: 1,
-  caseDiff: 10,
+  ngLeak: { high: 50, mid: 30 },
+  caseDiff: { high: 10, mid: 5 },
+  sensen: { high: 1, mid: 0.5 },
 };
 
 function loadThresholds(): Thresholds {
@@ -162,6 +167,13 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
   const [th, setTh] = useState<Thresholds>(() => loadThresholds());
   const [effOpen, setEffOpen] = useState(true);
   const [qualOpen, setQualOpen] = useState(true);
+  const [deselected, setDeselected] = useState<Set<string>>(new Set());
+  // 報告書プレビュー
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportHtml, setReportHtml] = useState('');
+  const [savingPdf, setSavingPdf] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
+  const reportIframeRef = useRef<HTMLIFrameElement>(null);
   // システム単位の開閉 (未操作なら 要確認>0 のとき既定で展開)
   const [openOverride, setOpenOverride] = useState<Record<string, boolean>>({});
   const isSysOpen = (key: string, defaultOpen: boolean) => openOverride[key] ?? defaultOpen;
@@ -210,7 +222,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     return Array.from(years).sort((a, b) => b - a);
   }, [items, initialYear]);
 
-  const rows = useMemo(() => {
+  const periodRows = useMemo(() => {
     return items
       .filter((it) => matchPeriod(it.month, year, month))
       .map((it) => {
@@ -232,6 +244,8 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
         const caseDiff = expectedCase - testTotal;
         const sensen = expectedNg - tcng - japanNg;
         const ngLeakDenom = tcng + japanNg;
+        // NG流出率: NGデータあり(実績表 join済)で NG=0 なら 0%、データ無しなら null(-)
+        const hasNgData = hasVal(it.japanNgCount) || hasVal(it.tcNgCount);
         return {
           it,
           estimate,
@@ -254,10 +268,22 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
           japanTest,
           tcng,
           sensen,
-          ngLeakRate: ngLeakDenom > 0 ? (japanNg / ngLeakDenom) * 100 : null,
+          hasNgData,
+          ngLeakRate: ngLeakDenom > 0 ? (japanNg / ngLeakDenom) * 100 : (hasNgData ? 0 : null),
         };
       });
   }, [items, year, month]);
+
+  // 対象期間に存在するシステム一覧 (システム選択の候補)
+  const allSystems = useMemo(
+    () => Array.from(new Set(periodRows.map((r) => r.it.system || '(未設定)'))).sort(),
+    [periodRows]
+  );
+  // システム選択で画面・報告を絞り込む (deselected に入っているものを除外)
+  const rows = useMemo(
+    () => periodRows.filter((r) => !deselected.has(r.it.system || '(未設定)')),
+    [periodRows, deselected]
+  );
 
   // 基本 KPI
   const kpi = useMemo(() => {
@@ -265,14 +291,15 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     const actualSum = rows.reduce((s, r) => s + r.actual, 0);
     const testSum = rows.reduce((s, r) => s + r.testTotal, 0);
     const ngSum = rows.reduce((s, r) => s + r.ng, 0);
-    // 要確認: いずれかの効率が低 or 想定ケース差超過 or 潜在見逃し
+    // 要確認: いずれかの効率が低 or NG流出率超過 or 想定ケース差超過 or 潜在見逃し
     const attention = rows.filter((r) =>
       band(r.totalEff, th.total) === 'low' ||
       band(r.designEff, th.design) === 'low' ||
       band(r.execEff, th.exec) === 'low' ||
       band(r.reviewEff, th.review) === 'low' ||
-      (r.hasExpectedCase && Math.abs(r.caseDiff) >= th.caseDiff) ||
-      (r.hasExpectedNg && r.sensen >= th.sensen)
+      (r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high) ||
+      (r.hasExpectedCase && r.caseDiff >= th.caseDiff.high) ||
+      (r.hasExpectedNg && r.sensen >= th.sensen.high)
     ).length;
     return {
       caseCount: rows.length,
@@ -319,54 +346,68 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
           exec: { agg: effVal(testSum, execDen), counts: tally(grp, (r) => r.execEff, th.exec) },
           review: { agg: effVal(testSum, reviewDen), counts: tally(grp, (r) => r.reviewEff, th.review) },
         };
-        // いずれかの効率が「低」の案件を要確認リストに (どの効率が低かをラベル化)
-        const lowCases = grp
-          .map((r) => {
-            const labels: string[] = [];
-            if (band(r.totalEff, th.total) === 'low') labels.push('総');
-            if (band(r.designEff, th.design) === 'low') labels.push('設計');
-            if (band(r.execEff, th.exec) === 'low') labels.push('実施');
-            if (band(r.reviewEff, th.review) === 'low') labels.push('レビュー');
-            return { r, labels };
-          })
-          .filter((x) => x.labels.length > 0);
+        // 効率: 低(確認要) or 中(注意) の案件を抽出。指標名:程度 をラベル化
+        const effAttn = grp.flatMap((r) => {
+          const parts: { name: string; b: Band }[] = [];
+          const add = (name: string, v: number | null, t: EffTh) => {
+            const b = band(v, t);
+            if (b === 'low' || b === 'mid') parts.push({ name, b });
+          };
+          add('総', r.totalEff, th.total);
+          add('設計', r.designEff, th.design);
+          add('実施', r.execEff, th.exec);
+          add('レビュー', r.reviewEff, th.review);
+          if (parts.length === 0) return [];
+          const status: '確認要' | '注意' = parts.some((p) => p.b === 'low') ? '確認要' : '注意';
+          const labels = parts.map((p) => `${p.name}:${p.b === 'low' ? '低' : '中'}`);
+          return [{ r, status, labels }];
+        });
 
         // 品質サマリ (システム単位)
         const qTestSum = grp.reduce((s, r) => s + r.testTotal, 0);
         const qNgSum = grp.reduce((s, r) => s + r.ng, 0);
         const tcngSum = grp.reduce((s, r) => s + r.tcng, 0);
         const japanNgSum = grp.reduce((s, r) => s + r.japanNg, 0);
-        const expectedNgSum = grp.reduce((s, r) => s + (r.hasExpectedNg ? r.expectedNg : 0), 0);
-        const sensenSum = grp.reduce((s, r) => s + (r.hasExpectedNg ? r.sensen : 0), 0);
-        const caseRows = grp.filter((r) => r.hasExpectedCase);
-        const caseAttn = caseRows.filter((r) => Math.abs(r.caseDiff) >= th.caseDiff).length;
-        const ngRows = grp.filter((r) => r.hasExpectedNg);
-        const sensenAttn = ngRows.filter((r) => r.sensen >= th.sensen).length;
         const leakDen = tcngSum + japanNgSum;
+        const grpHasNgData = grp.some((r) => r.hasNgData);
+        // 各品質指標を high/中/low に分類 (high=要確認)。対象外(データ無し)は null で除外
+        const ngLeakCounts = tally(grp, (r) => r.ngLeakRate, th.ngLeak);
+        const caseDiffCounts = tally(grp, (r) => (r.hasExpectedCase ? r.caseDiff : null), th.caseDiff);
+        const sensenCounts = tally(grp, (r) => (r.hasExpectedNg ? r.sensen : null), th.sensen);
         const qualStats = {
           testSum: qTestSum,
           ngSum: qNgSum,
           ngRate: qTestSum > 0 ? (qNgSum / qTestSum) * 100 : null,
-          ngLeakRate: leakDen > 0 ? (japanNgSum / leakDen) * 100 : null,
-          caseSafe: caseRows.length - caseAttn,
-          caseAttention: caseAttn,
-          caseTotal: caseRows.length,
-          sensenRatio: expectedNgSum > 0 ? (sensenSum / expectedNgSum) * 100 : null,
-          sensenSafe: ngRows.length - sensenAttn,
-          sensenAttention: sensenAttn,
-          sensenTotal: ngRows.length,
+          ngLeakRate: leakDen > 0 ? (japanNgSum / leakDen) * 100 : (grpHasNgData ? 0 : null),
+          ngLeakCounts,
+          caseDiffCounts,
+          sensenCounts,
         };
-        // 想定ケース超過 or 潜在見逃し の案件を要確認リストに
-        const attnCases = grp
-          .map((r) => {
-            const labels: string[] = [];
-            if (r.hasExpectedCase && Math.abs(r.caseDiff) >= th.caseDiff) labels.push('想定ケース差');
-            if (r.hasExpectedNg && r.sensen >= th.sensen) labels.push('潜在見逃し');
-            return { r, labels };
-          })
-          .filter((x) => x.labels.length > 0);
+        // 品質: 高(品質低=確認要) or 中(注意) の案件を抽出。理由(指標名+値)をラベル化
+        const qualAttn = grp.flatMap((r) => {
+          const parts: { name: string; b: Band }[] = [];
+          if (r.ngLeakRate !== null) {
+            const b = band(r.ngLeakRate, th.ngLeak);
+            if (b === 'high' || b === 'mid') parts.push({ name: `NG流出率 ${fmtPct(r.ngLeakRate)}`, b });
+          }
+          if (r.hasExpectedCase) {
+            const b = band(r.caseDiff, th.caseDiff);
+            if (b === 'high' || b === 'mid') parts.push({ name: `想定ケース差 ${fmt(r.caseDiff)}`, b });
+          }
+          if (r.hasExpectedNg) {
+            const b = band(r.sensen, th.sensen);
+            if (b === 'high' || b === 'mid') parts.push({ name: `潜在見逃し ${fmt(r.sensen)}`, b });
+          }
+          if (parts.length === 0) return [];
+          const status: '確認要' | '注意' = parts.some((p) => p.b === 'high') ? '確認要' : '注意';
+          const labels = parts.map((p) => p.name);
+          return [{ r, status, labels }];
+        });
 
-        return { system, rows: grp, count: grp.length, totalEff: effVal(testSum, actualSum), effStats, lowCases, qualStats, attnCases };
+        const effConfirm = effAttn.filter((x) => x.status === '確認要').length;
+        const qualConfirm = qualAttn.filter((x) => x.status === '確認要').length;
+
+        return { system, rows: grp, count: grp.length, totalEff: effVal(testSum, actualSum), effStats, effAttn, effConfirm, qualStats, qualAttn, qualConfirm };
       })
       .sort((a, b) => b.count - a.count);
   }, [rows, th]);
@@ -400,30 +441,34 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     />
   );
 
-  const effRow = (key: 'total' | 'design' | 'exec' | 'review', label: string) => (
+  type ThKey = 'total' | 'design' | 'exec' | 'review' | 'ngLeak' | 'caseDiff' | 'sensen';
+  const effRow = (key: ThKey, label: string, hiLabel = '高≥', midLabel = '中≥') => (
     <div className="flex items-center gap-2 text-xs">
-      <span className="w-20 text-neutral-600">{label}</span>
-      <span className="text-neutral-400">{'高≥'}</span>
+      <span className="w-24 text-neutral-600">{label}</span>
+      <span className="text-neutral-400">{hiLabel}</span>
       <ThInput value={th[key].high} onChange={(v) => updateTh({ ...th, [key]: { ...th[key], high: v } })} />
-      <span className="text-neutral-400">{'中≥'}</span>
+      <span className="text-neutral-400">{midLabel}</span>
       <ThInput value={th[key].mid} onChange={(v) => updateTh({ ...th, [key]: { ...th[key], mid: v } })} />
     </div>
   );
 
-  // 高/中/低 の分布バー (低=要確認 を赤で強調)
-  const HealthBar = ({ high, mid, low }: { high: number; mid: number; low: number }) => {
+  // 分布バー。reverse=false: high=緑/low=赤(効率)。reverse=true: high=赤/low=緑(品質: 値大きいほど悪い)
+  const HealthBar = ({ high, mid, low, reverse = false }: { high: number; mid: number; low: number; reverse?: boolean }) => {
     const total = high + mid + low;
     if (total === 0) return <div className="h-1.5 rounded-full bg-neutral-100" />;
     const pct = (n: number) => `${(n / total) * 100}%`;
+    const hiCls = reverse ? 'bg-red-500' : 'bg-emerald-500';
+    const loCls = reverse ? 'bg-emerald-500' : 'bg-red-500';
     return (
-      <div className="flex h-1.5 rounded-full overflow-hidden bg-neutral-100" title={`高${high} / 中${mid} / 低${low}`}>
-        {high > 0 && <div style={{ width: pct(high) }} className="bg-emerald-500" />}
+      <div className="flex h-1.5 rounded-full overflow-hidden bg-neutral-100">
+        {high > 0 && <div style={{ width: pct(high) }} className={hiCls} />}
         {mid > 0 && <div style={{ width: pct(mid) }} className="bg-slate-400" />}
-        {low > 0 && <div style={{ width: pct(low) }} className="bg-red-500" />}
+        {low > 0 && <div style={{ width: pct(low) }} className={loCls} />}
       </div>
     );
   };
 
+  // 効率サマリカード (high=良)
   const summaryBlock = (label: string, agg: number | null, counts: { high: number; mid: number; low: number }) => (
     <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
       <div className="flex items-baseline justify-between">
@@ -432,9 +477,25 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
       </div>
       <div className="mt-1.5"><HealthBar high={counts.high} mid={counts.mid} low={counts.low} /></div>
       <div className="flex items-center gap-3 mt-1 text-[11px]">
-        <span className="text-emerald-600">{'高'} {counts.high}</span>
-        <span className="text-slate-500">{'中'} {counts.mid}</span>
-        <span className={counts.low > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'低(要確認)'} {counts.low}</span>
+        <span className={counts.low > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'効率低'} {counts.low}</span>
+        <span className="text-slate-500">{'効率中'} {counts.mid}</span>
+        <span className="text-emerald-600">{'効率高'} {counts.high}</span>
+      </div>
+    </div>
+  );
+
+  // 品質サマリカード (high=品質低/悪い。counts.high=品質低件数, counts.low=品質高)
+  const qualBlock = (label: string, aggText: string, counts: { high: number; mid: number; low: number }) => (
+    <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs font-semibold text-neutral-600">{label}</span>
+        <span className="text-lg font-bold text-neutral-900 tabular-nums">{aggText}</span>
+      </div>
+      <div className="mt-1.5"><HealthBar high={counts.high} mid={counts.mid} low={counts.low} reverse /></div>
+      <div className="flex items-center gap-3 mt-1 text-[11px]">
+        <span className={counts.high > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'品質低'} {counts.high}</span>
+        <span className="text-slate-500">{'品質中'} {counts.mid}</span>
+        <span className="text-emerald-600">{'品質高'} {counts.low}</span>
       </div>
     </div>
   );
@@ -494,6 +555,7 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
         <th className={th0}>日本テスト件数</th>
         <th className={th0}>日本NG件数</th>
         <th className={th0}>想定ケース</th>
+        <th className={th0}>想定NG数</th>
         <th className={th0}>NG率</th>
         <th className={th0}>NG流出率</th>
         <th className={th0}>潜在見逃し</th>
@@ -513,19 +575,24 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
       <td className={tdNum}>{fmt(r.ng)}</td>
       <td className={tdNum}>{hasVal(r.it.japanTestCount) ? fmt(r.japanTest) : '-'}</td>
       <td className={tdNum}>{hasVal(r.it.japanNgCount) ? fmt(r.japanNg) : '-'}</td>
-      <td className={tdNum + (r.hasExpectedCase && Math.abs(r.caseDiff) >= th.caseDiff ? ' bg-red-50 text-red-600 font-semibold' : '')}>
+      <td className={tdNum + (r.hasExpectedCase && r.caseDiff >= th.caseDiff.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
         {r.hasExpectedCase ? (
           <span className="inline-flex items-center gap-0.5 justify-end">
-            {r.hasExpectedCase && Math.abs(r.caseDiff) >= th.caseDiff && <AlertTriangle size={11} />}{fmt(r.expectedCase)}
+            {r.hasExpectedCase && r.caseDiff >= th.caseDiff.high && <AlertTriangle size={11} />}{fmt(r.expectedCase)}
           </span>
         ) : '-'}
       </td>
+      <td className={tdNum}>{r.hasExpectedNg ? fmt(r.expectedNg) : '-'}</td>
       <td className={tdNum}>{fmtPct(r.ngRate)}</td>
-      <td className={tdNum}>{fmtPct(r.ngLeakRate)}</td>
-      <td className={tdNum + (r.hasExpectedNg && r.sensen >= th.sensen ? ' bg-red-50 text-red-600 font-semibold' : '')}>
+      <td className={tdNum + (r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
+        {r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high ? (
+          <span className="inline-flex items-center gap-0.5 justify-end"><AlertTriangle size={11} />{fmtPct(r.ngLeakRate)}</span>
+        ) : fmtPct(r.ngLeakRate)}
+      </td>
+      <td className={tdNum + (r.hasExpectedNg && r.sensen >= th.sensen.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
         {r.hasExpectedNg ? (
           <span className="inline-flex items-center gap-0.5 justify-end">
-            {r.hasExpectedNg && r.sensen >= th.sensen && <AlertTriangle size={11} />}{fmt(r.sensen)}
+            {r.hasExpectedNg && r.sensen >= th.sensen.high && <AlertTriangle size={11} />}{fmt(r.sensen)}
           </span>
         ) : '-'}
       </td>
@@ -535,31 +602,141 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
     </tr>
   );
 
-  // システム単位の品質サマリ (3ブロック)
+  // システム単位の品質サマリ (NG率統計 + 3カード: NG流出率 / 想定ケース差 / 潜在見逃し)
   const renderQualStats = (qs: (typeof rowsBySystem)[number]['qualStats']) => (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-      <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs space-y-1">
-        <p className="font-semibold text-neutral-600">総件数 / NG</p>
-        <p className="text-neutral-700">総テスト件数: <b className="tabular-nums">{fmt(qs.testSum)}</b></p>
-        <p className="text-neutral-700">検出NG: <b className="tabular-nums">{fmt(qs.ngSum)}</b>（NG率 {fmtPct(qs.ngRate)}）</p>
-        <p className="text-neutral-700">NG流出率: <b className="tabular-nums">{fmtPct(qs.ngLeakRate)}</b></p>
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
+        <div className="flex items-baseline justify-between">
+          <span className="text-xs font-semibold text-neutral-600">NG率(総)</span>
+          <span className="text-lg font-bold text-neutral-900 tabular-nums">{fmtPct(qs.ngRate)}</span>
+        </div>
+        <div className="mt-1 text-[11px] text-neutral-500">総テスト {fmt(qs.testSum)} / NG {fmt(qs.ngSum)}</div>
       </div>
-      <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs space-y-1">
-        <p className="font-semibold text-neutral-600">想定ケース範囲</p>
-        <p className="text-emerald-600">範囲内(安全): <b className="tabular-nums">{qs.caseSafe}</b></p>
-        <p className="text-red-600">超過(要確認): <b className="tabular-nums">{qs.caseAttention}</b></p>
-        <p className="text-neutral-400">(想定あり {qs.caseTotal}件)</p>
-      </div>
-      <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs space-y-1">
-        <p className="font-semibold text-neutral-600">潜在見逃し</p>
-        <p className="text-neutral-700">比率: <b className="tabular-nums">{fmtPct(qs.sensenRatio)}</b></p>
-        <p className="text-emerald-600">範囲内(安全): <b className="tabular-nums">{qs.sensenSafe}</b></p>
-        <p className="text-red-600">超過(要確認): <b className="tabular-nums">{qs.sensenAttention}</b></p>
-      </div>
+      {qualBlock('NG流出率', fmtPct(qs.ngLeakRate), qs.ngLeakCounts)}
+      {qualBlock('想定ケース差', '', qs.caseDiffCounts)}
+      {qualBlock('潜在見逃し', '', qs.sensenCounts)}
     </div>
   );
 
+  // ── 報告書 ──
+  const reportMonthKey = `${year}${month === 'all' ? '' : String(month).padStart(2, '0')}`;
+  const reportSystems = allSystems.filter((s) => !deselected.has(s));
+
+  const buildReportGroups = (): ReportSystemGroup[] =>
+    rowsBySystem.map((g) => ({
+      system: g.system,
+      count: g.count,
+      totalEff: g.totalEff,
+      testSum: g.qualStats.testSum,
+      ngSum: g.qualStats.ngSum,
+      ngRate: g.qualStats.ngRate,
+      ngLeakRate: g.qualStats.ngLeakRate,
+      effStats: g.effStats,
+      qualStats: g.qualStats,
+      lowCases: g.effAttn.map(({ r, status, labels }) => ({ name: r.it.projectName || '-', status, labels })),
+      attnCases: g.qualAttn.map(({ r, status, labels }) => ({ name: r.it.projectName || '-', status, labels })),
+      rows: g.rows.map((r) => ({
+        projectName: r.it.projectName || '-',
+        status: r.it.status || '-',
+        assignee: r.it.assignee || '-',
+        manager: r.it.manager || '-',
+        estimate: r.estimate,
+        actual: r.actual,
+        diff: r.diff,
+        designA: r.designA,
+        implA: r.implA,
+        execA: r.execA,
+        reviewA: r.reviewA,
+        designEff: r.designEff,
+        execEff: r.execEff,
+        reviewEff: r.reviewEff,
+        testTotal: r.testTotal,
+        ng: r.ng,
+        ngRate: r.ngRate,
+        japanTest: r.japanTest,
+        hasJapanTest: hasVal(r.it.japanTestCount),
+        japanNg: r.japanNg,
+        hasJapanNg: hasVal(r.it.japanNgCount),
+        expectedCase: r.expectedCase,
+        hasExpectedCase: r.hasExpectedCase,
+        caseDiff: r.caseDiff,
+        expectedNg: r.expectedNg,
+        sensen: r.sensen,
+        hasExpectedNg: r.hasExpectedNg,
+        ngLeakRate: r.ngLeakRate,
+        comment: r.it.comment,
+      })),
+    }));
+
+  const handleCreateReport = () => {
+    if (rowsBySystem.length === 0) return;
+    const html = buildCaseStatsReportHtml(buildReportGroups(), {
+      monthKey: reportMonthKey,
+      systems: reportSystems,
+      thresholds: th,
+      overall: {
+        caseCount: kpi.caseCount,
+        estimateSum: kpi.estimateSum,
+        actualSum: kpi.actualSum,
+        diff: kpi.diff,
+        testSum: kpi.testSum,
+        ngSum: kpi.ngSum,
+        ngRate: kpi.ngRate,
+        totalEff: kpi.totalEff,
+        attention: kpi.attention,
+      },
+    });
+    setReportHtml(html);
+    setHistoryNotice(null);
+    setReportOpen(true);
+  };
+
+  const handleSaveReportPdf = async () => {
+    const iframe = reportIframeRef.current;
+    const liveRoot = iframe?.contentDocument?.documentElement;
+    const html = liveRoot ? `<!DOCTYPE html>\n${liveRoot.outerHTML}` : reportHtml;
+    const title = caseStatsReportTitle(reportSystems, reportMonthKey);
+    setSavingPdf(true);
+    setHistoryNotice(null);
+    try {
+      const res = await fetch('/api/test-center/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          type: 'report',
+          areaId: 'case-stats',
+          monthKey: reportMonthKey,
+          title,
+          htmlContent: html,
+          savedAt: new Date().toISOString(),
+        }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b?.error || `保存失敗 (${res.status})`);
+      }
+      setHistoryNotice('Notion に履歴を保存しました');
+    } catch (err) {
+      setHistoryNotice('履歴の保存に失敗しました：' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setSavingPdf(false);
+    }
+    const win = window.open('', '_blank');
+    if (!win) {
+      setHistoryNotice('ポップアップがブロックされました。許可してから再試行してください。');
+      return;
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.document.title = title;
+    win.focus();
+    setTimeout(() => win.print(), 300);
+  };
+
   return (
+    <>
     <div className="space-y-6">
       {/* ヘッダ */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -600,6 +777,15 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             {'更新'}
           </button>
+          <button
+            type="button"
+            onClick={handleCreateReport}
+            disabled={rows.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors"
+          >
+            <FileText size={14} />
+            報告書作成
+          </button>
           {updatedAt && (
             <span className="text-[11px] text-neutral-400 whitespace-nowrap">
               {('最終更新 ') + new Date(updatedAt).toLocaleString('ja-JP')}
@@ -607,6 +793,40 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
           )}
         </div>
       </div>
+
+      {/* システム選択 */}
+      {allSystems.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap bg-white border border-neutral-200 rounded-xl px-4 py-2.5">
+          <span className="text-xs font-semibold text-neutral-500 shrink-0">システム:</span>
+          <button
+            type="button"
+            onClick={() => setDeselected(new Set())}
+            className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${deselected.size === 0 ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}
+          >
+            すべて
+          </button>
+          {allSystems.map((sys) => {
+            const on = !deselected.has(sys);
+            return (
+              <button
+                key={sys}
+                type="button"
+                onClick={() =>
+                  setDeselected((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(sys)) next.delete(sys);
+                    else next.add(sys);
+                    return next;
+                  })
+                }
+                className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-400 hover:bg-neutral-50'}`}
+              >
+                {sys}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-red-600 flex items-center gap-2 text-sm">
@@ -674,15 +894,16 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
               {/* システム別: 要確認(低効率)多い順・折りたたみ */}
               <div className="space-y-3">
-                {[...rowsBySystem].sort((a, b) => b.lowCases.length - a.lowCases.length).map((g) => {
+                {[...rowsBySystem].sort((a, b) => b.effConfirm - a.effConfirm || b.effAttn.length - a.effAttn.length).map((g) => {
                   const key = `eff:${g.system}`;
-                  const open = isSysOpen(key, g.lowCases.length > 0);
+                  const open = isSysOpen(key, g.effAttn.length > 0);
                   const c = g.effStats.total.counts;
+                  const cautionCount = g.effAttn.length - g.effConfirm;
                   return (
                     <div key={g.system} className="border border-neutral-200 rounded-lg overflow-hidden">
                       <button
                         type="button"
-                        onClick={() => toggleSys(key, g.lowCases.length > 0)}
+                        onClick={() => toggleSys(key, g.effAttn.length > 0)}
                         className="w-full flex items-center gap-3 px-4 py-2.5 bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
                       >
                         {open ? <ChevronDown size={16} className="shrink-0" /> : <ChevronRight size={16} className="shrink-0" />}
@@ -690,9 +911,14 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
                         <div className="w-24 shrink-0 hidden sm:block"><HealthBar high={c.high} mid={c.mid} low={c.low} /></div>
                         <span className="text-xs text-neutral-500 shrink-0">総効率 <b className="text-neutral-900 tabular-nums">{fmtEff(g.totalEff)}</b></span>
                         <span className="ml-auto flex items-center gap-2 shrink-0">
-                          {g.lowCases.length > 0 && (
+                          {g.effConfirm > 0 && (
                             <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 text-[11px] font-bold px-2 py-0.5">
-                              <AlertTriangle size={11} />要確認 {g.lowCases.length}
+                              <AlertTriangle size={11} />確認要 {g.effConfirm}
+                            </span>
+                          )}
+                          {cautionCount > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">
+                              注意 {cautionCount}
                             </span>
                           )}
                           <span className="text-xs text-neutral-400">案件 {g.count}</span>
@@ -706,16 +932,19 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
                             {summaryBlock('実施効率', g.effStats.exec.agg, g.effStats.exec.counts)}
                             {summaryBlock('レビュー効率', g.effStats.review.agg, g.effStats.review.counts)}
                           </div>
-                          {g.lowCases.length > 0 && (
-                            <div className="border border-red-200 bg-red-50 rounded-lg p-3">
-                              <p className="text-xs font-bold text-red-700 mb-2 flex items-center gap-1">
-                                <AlertTriangle size={12} />要確認（低効率）{g.lowCases.length}件
+                          {g.effAttn.length > 0 && (
+                            <div className="border border-amber-200 bg-amber-50/50 rounded-lg p-3">
+                              <p className="text-xs font-bold text-neutral-700 mb-2 flex items-center gap-1">
+                                <AlertTriangle size={12} />確認要・注意 {g.effAttn.length}件
                               </p>
                               <ul className="space-y-1">
-                                {g.lowCases.map(({ r, labels }) => (
+                                {g.effAttn.map(({ r, status, labels }) => (
                                   <li key={r.it.id} className="flex items-center justify-between gap-3 text-xs">
                                     <span className="truncate text-neutral-800" title={r.it.projectName}>{r.it.projectName || '-'}</span>
-                                    <span className="text-red-600 shrink-0 font-medium">{labels.map((l) => `${l}:低`).join(' / ')}</span>
+                                    <span className="shrink-0 flex items-center gap-2">
+                                      <span className={status === '確認要' ? 'text-red-600 font-bold' : 'text-amber-600 font-semibold'}>{status}</span>
+                                      <span className="text-neutral-500">{labels.join(' / ')}</span>
+                                    </span>
                                   </li>
                                 ))}
                               </ul>
@@ -754,39 +983,40 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
           {qualOpen && (
             <div className="p-4 space-y-4">
               {/* 閾値設定 */}
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
-                <span className="text-[11px] font-semibold text-neutral-400 w-full">{'閾値設定 (編集可・自動保存)'}</span>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-neutral-600">{'想定ケース差 注意≥'}</span>
-                  <ThInput value={th.caseDiff} onChange={(v) => updateTh({ ...th, caseDiff: v })} />
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-neutral-600">{'潜在見逃し 注意≥'}</span>
-                  <ThInput value={th.sensen} onChange={(v) => updateTh({ ...th, sensen: v })} />
-                </div>
+              <div className="flex flex-wrap gap-x-6 gap-y-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
+                <span className="text-[11px] font-semibold text-neutral-400 w-full">{'閾値設定 (編集可・自動保存 / 値が大きいほど悪い)'}</span>
+                {effRow('ngLeak', 'NG流出率(%)')}
+                {effRow('caseDiff', '想定ケース差')}
+                {effRow('sensen', '潜在見逃し')}
               </div>
 
               {/* システム別: 要確認 多い順・折りたたみ */}
               <div className="space-y-3">
-                {[...rowsBySystem].sort((a, b) => b.attnCases.length - a.attnCases.length).map((g) => {
+                {[...rowsBySystem].sort((a, b) => b.qualConfirm - a.qualConfirm || b.qualAttn.length - a.qualAttn.length).map((g) => {
                   const key = `qual:${g.system}`;
-                  const open = isSysOpen(key, g.attnCases.length > 0);
-                  const safe = g.count - g.attnCases.length;
+                  const open = isSysOpen(key, g.qualAttn.length > 0);
+                  const cautionCount = g.qualAttn.length - g.qualConfirm;
+                  const safe = g.count - g.qualAttn.length;
                   return (
                     <div key={g.system} className="border border-neutral-200 rounded-lg overflow-hidden">
                       <button
                         type="button"
-                        onClick={() => toggleSys(key, g.attnCases.length > 0)}
+                        onClick={() => toggleSys(key, g.qualAttn.length > 0)}
                         className="w-full flex items-center gap-3 px-4 py-2.5 bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
                       >
                         {open ? <ChevronDown size={16} className="shrink-0" /> : <ChevronRight size={16} className="shrink-0" />}
                         <span className="text-sm font-bold text-neutral-800 truncate">{g.system}</span>
-                        <div className="w-24 shrink-0 hidden sm:block"><HealthBar high={safe} mid={0} low={g.attnCases.length} /></div>
+                        <div className="w-24 shrink-0 hidden sm:block" title={`安全${safe} / 注意${cautionCount} / 確認要${g.qualConfirm}`}><HealthBar high={safe} mid={cautionCount} low={g.qualConfirm} /></div>
                         <span className="text-xs text-neutral-500 shrink-0">NG率 <b className="text-neutral-900 tabular-nums">{fmtPct(g.qualStats.ngRate)}</b></span>
                         <span className="ml-auto flex items-center gap-2 shrink-0">
-                          {g.attnCases.length > 0 && (
+                          {g.qualConfirm > 0 && (
                             <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 text-[11px] font-bold px-2 py-0.5">
-                              <AlertTriangle size={11} />要確認 {g.attnCases.length}
+                              <AlertTriangle size={11} />確認要 {g.qualConfirm}
+                            </span>
+                          )}
+                          {cautionCount > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">
+                              注意 {cautionCount}
                             </span>
                           )}
                           <span className="text-xs text-neutral-400">案件 {g.count}</span>
@@ -795,16 +1025,19 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
                       {open && (
                         <div className="p-3 space-y-3">
                           {renderQualStats(g.qualStats)}
-                          {g.attnCases.length > 0 && (
-                            <div className="border border-red-200 bg-red-50 rounded-lg p-3">
-                              <p className="text-xs font-bold text-red-700 mb-2 flex items-center gap-1">
-                                <AlertTriangle size={12} />要確認 {g.attnCases.length}件
+                          {g.qualAttn.length > 0 && (
+                            <div className="border border-amber-200 bg-amber-50/50 rounded-lg p-3">
+                              <p className="text-xs font-bold text-neutral-700 mb-2 flex items-center gap-1">
+                                <AlertTriangle size={12} />確認要・注意 {g.qualAttn.length}件
                               </p>
                               <ul className="space-y-1">
-                                {g.attnCases.map(({ r, labels }) => (
+                                {g.qualAttn.map(({ r, status, labels }) => (
                                   <li key={r.it.id} className="flex items-center justify-between gap-3 text-xs">
                                     <span className="truncate text-neutral-800" title={r.it.projectName}>{r.it.projectName || '-'}</span>
-                                    <span className="text-red-600 shrink-0 font-medium">{labels.join(' / ')}</span>
+                                    <span className="shrink-0 flex items-center gap-2">
+                                      <span className={status === '確認要' ? 'text-red-600 font-bold' : 'text-amber-600 font-semibold'}>{status}</span>
+                                      <span className="text-neutral-500">{labels.join(' / ')}</span>
+                                    </span>
                                   </li>
                                 ))}
                               </ul>
@@ -831,5 +1064,51 @@ export default function CaseStats({ onBack, initialYear, initialMonth }: CaseSta
 
       </section>
     </div>
+
+    {reportOpen && (
+      <div className="fixed inset-0 z-50 bg-black/40 p-4 md:p-8">
+        <div className="h-full max-w-[96rem] mx-auto bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
+          <div className="px-4 py-3 border-b border-neutral-200 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <h3 className="text-base font-semibold text-neutral-900 whitespace-nowrap">案件統計報告書</h3>
+              <span className="text-xs text-neutral-400 truncate">プレビュー内で直接編集してから PDF 保存できます</span>
+              {historyNotice && (
+                <span className="inline-flex items-center gap-1 text-xs text-emerald-600 whitespace-nowrap">
+                  <CheckCircle2 size={13} />
+                  {historyNotice}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveReportPdf}
+                disabled={savingPdf}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 disabled:bg-neutral-300 disabled:cursor-not-allowed"
+              >
+                {savingPdf ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+                PDFとして保存
+              </button>
+              <button
+                type="button"
+                onClick={() => setReportOpen(false)}
+                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 min-h-0">
+            <iframe
+              ref={reportIframeRef}
+              title="case-stats-report-preview"
+              srcDoc={reportHtml}
+              className="w-full h-full bg-white border-0"
+            />
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
