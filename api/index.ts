@@ -110,7 +110,6 @@ type ProgressItem = {
   implActual: string;
   execActual: string;
   reviewActual: string;
-  comment: string;
   childProjectIds: string[];
 };
 
@@ -237,7 +236,6 @@ function parseProgressItem(page: any): ProgressItem {
     implActual: propertyToPlainText(pickProperty(properties, ["工数実績(実装)", "工数実績(実装) "])),
     execActual: propertyToPlainText(pickProperty(properties, ["工数実績(実施)", "工数実績(実施) "])),
     reviewActual: propertyToPlainText(pickProperty(properties, ["review実績工数", "Review実績工数", "レビュー実績工数"])),
-    comment: propertyToPlainText(pickProperty(properties, ["コメント", "備考"])),
     childProjectIds,
   };
 }
@@ -768,7 +766,7 @@ app.get("/api/test-center/case-stats", async (_req, res) => {
         implActual: item.implActual,
         execActual: item.execActual,
         reviewActual: item.reviewActual,
-        comment: item.comment,
+        comment: ach?.comment ?? "", // 備考 = 実績表のコメント
         // 実績表 join (無ければ空文字)
         expectedCase: ach?.expectedCase ?? "",
         expectedNg: ach?.expectedNg ?? "",
@@ -810,6 +808,7 @@ type AchievementItem = {
   efficiency: string;
   tcNgCount: string;
   japanTestCount: string;
+  comment: string;
   relatedCaseIds: string[];
   comments: string[];
 };
@@ -839,6 +838,7 @@ function parseAchievementItem(page: any): AchievementItem {
     efficiency: propertyToPlainText(p["テストケース数/1人日"]),
     tcNgCount: propertyToPlainText(pickProperty(p, ["TCNG数", "TC NG数", "TCNG件数"])),
     japanTestCount: propertyToPlainText(pickProperty(p, ["日本実施テスト件数", "日本テスト件数"])),
+    comment: propertyToPlainText(p["コメント"]),
     relatedCaseIds: extractRelationIds(pickProperty(p, ["関連案件", "関連案件（案件）", "案件"])),
     comments: [],
   };
