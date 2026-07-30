@@ -256,23 +256,16 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   const o = meta.overall;
   const caseTotal = o.caseCount;
 
-  // 要確認案件サマリー (原因・コメント理由付き)
-  const confirmRows = meta.confirmCases
-    .map(
-      (c) => `<tr>
-      <td>${esc(c.name)}</td>
-      <td>${esc(c.system)}</td>
-      <td class="ng-text">${esc(c.labels.join(' / '))}</td>
-      <td class="cmt" contenteditable="true">${esc(c.comment)}</td>
-    </tr>`
-    )
-    .join('');
-  const confirmTable = meta.confirmCases.length
-    ? `<table class="data-table">
-      <thead><tr><th>案件名</th><th>システム</th><th>問題原因</th><th>理由(コメント)</th></tr></thead>
-      <tbody>${confirmRows}</tbody>
-    </table>`
-    : '<p class="muted" style="font-size:12px;">要確認案件はありません。</p>';
+  // 要確認案件サマリー: リスト形式でサマリー内に記載 (編集可)
+  const confirmListHtml = meta.confirmCases.length
+    ? `<p><b>【要確認案件 ${meta.confirmCases.length}件】</b></p>
+    <ul class="confirm-list">${meta.confirmCases
+      .map(
+        (c) =>
+          `<li><b>${esc(c.name)}</b>（${esc(c.system)}）― 問題原因: <span class="ng-text">${esc(c.labels.join(' / '))}</span> ― 理由: ${esc(c.comment || '—')}</li>`
+      )
+      .join('')}</ul>`
+    : '<p>要確認案件はありません。</p>';
 
   // 本月全体概要 KPIパネル
   const kpiCards = [
@@ -351,8 +344,11 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   .attn ul { list-style:none; margin:0; padding:0; }
   .attn li { display:flex; justify-content:space-between; gap:12px; font-size:11px; padding:1px 0; }
   .incident-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:140px; padding:14px; font-size:13px; white-space:pre-wrap; }
-  .summary-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:80px; padding:14px; font-size:13px; white-space:pre-wrap; margin-bottom:8px; }
+  .summary-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:80px; padding:14px; font-size:13px; margin-bottom:8px; }
   .summary-box:focus { outline:2px solid #93c5fd; background:#fff; }
+  .summary-box p { margin:0 0 6px; }
+  .confirm-list { margin:0; padding-left:20px; }
+  .confirm-list li { padding:3px 0; line-height:1.5; }
   @media print {
     .page { padding: 14mm; }
     .cover { min-height: auto; height: 247mm; }
@@ -391,10 +387,7 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
     <h2 class="sec-title">1. ${esc(overviewTitle)}</h2>
     <div class="kpis">${kpiCards}</div>
     <h3 class="sub-title">サマリー</h3>
-    <div class="summary-box" contenteditable="true">ここに全体の総括を記入してください（編集可）。</div>
-    <h3 class="sub-title">要確認案件 ${meta.confirmCases.length}件</h3>
-    <p class="muted" style="font-size:12px;margin:0 0 6px;">効率・品質で「確認要」と判定された案件です。問題原因と理由(コメント)をご確認ください。</p>
-    ${confirmTable}
+    <div class="summary-box" contenteditable="true">${confirmListHtml}</div>
   </div>
 
   <div class="page page-break" id="sec-incident">

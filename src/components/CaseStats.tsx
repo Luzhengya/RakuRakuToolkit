@@ -562,11 +562,17 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     </div>
   );
 
-  // 年度チャートカード
+  // 年度チャートカード (右下ハンドルでサイズ自由調節可)
   const ChartCard = ({ title, children }: { title: string; children: any }) => (
-    <div className="bg-white border border-neutral-200 rounded-xl p-4">
-      <h4 className="text-sm font-semibold text-neutral-700 mb-3">{title}</h4>
-      <div className="h-56">
+    <div
+      className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col resize overflow-hidden"
+      style={{ height: 300, minHeight: 220, minWidth: 260 }}
+    >
+      <div className="flex items-center justify-between mb-3 shrink-0">
+        <h4 className="text-sm font-semibold text-neutral-700">{title}</h4>
+        <span className="text-[10px] text-neutral-300 select-none">⤡ ドラッグでサイズ調整</span>
+      </div>
+      <div className="flex-1 min-h-0">
         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>{children}</ResponsiveContainer>
       </div>
     </div>
@@ -849,18 +855,21 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div className="flex items-baseline gap-3">
           <h2 className="text-2xl font-bold text-neutral-900">{'案件一覧'}</h2>
-          <span className="text-sm text-neutral-400 tabular-nums">{rows.length}件</span>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* 月次 / 年度 切替 */}
-          <div className="inline-flex rounded-lg border border-neutral-200 overflow-hidden">
+          {/* 月次 / 年度 切替 (スライド式セグメント) */}
+          <div className="relative flex w-36 rounded-lg bg-neutral-100 p-1 text-sm font-medium">
+            <span
+              className="absolute inset-y-1 rounded-md bg-white shadow-sm transition-all duration-200 ease-out"
+              style={{ left: periodType === 'year' ? '50%' : '4px', width: 'calc(50% - 4px)' }}
+            />
             {(['month', 'year'] as const).map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setPeriodType(p)}
-                className={`px-3 py-1.5 text-sm font-medium transition-colors ${periodType === p ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-600 hover:bg-neutral-50'}`}
+                className={`relative z-10 flex-1 py-1 rounded-md transition-colors ${periodType === p ? 'text-neutral-900' : 'text-neutral-500 hover:text-neutral-700'}`}
               >
                 {p === 'month' ? '月次' : '年度'}
               </button>
@@ -1260,7 +1269,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               <PieChart>
                 <Tooltip contentStyle={tipStyle} />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Pie data={systemPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={72} label={(e: any) => `${e.name}: ${e.value}`}>
+                <Pie data={systemPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%" labelLine={false} label={(e: any) => (e.percent >= 0.05 ? `${(e.percent * 100).toFixed(0)}%` : '')}>
                   {systemPie.map((_, i) => (
                     <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                   ))}
