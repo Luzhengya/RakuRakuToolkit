@@ -234,7 +234,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                           {casesLine('テスト不可', g.block, g.blockCases)}
                           {casesLine('テストNG', g.ng, g.ngCases)}
                           {casesLine('未実施', g.un, g.unCases)}
-                          {casesLine('指摘修正', g.shimateki, g.shimatekiCases)}
+                          {casesLine('指摘対応', g.shimateki, g.shimatekiCases)}
                           {(g.ng > 0 || g.block > 0 || g.un > 0) && (
                             <div className="mt-1 space-y-0.5">
                               {g.ng > 0 && (

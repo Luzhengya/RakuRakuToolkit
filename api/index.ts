@@ -1897,6 +1897,33 @@ const RESULT_COL = 13;   // テスト結果 (0-based, CSV「结果」)
 const GROUP_COL = 3;     // 要件名 (0-based, CSV「相关需求」)
 const CASENO_COL = 0;    // ケース番号 (0-based, CSV「用例编号」)
 const KEYWORD_COL = 8;   // ポイント (0-based, CSV「关键词」)
+const REMARK_COL = 20;   // 備考 (0-based)
+const SHIMATEKI_MARK = "指摘対応";
+
+// CSV「关键词」列を ポイント / 備考 に分解する。
+// - スラッシュ(半角 / ・全角 ／)で分割し、前段(head)に「指摘対応」を含めば ポイント=指摘対応・備考=後段(tail)。
+//   前段に含まなければ ポイント=空・備考=元の値全体。
+// - スラッシュ無しで「指摘対応」を含む場合は ポイント=指摘対応・備考=「指摘対応」以降の文字。
+//   含まなければ ポイント=空・備考=元の値全体。
+// - 空なら両方空。
+function splitKeyword(raw: string): { point: string; remark: string } {
+  const v = (raw ?? "").trim();
+  if (v === "") return { point: "", remark: "" };
+  const a = v.indexOf("/");
+  const b = v.indexOf("／");
+  const slashIdx = a === -1 ? b : b === -1 ? a : Math.min(a, b);
+  if (slashIdx !== -1) {
+    const head = v.slice(0, slashIdx).trim();
+    const tail = v.slice(slashIdx + 1).trim();
+    if (head.includes(SHIMATEKI_MARK)) return { point: SHIMATEKI_MARK, remark: tail };
+    return { point: "", remark: v };
+  }
+  if (v.includes(SHIMATEKI_MARK)) {
+    const after = v.slice(v.indexOf(SHIMATEKI_MARK) + SHIMATEKI_MARK.length).trim();
+    return { point: SHIMATEKI_MARK, remark: after };
+  }
+  return { point: "", remark: v };
+}
 
 function mapTestResult(v: string): string {
   const s = (v ?? "").trim();
@@ -1960,6 +1987,10 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
     for (let i = 0; i < TESTCASE_COL_COUNT; i++) out[i] = r[i] ?? "";
     const mapped = mapTestResult(out[RESULT_COL]);
     out[RESULT_COL] = mapped;
+    // 「关键词」列を ポイント / 備考 に分解 (備考は上書き)
+    const { point, remark } = splitKeyword(r[KEYWORD_COL] ?? "");
+    out[KEYWORD_COL] = point;
+    out[REMARK_COL] = remark;
 
     const added = ws.addRow(out);
     const fillColor = (FILL as Record<string, string>)[mapped];
@@ -1984,7 +2015,7 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
     else if (mapped === "テスト不可") { g.block++; g.blockCases.push(caseNo); }
     else if (mapped === "NG") { g.ng++; g.ngCases.push(caseNo); }
     else if (mapped === "未実施") { g.un++; g.unCases.push(caseNo); }
-    if ((r[KEYWORD_COL] ?? "").trim() === "指摘修正") { g.shimateki++; g.shimatekiCases.push(caseNo); }
+    if (point === SHIMATEKI_MARK) { g.shimateki++; g.shimatekiCases.push(caseNo); }
   }
 
   const baseName = originalName.replace(/\.[^.]+$/, "");
@@ -2001,7 +2032,7 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
     ws.addRow([`テスト不可: ${g.block}${paren(g.blockCases)}`]);
     ws.addRow([`テストNG: ${g.ng}${paren(g.ngCases)}`]);
     ws.addRow([`未実施: ${g.un}${paren(g.unCases)}`]);
-    ws.addRow([`指摘修正: ${g.shimateki}${paren(g.shimatekiCases)}`]);
+    ws.addRow([`指摘対応: ${g.shimateki}${paren(g.shimatekiCases)}`]);
   });
 
   // 列幅: ケース番号(A列)は固定10。他列は自動調整 (過大化を防ぐため上限 80)
