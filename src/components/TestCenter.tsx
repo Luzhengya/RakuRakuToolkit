@@ -544,6 +544,45 @@ function renderCaseBugsHtml(bugs: ReportBug[], childMap?: Record<string, string>
   return `<div class="case-bugs">${cards}</div>`;
 }
 
+// テスト結論(サマリ) を BUG から自動生成 (結果報告(BUG付き)専用)。
+// 案件ごとに 関連バグ有無で【OK】/【不具合あり】、優先度別(P0〜P3)件数は実在するもののみ列挙。
+const SUMMARY_PRIORITY_DESC: Record<string, string> = {
+  P3: '低（文字・表示系の問題。お客様のご利用に軽微な影響がある。）',
+  P2: '中（機能が仕様・期待と一致しないが、ご利用には影響しない。）',
+  P1: '高（機能が仕様・期待と一致せず、お客様のご利用に影響がある。）',
+  P0: '最優先（機能が仕様・期待と著しく乖離しており、かつシステムへの影響が大きい。）',
+};
+const SUMMARY_PRIORITY_ORDER = ['P3', 'P2', 'P1', 'P0'];
+
+function buildBugSummaryHtml(completedItems: ProgressItem[], bugsByCase: Map<string, ReportBug[]>): string {
+  const lines: string[] = [];
+  for (const item of completedItems) {
+    const n = bugsByCase.get(item.id)?.length ?? 0;
+    const tag = n > 0 ? '【不具合あり】' : '【OK】';
+    lines.push(`<div>${tag}案件名：${safeHtml(item.projectName || '-')}</div>`);
+  }
+  const priCount = new Map<string, number>();
+  for (const bugs of bugsByCase.values()) {
+    for (const b of bugs) {
+      const p = (b.priority || '').trim();
+      if (p) priCount.set(p, (priCount.get(p) ?? 0) + 1);
+    }
+  }
+  const priLines: string[] = [];
+  for (const p of SUMMARY_PRIORITY_ORDER) {
+    const c = priCount.get(p) ?? 0;
+    if (c > 0) {
+      priLines.push(`<div>${p}：${c}件</div>`);
+      priLines.push(`<div>優先度 ${SUMMARY_PRIORITY_DESC[p]}</div>`);
+    }
+  }
+  if (priLines.length > 0) {
+    lines.push('<div><br></div>');
+    lines.push(...priLines);
+  }
+  return lines.join('\n');
+}
+
 function buildResultReportHtml(
   template: string,
   selectedItems: ProgressItem[],
@@ -668,8 +707,9 @@ function buildResultReportHtml(
     })
     .join('\n');
 
-  const reportConclusion =
-    totalBugCount + totalBlockedCount + totalPendingCount > 0
+  const reportConclusion = bugsByCase
+    ? buildBugSummaryHtml(completedItems, bugsByCase)
+    : totalBugCount + totalBlockedCount + totalPendingCount > 0
       ? '一部の案件でテスト不可・NG・判断不可/想定外が存在します。詳細は案件別結果をご確認ください。'
       : '全案件で重大な問題は確認されませんでした。';
   const isActualOverEstimate = totalActualEffort > totalEstimateEffort;
