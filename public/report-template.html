@@ -318,6 +318,27 @@
       padding: 10px 14px;
       min-height: 44px;
     }
+    /* NG説明に埋め込む関連バグ (折りたたみ) */
+    .supplement-item .case-bugs { flex: 1; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .bug-card { border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; overflow: hidden; }
+    .bug-card > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #f8fafc; }
+    .bug-card > summary::-webkit-details-marker { display: none; }
+    .bug-card-no { font-weight: 700; color: #2563eb; font-size: 12px; min-width: 34px; }
+    .bug-card-desc { flex: 1; font-size: 13px; color: #1e293b; }
+    .bug-card-tags { display: flex; gap: 4px; flex-shrink: 0; }
+    .bpill { font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap; }
+    .bpill.j { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+    .bpill.s { background: #f1f5f9; color: #475569; border-color: #e2e8f0; }
+    .bpill.p { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+    .bug-card-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+    .bug-card-body .bgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .bug-card-body .bcell { display: flex; flex-direction: column; gap: 2px; }
+    .bug-card-body .bk { font-size: 11px; color: #64748b; font-weight: 600; }
+    .bug-card-body .bv { color: #1e293b; white-space: pre-wrap; word-break: break-word; }
+    .bug-card-body .bmeta { font-size: 11px; color: #94a3b8; }
+    @media print {
+      .bug-card > .bug-card-body { display: flex !important; }
+    }
     .footer {
       margin-top: 24px;
       border-top: 1px solid #d8dee9;

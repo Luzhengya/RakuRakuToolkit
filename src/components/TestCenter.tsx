@@ -491,12 +491,58 @@ function buildPlanHtml(
   return html;
 }
 
+type ReportBug = {
+  no: string;
+  bugDesc: string;
+  judgment: string;
+  status: string;
+  priority: string;
+  reproSteps: string;
+  expectedResult: string;
+  actualResult: string;
+  remarks: string;
+  execDate: string;
+  assignee: string;
+  browserVersion: string;
+};
+
+function reportDateShort(v: string): string {
+  return v ? v.slice(0, 10) : '-';
+}
+
+// NG説明欄に埋め込む、案件の関連バグ (折りたたみ)。印刷時はCSSで全展開。
+function renderCaseBugsHtml(bugs: ReportBug[]): string {
+  const cards = bugs
+    .map(
+      (b) => `
+      <details class="bug-card">
+        <summary>
+          <span class="bug-card-no">${safeHtml(b.no || '-')}</span>
+          <span class="bug-card-desc">${safeHtml(b.bugDesc || '-')}</span>
+          <span class="bug-card-tags">${b.judgment ? `<span class="bpill j">${safeHtml(b.judgment)}</span>` : ''}${b.status ? `<span class="bpill s">${safeHtml(b.status)}</span>` : ''}${b.priority ? `<span class="bpill p">${safeHtml(b.priority)}</span>` : ''}</span>
+        </summary>
+        <div class="bug-card-body">
+          <div class="bcell"><span class="bk">再現ステップ</span><span class="bv">${safeHtml(b.reproSteps || '-')}</span></div>
+          <div class="bgrid">
+            <div class="bcell"><span class="bk">期待結果</span><span class="bv">${safeHtml(b.expectedResult || '-')}</span></div>
+            <div class="bcell"><span class="bk">実際結果</span><span class="bv">${safeHtml(b.actualResult || '-')}</span></div>
+          </div>
+          <div class="bcell"><span class="bk">確認結果</span><span class="bv">${safeHtml(b.remarks || '-')}</span></div>
+          <div class="bmeta">実施日: ${safeHtml(reportDateShort(b.execDate))}　実施者: ${safeHtml(b.assignee || '-')}　ブラウザ: ${safeHtml(b.browserVersion || '-')}</div>
+        </div>
+      </details>`
+    )
+    .join('\n');
+  return `<div class="case-bugs">${cards}</div>`;
+}
+
 function buildResultReportHtml(
   template: string,
   selectedItems: ProgressItem[],
   monthKey: string,
   areaId: AreaId,
-  versions: EnvVersions
+  versions: EnvVersions,
+  bugsByCase?: Map<string, ReportBug[]>
 ): string {
   if (selectedItems.length === 0) return template;
 
@@ -540,10 +586,14 @@ function buildResultReportHtml(
       // stats-row 直下に条件付き説明行を追加（案件名ヘッダーなし）
       const explainRows: string[] = [];
       if (bug > 0) {
+        const caseBugs = bugsByCase?.get(item.id) ?? [];
+        const ngRight = caseBugs.length > 0
+          ? renderCaseBugsHtml(caseBugs)
+          : `<div class="editable-note" contenteditable="true">ここにNGの詳細説明を記入してください。</div>`;
         explainRows.push(`
           <div class="supplement-item">
             <div class="supplement-label">NG説明</div>
-            <div class="editable-note" contenteditable="true">ここにNGの詳細説明を記入してください。</div>
+            ${ngRight}
           </div>`);
       }
       if (blocked > 0) {
@@ -1374,6 +1424,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportTemplateHtml, setReportTemplateHtml] = useState('');
   const [creatingReport, setCreatingReport] = useState(false);
+  const [creatingReportBugs, setCreatingReportBugs] = useState(false);
   const [resultDraftMap, setResultDraftMap] = useState<Record<string, ResultDraft>>({});
   const [savingResultMap, setSavingResultMap] = useState<Record<string, boolean>>({});
   const [resultSaveNoticeMap, setResultSaveNoticeMap] = useState<Record<string, SaveNotice>>({});
@@ -1990,6 +2041,65 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     }
   };
 
+  // 結果報告 + 関連バグ (選択案件ごとに by-case で取得し NG説明欄へ埋め込む)
+  const handleCreateReportWithBugs = async () => {
+    if (!selectedAreaId) return;
+    if (selectedItems.length === 0) {
+      setReportError(t('reportSelectRequired'));
+      return;
+    }
+    setCreatingReportBugs(true);
+    setReportError(null);
+    try {
+      let template = reportTemplateHtml;
+      if (!template) {
+        const response = await fetch('/report-template.html');
+        if (!response.ok) throw new Error(t('reportTemplateReadFailed'));
+        template = await response.text();
+        setReportTemplateHtml(template);
+      }
+      const completed = selectedItems.filter((it) => it.status === '予定通り完了');
+      const entries = await Promise.all(
+        completed.map(async (it): Promise<[string, ReportBug[]]> => {
+          try {
+            const r = await fetch(`/api/test-center/bugs/by-case/${it.id}`);
+            if (!r.ok) return [it.id, []];
+            const d = await r.json();
+            return [it.id, (d.items ?? []) as ReportBug[]];
+          } catch {
+            return [it.id, []];
+          }
+        })
+      );
+      const bugsByCase = new Map<string, ReportBug[]>(entries);
+      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions, bugsByCase);
+      setReportHtml(html);
+      setReportOpen(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : t('reportGenerateFailed');
+      setReportError(message);
+    } finally {
+      setCreatingReportBugs(false);
+    }
+  };
+
+  const handleSaveReportHtml = () => {
+    if (!selectedAreaId) return;
+    const iframe = reportPreviewIframeRef.current;
+    const liveRoot = iframe?.contentDocument?.documentElement;
+    const html = liveRoot ? `<!DOCTYPE html>\n${liveRoot.outerHTML}` : reportHtml;
+    const filename = getReportPdfFilename(currentMonthKey, selectedAreaId).replace(/\.pdf$/, '.html');
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const handleSaveReportPdf = () => {
     if (!selectedAreaId) return;
     const iframe = reportPreviewIframeRef.current;
@@ -2359,6 +2469,15 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     {creatingReport ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
                     {t('btnResultReport')}
                   </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateReportWithBugs}
+                    disabled={creatingReportBugs || selectedItems.length === 0}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-rose-600 text-white text-sm font-medium hover:bg-rose-500 disabled:bg-neutral-200 disabled:text-neutral-500 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {creatingReportBugs ? <Loader2 size={16} className="animate-spin" /> : <FileText size={16} />}
+                    {t('btnResultReportWithBug')}
+                  </button>
                 </div>
               </div>
 
@@ -2655,6 +2774,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500"
               >
                 {t('btnSaveReportPdf')}
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveReportHtml}
+                className="px-3 py-1.5 rounded-lg border border-indigo-300 text-indigo-700 text-sm font-medium hover:bg-indigo-50"
+              >
+                {t('btnSaveReportHtml')}
               </button>
               <button
                 type="button"
