@@ -28,6 +28,7 @@ import { type Lang, createT } from '../i18n/testcenter';
 import MonthlyReport from './MonthlyReport';
 import BugList from './BugList';
 import CaseStats from './CaseStats';
+import CaseBugList from './CaseBugList';
 import {
   BarChart,
   Bar,
@@ -2303,6 +2304,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     )}
                   </div>
                 </section>
+
+                <CaseBugList caseId={editingResultItem.id} lang={lang} />
               </div>
             ) : (
             <div className="space-y-4">
