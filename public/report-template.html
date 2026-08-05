@@ -350,9 +350,16 @@
       color: #64748b;
       font-size: 12px;
     }
+    /* 画像クリックで拡大 (HTML閲覧時のみ、印刷では無効) */
+    .report-container img { cursor: zoom-in; }
+    .img-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: none; align-items: center; justify-content: center; z-index: 9999; cursor: zoom-out; padding: 20px; }
+    .img-lightbox.open { display: flex; }
+    .img-lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; border-radius: 4px; cursor: zoom-out; }
     @media print {
       @page { size: A4; margin: 12mm; }
       body { background: #fff; padding: 0; }
+      .img-lightbox { display: none !important; }
+      .report-container img { cursor: auto; }
       .report-container { box-shadow: none; border-radius: 0; padding: 0; }
       .cover-page {
         min-height: 273mm;
@@ -429,5 +436,25 @@
   <div class="footer">リスクモンスター株式会社 海南テストセンター</div>
   </div>
 </div>
+<div class="img-lightbox" id="imgLightbox"><img alt="" /></div>
+<script>
+(function () {
+  var overlay = document.getElementById('imgLightbox');
+  if (!overlay) return;
+  var big = overlay.querySelector('img');
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t && t.tagName === 'IMG' && !overlay.contains(t)) {
+      big.src = t.currentSrc || t.src;
+      overlay.classList.add('open');
+    } else if (overlay.classList.contains('open')) {
+      overlay.classList.remove('open');
+    }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') overlay.classList.remove('open');
+  });
+})();
+</script>
 </body>
 </html>
