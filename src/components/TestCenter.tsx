@@ -29,6 +29,7 @@ import MonthlyReport from './MonthlyReport';
 import BugList from './BugList';
 import CaseStats from './CaseStats';
 import CaseBugList from './CaseBugList';
+import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
 import {
   BarChart,
   Bar,
@@ -492,6 +493,7 @@ function buildPlanHtml(
 }
 
 type ReportBug = {
+  id: string;
   no: string;
   bugDesc: string;
   judgment: string;
@@ -511,10 +513,15 @@ function reportDateShort(v: string): string {
 }
 
 // NG説明欄に埋め込む、案件の関連バグ (折りたたみ)。印刷時はCSSで全展開。
-function renderCaseBugsHtml(bugs: ReportBug[]): string {
+// childMap: バグ子ページHTML(画像はbase64埋め込み済み)を No/詳細スクリーンショットとして表示。
+function renderCaseBugsHtml(bugs: ReportBug[], childMap?: Record<string, string>): string {
   const cards = bugs
-    .map(
-      (b) => `
+    .map((b) => {
+      const childHtml = childMap?.[b.id] ?? '';
+      const shots = childHtml.trim()
+        ? `<div class="bug-shots"><div class="bk">詳細スクリーンショット</div><div class="bug-shots-body">${childHtml}</div></div>`
+        : '';
+      return `
       <details class="bug-card">
         <summary>
           <span class="bug-card-no">${safeHtml(b.no || '-')}</span>
@@ -529,9 +536,10 @@ function renderCaseBugsHtml(bugs: ReportBug[]): string {
           </div>
           <div class="bcell"><span class="bk">確認結果</span><span class="bv">${safeHtml(b.remarks || '-')}</span></div>
           <div class="bmeta">実施日: ${safeHtml(reportDateShort(b.execDate))}　実施者: ${safeHtml(b.assignee || '-')}　ブラウザ: ${safeHtml(b.browserVersion || '-')}</div>
+          ${shots}
         </div>
-      </details>`
-    )
+      </details>`;
+    })
     .join('\n');
   return `<div class="case-bugs">${cards}</div>`;
 }
@@ -542,7 +550,8 @@ function buildResultReportHtml(
   monthKey: string,
   areaId: AreaId,
   versions: EnvVersions,
-  bugsByCase?: Map<string, ReportBug[]>
+  bugsByCase?: Map<string, ReportBug[]>,
+  bugChildMap?: Record<string, string>
 ): string {
   if (selectedItems.length === 0) return template;
 
@@ -588,7 +597,7 @@ function buildResultReportHtml(
       if (bug > 0) {
         const caseBugs = bugsByCase?.get(item.id) ?? [];
         const ngRight = caseBugs.length > 0
-          ? renderCaseBugsHtml(caseBugs)
+          ? renderCaseBugsHtml(caseBugs, bugChildMap)
           : `<div class="editable-note" contenteditable="true">ここにNGの詳細説明を記入してください。</div>`;
         explainRows.push(`
           <div class="supplement-item">
@@ -2072,7 +2081,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         })
       );
       const bugsByCase = new Map<string, ReportBug[]>(entries);
-      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions, bugsByCase);
+      // 各バグの子ページ(スクリーンショット等)を取得し、画像はbase64で埋め込む
+      const bugIds = entries.flatMap(([, bugs]) => bugs.map((b) => b.id));
+      let bugChildMap: Record<string, string> = {};
+      if (bugIds.length > 0) {
+        bugChildMap = await fetchBugChildrenMap(bugIds);
+        await inlineChildImages(bugChildMap);
+      }
+      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions, bugsByCase, bugChildMap);
       setReportHtml(html);
       setReportOpen(true);
     } catch (e) {

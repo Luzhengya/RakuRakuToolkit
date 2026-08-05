@@ -164,6 +164,81 @@ function fmtEnvVersion(it: BugPdfItem): string {
   return parts.join(' / ') || '-';
 }
 
+// 子ページ(バグ詳細)のHTMLをまとめて取得する
+export async function fetchBugChildrenMap(ids: string[]): Promise<Record<string, string>> {
+  const childMap: Record<string, string> = {};
+  const batchSize = 5;
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize);
+    const results = await Promise.allSettled(
+      batch.map(async (id) => {
+        const res = await fetch(`/api/test-center/bugs/${encodeURIComponent(id)}/children`);
+        if (res.ok) {
+          const data = await res.json();
+          return { id, html: typeof data.html === 'string' ? data.html : '' };
+        }
+        return { id, html: '' };
+      })
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.html) childMap[r.value.id] = r.value.html;
+    }
+  }
+  return childMap;
+}
+
+// Notionホスト画像をbase64で埋め込み、DL後もS3のURL期限切れで消えないようにする。
+// 画像1枚につき1リクエスト(重複排除)で各レスポンスをVercelの4.5MB制限内に収める。
+export async function inlineChildImages(childMap: Record<string, string>): Promise<void> {
+  const parser = new DOMParser();
+  const docs: Record<string, Document> = {};
+  const urls = new Set<string>();
+
+  for (const [id, html] of Object.entries(childMap)) {
+    if (!html) continue;
+    const doc = parser.parseFromString(html, 'text/html');
+    docs[id] = doc;
+    doc.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') ?? '';
+      if (/\.amazonaws\.com/.test(src)) urls.add(src);
+    });
+  }
+
+  if (urls.size === 0) return;
+
+  const dataUriByUrl: Record<string, string> = {};
+  const list = [...urls];
+  const batchSize = 8;
+  for (let i = 0; i < list.length; i += batchSize) {
+    const batch = list.slice(i, i + batchSize);
+    const results = await Promise.allSettled(
+      batch.map(async (u) => {
+        const res = await fetch(`/api/test-center/notion-image?url=${encodeURIComponent(u)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (typeof data.dataUri === 'string') return { url: u, dataUri: data.dataUri };
+        }
+        throw new Error('fetch failed');
+      })
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled') dataUriByUrl[r.value.url] = r.value.dataUri;
+    }
+  }
+
+  for (const [id, doc] of Object.entries(docs)) {
+    let changed = false;
+    doc.querySelectorAll('img').forEach((img) => {
+      const src = img.getAttribute('src') ?? '';
+      if (dataUriByUrl[src]) {
+        img.setAttribute('src', dataUriByUrl[src]);
+        changed = true;
+      }
+    });
+    if (changed) childMap[id] = doc.body.innerHTML;
+  }
+}
+
 export function buildBugListHtml(
   items: BugPdfItem[],
   filters: BugPdfFilters,
