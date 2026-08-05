@@ -85,6 +85,8 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
     confirmResult: zh ? '确认结果' : '確認結果',
     update: zh ? '更新' : '更新',
     saved: zh ? '已更新' : '更新しました',
+    child: zh ? '子页面内容' : '子ページの内容',
+    childEmpty: zh ? '无子页面内容' : '子ページの内容はありません',
   };
 
   const [items, setItems] = useState<CaseBug[]>(() => cache.get(caseId) ?? []);
@@ -95,12 +97,15 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [noticeId, setNoticeId] = useState<string | null>(null);
+  const [childMap, setChildMap] = useState<Record<string, string>>({});
+  const [childLoadingId, setChildLoadingId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     setOpenId(null);
     setDrafts({});
     setNoticeId(null);
+    setChildMap({});
     setError(null);
     if (cache.has(caseId) && optionsCache) {
       setItems(cache.get(caseId)!);
@@ -138,7 +143,21 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId]);
 
-  const toggle = (id: string) => setOpenId((cur) => (cur === id ? null : id));
+  const loadChild = (id: string) => {
+    setChildLoadingId(id);
+    fetch(`/api/test-center/bugs/${id}/children`)
+      .then((res) => (res.ok ? res.json() : {}))
+      .then((data: any) => setChildMap((prev) => ({ ...prev, [id]: typeof data?.html === 'string' ? data.html : '' })))
+      .catch(() => setChildMap((prev) => ({ ...prev, [id]: '' })))
+      .finally(() => setChildLoadingId((cur) => (cur === id ? null : cur)));
+  };
+
+  const toggle = (id: string) =>
+    setOpenId((cur) => {
+      const next = cur === id ? null : id;
+      if (next && childMap[id] === undefined && childLoadingId !== id) loadChild(id);
+      return next;
+    });
 
   const getDraft = (bug: CaseBug): Draft =>
     drafts[bug.id] ?? {
@@ -328,6 +347,24 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
                           <CheckCircle2 size={12} />
                           {L.saved}
                         </span>
+                      )}
+                    </div>
+
+                    {/* 子ページ (画像+テキスト) */}
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-medium text-neutral-400">{L.child}</p>
+                      {childLoadingId === bug.id ? (
+                        <p className="text-sm text-neutral-400 flex items-center gap-2">
+                          <Loader2 size={14} className="animate-spin" />
+                          {L.loading}
+                        </p>
+                      ) : childMap[bug.id]?.trim() ? (
+                        <div
+                          className="text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded [&_img]:my-1.5"
+                          dangerouslySetInnerHTML={{ __html: childMap[bug.id] }}
+                        />
+                      ) : (
+                        <p className="text-sm text-neutral-400">{L.childEmpty}</p>
                       )}
                     </div>
                   </div>
