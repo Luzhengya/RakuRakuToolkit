@@ -1049,6 +1049,33 @@ async function queryAllBugItems(databaseId: string): Promise<BugItem[]> {
   return pages.map((pg) => parseBugItem(pg, relMap));
 }
 
+// 特定案件(caseId=進捗管理ページID)に紐づくバグのみを relation フィルタで取得。
+// 前端では「テスト案件名」列を表示しないため relation タイトルは解決しない(軽量化)。
+async function queryBugsByCaseId(databaseId: string, caseId: string): Promise<BugItem[]> {
+  if (!notion) return [];
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) {
+    throw new Error("No data source found in NOTION_BUG_DATABASE_ID");
+  }
+  const pages: any[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+  while (hasMore) {
+    const r: any = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      filter: { property: "テスト案件名", relation: { contains: caseId } } as any,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    pages.push(...r.results);
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  const emptyRelMap = new Map<string, string>();
+  return pages.map((pg) => parseBugItem(pg, emptyRelMap));
+}
+
 function escapeHtml(text: string): string {
   return String(text ?? "")
     .replace(/&/g, "&amp;")
@@ -1188,6 +1215,25 @@ app.get("/api/test-center/bugs", async (_req, res) => {
   } catch (error) {
     console.error("Bug list query error:", error);
     return res.status(500).json({ error: "Failed to query Notion bug database" });
+  }
+});
+
+// 特定案件に紐づくバグ一覧 (案件詳細画面の「関連バグ一覧」用)
+app.get("/api/test-center/bugs/by-case/:caseId", async (req, res) => {
+  const databaseId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_BUG_DATABASE_ID",
+    });
+  }
+  try {
+    const items = await queryBugsByCaseId(databaseId, req.params.caseId);
+    items.sort((a, b) => a.no.localeCompare(b.no, undefined, { numeric: true }));
+    return res.json({ items, total: items.length });
+  } catch (error) {
+    console.error("Bug by-case query error:", error);
+    return res.status(500).json({ error: "Failed to query bugs for case" });
   }
 });
 
