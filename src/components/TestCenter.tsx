@@ -795,7 +795,11 @@ async function apiCreateHistory(entry: HtmlHistory): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(entry),
   });
-  if (!res.ok) throw new Error(`Failed to save history (${res.status})`);
+  if (!res.ok) {
+    // 413: レポートが大きすぎ(画像多数)て履歴保存できない
+    if (res.status === 413) throw new Error('PAYLOAD_TOO_LARGE');
+    throw new Error(`Failed to save history (${res.status})`);
+  }
 }
 
 async function apiDeleteHistory(id: string): Promise<void> {
@@ -2046,7 +2050,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setHtmlHistory((prev) => [newEntry, ...prev]);
     apiCreateHistory(newEntry).catch((err) => {
       console.error('Save plan history failed:', err);
-      setPlanError(err instanceof Error ? err.message : 'Save failed');
+      const msg = err instanceof Error && err.message === 'PAYLOAD_TOO_LARGE'
+        ? t('historyTooLarge')
+        : err instanceof Error ? err.message : 'Save failed';
+      setPlanError(msg);
     });
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
@@ -2175,7 +2182,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setHtmlHistory((prev) => [newEntry, ...prev]);
     apiCreateHistory(newEntry).catch((err) => {
       console.error('Save report history failed:', err);
-      setReportError(err instanceof Error ? err.message : 'Save failed');
+      const msg = err instanceof Error && err.message === 'PAYLOAD_TOO_LARGE'
+        ? t('historyTooLarge')
+        : err instanceof Error ? err.message : 'Save failed';
+      setReportError(msg);
     });
     const previewWindow = window.open('', '_blank');
     if (!previewWindow) {
