@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, Loader2, AlertCircle, Bug } from 'lucide-react';
+import { ChevronDown, Loader2, AlertCircle, Bug, Save, CheckCircle2 } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
 
 type CaseBug = {
@@ -16,7 +16,11 @@ type CaseBug = {
   actualResult: string;
   caseNumber: string;
   browserVersion: string;
+  remarks: string;
 };
+
+type FieldOptions = { judgment: string[]; status: string[]; priority: string[] };
+type Draft = { judgment: string; status: string; priority: string; remarks: string };
 
 const JUDGMENT_COLOR: Record<string, string> = {
   '確認OK': 'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -40,8 +44,15 @@ function fmtDate(value: string): string {
 
 const GRID = '64px 130px minmax(0,1fr) 120px 120px 40px';
 
+// 現在値が選択肢に無い場合でも失わないよう先頭に補う
+function withCurrent(opts: string[], cur: string): string[] {
+  return cur && !opts.includes(cur) ? [cur, ...opts] : opts;
+}
+
 // caseId 単位のキャッシュ (案件切替時の重複リクエスト回避)
 const cache = new Map<string, CaseBug[]>();
+// 選択肢はDB共通なので全体で1度取得すれば十分
+let optionsCache: FieldOptions | null = null;
 
 function Field({ label, value, pre }: { label: string; value: string; pre?: boolean }) {
   return (
@@ -71,24 +82,33 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
     empty: zh ? '没有关联的BUG' : '関連バグはありません',
     loading: zh ? '加载中...' : '読み込み中...',
     unit: zh ? '件' : '件',
+    confirmResult: zh ? '确认结果' : '確認結果',
+    update: zh ? '更新' : '更新',
+    saved: zh ? '已更新' : '更新しました',
   };
 
   const [items, setItems] = useState<CaseBug[]>(() => cache.get(caseId) ?? []);
+  const [fieldOptions, setFieldOptions] = useState<FieldOptions>({ judgment: [], status: [], priority: [] });
   const [loading, setLoading] = useState(!cache.has(caseId));
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [noticeId, setNoticeId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     setOpenId(null);
-    if (cache.has(caseId)) {
+    setDrafts({});
+    setNoticeId(null);
+    setError(null);
+    if (cache.has(caseId) && optionsCache) {
       setItems(cache.get(caseId)!);
+      setFieldOptions(optionsCache);
       setLoading(false);
-      setError(null);
       return;
     }
     setLoading(true);
-    setError(null);
     fetch(`/api/test-center/bugs/by-case/${caseId}`)
       .then(async (res) => {
         if (!res.ok) {
@@ -102,6 +122,9 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
         const list = (data.items ?? []) as CaseBug[];
         cache.set(caseId, list);
         setItems(list);
+        const fo = (data.fieldOptions as FieldOptions) ?? { judgment: [], status: [], priority: [] };
+        optionsCache = fo;
+        setFieldOptions(fo);
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : zh ? '获取失败' : '取得失敗');
@@ -116,6 +139,54 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
   }, [caseId]);
 
   const toggle = (id: string) => setOpenId((cur) => (cur === id ? null : id));
+
+  const getDraft = (bug: CaseBug): Draft =>
+    drafts[bug.id] ?? {
+      judgment: bug.judgment,
+      status: bug.status,
+      priority: bug.priority,
+      remarks: bug.remarks,
+    };
+
+  const setField = (bug: CaseBug, key: keyof Draft, value: string) => {
+    setNoticeId(null);
+    setDrafts((prev) => ({ ...prev, [bug.id]: { ...getDraft(bug), [key]: value } }));
+  };
+
+  const saveBug = async (bug: CaseBug) => {
+    const d = getDraft(bug);
+    setSavingId(bug.id);
+    setNoticeId(null);
+    setError(null);
+    try {
+      const res = await fetch(`/api/test-center/bugs/${bug.id}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(d),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error((b as { error?: string }).error || (zh ? '更新失败' : '更新失敗'));
+      }
+      // ローカル反映 (items + キャッシュ) して badge/表示を最新化
+      const updated = items.map((it) => (it.id === bug.id ? { ...it, ...d } : it));
+      setItems(updated);
+      cache.set(caseId, updated);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[bug.id];
+        return next;
+      });
+      setNoticeId(bug.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : zh ? '更新失败' : '更新失敗');
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  const selectCls =
+    'w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none';
 
   return (
     <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-3">
@@ -155,6 +226,7 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
 
           {items.map((bug) => {
             const isOpen = openId === bug.id;
+            const d = getDraft(bug);
             return (
               <div key={bug.id} className="border-b border-neutral-100 last:border-b-0">
                 <div
@@ -199,11 +271,64 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
                         <div className="px-4 py-3"><Field label={L.actual} value={bug.actualResult} /></div>
                       </div>
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <Field label={L.priority} value={bug.priority} />
+                    {/* 只读メタ */}
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                       <Field label={L.date} value={fmtDate(bug.execDate)} />
                       <Field label={L.assignee} value={bug.assignee} />
                       <Field label={L.browser} value={bug.browserVersion} />
+                    </div>
+
+                    {/* 編集: 判定 / ステータス / 優先度 */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-medium text-neutral-400">{L.judg}</p>
+                        <select className={selectCls} value={d.judgment} onChange={(e) => setField(bug, 'judgment', e.target.value)}>
+                          <option value="">-</option>
+                          {withCurrent(fieldOptions.judgment, d.judgment).map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-medium text-neutral-400">{L.status}</p>
+                        <select className={selectCls} value={d.status} onChange={(e) => setField(bug, 'status', e.target.value)}>
+                          <option value="">-</option>
+                          {withCurrent(fieldOptions.status, d.status).map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-medium text-neutral-400">{L.priority}</p>
+                        <select className={selectCls} value={d.priority} onChange={(e) => setField(bug, 'priority', e.target.value)}>
+                          <option value="">-</option>
+                          {withCurrent(fieldOptions.priority, d.priority).map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* 確認結果(備考) + 更新 */}
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-medium text-neutral-400">{L.confirmResult}</p>
+                      <div className="flex items-start gap-2">
+                        <textarea
+                          rows={2}
+                          value={d.remarks}
+                          onChange={(e) => setField(bug, 'remarks', e.target.value)}
+                          className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none resize-y"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => saveBug(bug)}
+                          disabled={savingId === bug.id}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed shrink-0"
+                        >
+                          {savingId === bug.id ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                          {L.update}
+                        </button>
+                      </div>
+                      {noticeId === bug.id && (
+                        <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
+                          <CheckCircle2 size={12} />
+                          {L.saved}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}

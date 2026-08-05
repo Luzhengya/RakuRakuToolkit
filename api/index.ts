@@ -320,6 +320,14 @@ function buildUpdatableProperty(property: any, rawValue: string, fieldName: stri
       const content = rawValue.trim();
       return { rich_text: content ? [{ type: "text", text: { content } }] : [] };
     }
+    case "select": {
+      const name = rawValue.trim();
+      return { select: name ? { name } : null };
+    }
+    case "status": {
+      const name = rawValue.trim();
+      return { status: name ? { name } : null };
+    }
     default:
       throw new Error(`Notion property "${fieldName}" type "${property.type}" is not writable by this tool`);
   }
@@ -1076,6 +1084,27 @@ async function queryBugsByCaseId(databaseId: string, caseId: string): Promise<Bu
   return pages.map((pg) => parseBugItem(pg, emptyRelMap));
 }
 
+// バグDBの 判定/ステータス/優先度 の選択肢を取得 (編集用ドロップダウン)
+async function getBugFieldOptions(
+  databaseId: string
+): Promise<{ judgment: string[]; status: string[]; priority: string[] }> {
+  const empty = { judgment: [], status: [], priority: [] };
+  if (!notion) return empty;
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) return empty;
+  const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+  const props = ds?.properties ?? {};
+  const opts = (name: string): string[] => {
+    const p = props[name];
+    if (!p) return [];
+    if (p.type === "select") return (p.select?.options ?? []).map((o: any) => o.name).filter(Boolean);
+    if (p.type === "status") return (p.status?.options ?? []).map((o: any) => o.name).filter(Boolean);
+    return [];
+  };
+  return { judgment: opts("判定"), status: opts("ステータス"), priority: opts("優先度") };
+}
+
 function escapeHtml(text: string): string {
   return String(text ?? "")
     .replace(/&/g, "&amp;")
@@ -1228,12 +1257,45 @@ app.get("/api/test-center/bugs/by-case/:caseId", async (req, res) => {
     });
   }
   try {
-    const items = await queryBugsByCaseId(databaseId, req.params.caseId);
+    const [items, fieldOptions] = await Promise.all([
+      queryBugsByCaseId(databaseId, req.params.caseId),
+      getBugFieldOptions(databaseId),
+    ]);
     items.sort((a, b) => a.no.localeCompare(b.no, undefined, { numeric: true }));
-    return res.json({ items, total: items.length });
+    return res.json({ items, total: items.length, fieldOptions });
   } catch (error) {
     console.error("Bug by-case query error:", error);
     return res.status(500).json({ error: "Failed to query bugs for case" });
+  }
+});
+
+// バグの 備考(確認結果)/判定/ステータス/優先度 を更新
+app.post("/api/test-center/bugs/:id/update", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const body = (req.body ?? {}) as {
+    remarks?: string;
+    judgment?: string;
+    status?: string;
+    priority?: string;
+  };
+  try {
+    const page = await notion.pages.retrieve({ page_id: req.params.id });
+    const properties = (page as any)?.properties ?? {};
+    const next: Record<string, any> = {};
+    if (body.remarks !== undefined) next["備考"] = buildUpdatableProperty(properties["備考"], body.remarks ?? "", "備考");
+    if (body.judgment !== undefined) next["判定"] = buildUpdatableProperty(properties["判定"], body.judgment ?? "", "判定");
+    if (body.status !== undefined) next["ステータス"] = buildUpdatableProperty(properties["ステータス"], body.status ?? "", "ステータス");
+    if (body.priority !== undefined) next["優先度"] = buildUpdatableProperty(properties["優先度"], body.priority ?? "", "優先度");
+    if (Object.keys(next).length === 0) {
+      return res.status(400).json({ error: "No updatable fields provided" });
+    }
+    await notion.pages.update({ page_id: req.params.id, properties: next });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Bug update error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Failed to update bug" });
   }
 });
 
