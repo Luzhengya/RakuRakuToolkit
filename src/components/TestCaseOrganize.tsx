@@ -22,6 +22,9 @@ type GroupStat = {
   ngCases: string[];
   unCases: string[];
   shimatekiCases: string[];
+  ngReasons: { no: string; remark: string }[];
+  blockReasons: { no: string; remark: string }[];
+  unReasons: { no: string; remark: string }[];
 };
 
 type FileResult = {
@@ -121,6 +124,24 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
       )}
     </div>
   );
+
+  // 案件別の原因 (備考=关键词後段)。備考が空なら「未記入」表示
+  const reasonBlock = (label: string, reasons: { no: string; remark: string }[]) => {
+    if (reasons.length === 0) return null;
+    return (
+      <div>
+        <p className="text-xs text-amber-700">{label}:</p>
+        <div className="pl-4 space-y-0.5">
+          {reasons.map((x, i) => (
+            <p key={i} className="text-xs text-neutral-600">
+              <span className="text-neutral-500">{x.no || '-'}:</span>{' '}
+              {x.remark.trim() ? x.remark : <span className="text-neutral-400">（未記入）</span>}
+            </p>
+          ))}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -234,18 +255,12 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                           {casesLine('テスト不可', g.block, g.blockCases)}
                           {casesLine('テストNG', g.ng, g.ngCases)}
                           {casesLine('未実施', g.un, g.unCases)}
-                          {casesLine('指摘修正', g.shimateki, g.shimatekiCases)}
+                          {casesLine('指摘対応', g.shimateki, g.shimatekiCases)}
                           {(g.ng > 0 || g.block > 0 || g.un > 0) && (
-                            <div className="mt-1 space-y-0.5">
-                              {g.ng > 0 && (
-                                <p className="text-xs text-amber-700">テストNGの原因:　関連するバグがあればバグIDもお知らせください。</p>
-                              )}
-                              {g.block > 0 && (
-                                <p className="text-xs text-amber-700">テスト不可の原因:</p>
-                              )}
-                              {g.un > 0 && (
-                                <p className="text-xs text-amber-700">未実施の原因:</p>
-                              )}
+                            <div className="mt-1 space-y-1.5">
+                              {reasonBlock('テストNGの原因', g.ngReasons)}
+                              {reasonBlock('テスト不可の原因', g.blockReasons)}
+                              {reasonBlock('未実施の原因', g.unReasons)}
                             </div>
                           )}
                         </div>
