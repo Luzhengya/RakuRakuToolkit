@@ -27,7 +27,9 @@ dotenv.config();
 
 const app = express();
 const notion = process.env.NOTION_API_KEY ? new Client({ auth: process.env.NOTION_API_KEY }) : null;
-app.use(express.json());
+// 結果報告(BUG付き)は画像をbase64で埋め込むためHTMLが数MBになる。
+// 履歴保存(POST /history)が既定の100kb上限を超えて413になるのを防ぐ。
+app.use(express.json({ limit: "25mb" }));
 
 // All file processing uses in-memory storage — avoids any cross-invocation /tmp dependency
 const upload = multer({
