@@ -1946,6 +1946,10 @@ type TestCaseGroupStat = {
   ngCases: string[];
   unCases: string[];
   shimatekiCases: string[];
+  // 画面表示用: 各結果の案件別「原因」(備考=关键词後段)
+  ngReasons: { no: string; remark: string }[];
+  blockReasons: { no: string; remark: string }[];
+  unReasons: { no: string; remark: string }[];
 };
 
 // 1つの CSV → { xlsx バッファ, グループ統計, 出力ファイル名 }
@@ -2005,16 +2009,17 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
     let g = groupMap.get(key);
     if (!g) {
       g = { label: key, total: 0, ok: 0, block: 0, ng: 0, un: 0, shimateki: 0,
-        blockCases: [], ngCases: [], unCases: [], shimatekiCases: [] };
+        blockCases: [], ngCases: [], unCases: [], shimatekiCases: [],
+        ngReasons: [], blockReasons: [], unReasons: [] };
       groupMap.set(key, g);
       groupOrder.push(key);
     }
     const caseNo = (r[CASENO_COL] ?? "").trim();
     g.total++;
     if (mapped === "OK") g.ok++;
-    else if (mapped === "テスト不可") { g.block++; g.blockCases.push(caseNo); }
-    else if (mapped === "NG") { g.ng++; g.ngCases.push(caseNo); }
-    else if (mapped === "未実施") { g.un++; g.unCases.push(caseNo); }
+    else if (mapped === "テスト不可") { g.block++; g.blockCases.push(caseNo); g.blockReasons.push({ no: caseNo, remark }); }
+    else if (mapped === "NG") { g.ng++; g.ngCases.push(caseNo); g.ngReasons.push({ no: caseNo, remark }); }
+    else if (mapped === "未実施") { g.un++; g.unCases.push(caseNo); g.unReasons.push({ no: caseNo, remark }); }
     if (point === SHIMATEKI_MARK) { g.shimateki++; g.shimatekiCases.push(caseNo); }
   }
 
