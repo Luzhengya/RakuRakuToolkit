@@ -78,6 +78,7 @@ const dict = {
     planSelectRequired: '请至少选择一条记录后再生成計画資料。',
     reportTemplateReadFailed: '读取报告模板失败',
     reportGenerateFailed: '生成结果报告失败',
+    historyTooLarge: '报告体积过大（图片过多），履历保存失败。PDF / HTML 文件仍可正常保存。',
     reportSelectRequired: '请至少选择一条记录后再生成结果报告。',
     // ── 履歴モーダル ───────────────────────────
     historyTitle: 'HTML 保存履歴',
@@ -200,6 +201,7 @@ const dict = {
     planSelectRequired: '少なくとも1件選択してから計画資料を作成してください。',
     reportTemplateReadFailed: '報告テンプレートの読み込みに失敗しました',
     reportGenerateFailed: '結果報告の生成に失敗しました',
+    historyTooLarge: 'レポートのサイズが大きすぎ（画像が多い）て履歴の保存に失敗しました。PDF / HTML の保存は可能です。',
     reportSelectRequired: '少なくとも1件選択してから結果報告を作成してください。',
     // ── 履歴モーダル ───────────────────────────
     historyTitle: 'HTML保存履歴',
