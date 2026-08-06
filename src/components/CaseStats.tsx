@@ -272,6 +272,19 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // BUG流出集計 (品質下部)。期間(年 + 月次のみ月)に連動して取得
+  const [bugLeak, setBugLeak] = useState<{ total: number; tcRelated: number; bySystem: { system: string; count: number }[] } | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams({ year: String(year) });
+    if (effectiveMonth !== 'all') params.set('month', String(effectiveMonth));
+    let alive = true;
+    fetch(`/api/test-center/bug-leak?${params.toString()}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((d) => { if (alive) setBugLeak(d); })
+      .catch(() => { if (alive) setBugLeak(null); });
+    return () => { alive = false; };
+  }, [year, effectiveMonth]);
+
   const availableYears = useMemo(() => {
     const years = new Set<number>();
     for (const it of items) {
@@ -654,7 +667,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         <th className={th0}>案件名</th>
         <th className={th0}>システム</th>
         <th className={th0}>状態</th>
-        <th className={th0}>見積</th>
+        <th className={th0}>テスト件数</th>
         <th className={th0}>実績(設計)</th>
         <th className={th0}>実績(実装)</th>
         <th className={th0}>実績(実施)</th>
@@ -699,7 +712,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       <td className={td0 + ' max-w-[220px] truncate'} title={r.it.projectName}>{r.it.projectName || '-'}</td>
       <td className={td0}>{r.it.system || '-'}</td>
       <td className={td0}>{r.it.status || '-'}</td>
-      <td className={tdNum}>{fmt(r.estimate)}</td>
+      <td className={tdNum}>{fmt(r.testTotal)}</td>
       <td className={tdNum}>{fmt(r.designA)}</td>
       <td className={tdNum}>{fmt(r.implA)}</td>
       <td className={tdNum}>{fmt(r.execA)}</td>
@@ -1278,6 +1291,42 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 )}
               </div>
             </div>
+          )}
+        </div>
+
+        {/* ─ BUG流出について ─ */}
+        <div className="border border-neutral-200 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-bold text-neutral-800">BUG流出について</h3>
+          {bugLeak ? (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+                  <p className="text-[10px] text-neutral-400 font-semibold tracking-wider">総数</p>
+                  <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{bugLeak.total}</p>
+                </div>
+                <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+                  <p className="text-[10px] text-neutral-400 font-semibold tracking-wider">テストセンター関連</p>
+                  <p className="text-xl font-bold text-red-600 mt-0.5 tabular-nums">{bugLeak.tcRelated}</p>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-neutral-500 mb-1.5">システム別件数</p>
+                {bugLeak.bySystem.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {bugLeak.bySystem.map((s) => (
+                      <span key={s.system} className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs">
+                        <span className="text-neutral-600">{s.system}</span>
+                        <span className="font-bold text-neutral-900 tabular-nums">{s.count}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-neutral-400">該当データなし</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-neutral-400">{loading ? '読み込み中...' : '該当データなし'}</p>
           )}
         </div>
 
