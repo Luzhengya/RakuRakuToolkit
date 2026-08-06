@@ -777,6 +777,7 @@ app.get("/api/test-center/case-stats", async (_req, res) => {
         execActual: item.execActual,
         reviewActual: item.reviewActual,
         comment: ach?.comment ?? "", // 備考 = 実績表のコメント
+        commentId: ach?.id ?? "", // コメント更新先 = 実績表ページID (無ければ編集不可)
         // 実績表 join (無ければ空文字)
         expectedCase: ach?.expectedCase ?? "",
         expectedNg: ach?.expectedNg ?? "",
@@ -790,6 +791,24 @@ app.get("/api/test-center/case-stats", async (_req, res) => {
   } catch (error) {
     console.error("Case stats error:", error);
     return res.status(500).json({ error: "Failed to query Notion case stats" });
+  }
+});
+
+// 案件一覧の備考(実績表「コメント」)を更新。id = 実績表ページID
+app.post("/api/test-center/achievement/:id/comment", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const comment = String((req.body ?? {}).comment ?? "");
+  try {
+    const page = await notion.pages.retrieve({ page_id: req.params.id });
+    const properties = (page as any)?.properties ?? {};
+    const next = { ["コメント"]: buildUpdatableProperty(properties["コメント"], comment, "コメント") };
+    await notion.pages.update({ page_id: req.params.id, properties: next });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("Achievement comment update error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Failed to update comment" });
   }
 });
 
