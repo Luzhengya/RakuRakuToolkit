@@ -617,7 +617,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         <th className={th0}>案件名</th>
         <th className={th0}>システム</th>
         <th className={th0}>状態</th>
-        <th className={th0}>見積</th>
+        <th className={th0}>テスト件数</th>
         <th className={th0}>実績(設計)</th>
         <th className={th0}>実績(実装)</th>
         <th className={th0}>実績(実施)</th>
@@ -639,7 +639,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       <td className={td0 + ' max-w-[220px] truncate'} title={r.it.projectName}>{r.it.projectName || '-'}</td>
       <td className={td0}>{r.it.system || '-'}</td>
       <td className={td0}>{r.it.status || '-'}</td>
-      <td className={tdNum}>{fmt(r.estimate)}</td>
+      <td className={tdNum}>{fmt(r.testTotal)}</td>
       <td className={tdNum}>{fmt(r.designA)}</td>
       <td className={tdNum}>{fmt(r.implA)}</td>
       <td className={tdNum}>{fmt(r.execA)}</td>
