@@ -793,6 +793,78 @@ app.get("/api/test-center/case-stats", async (_req, res) => {
   }
 });
 
+// ── BUG流出 (NOTION_BUGLEAK_DATABASE_ID) ────────────────────────────────
+// サービス=システム、責任(checkbox)=テストセンター関連、案件別(YYYYMM)=期間
+type BugLeakItem = { system: string; responsible: boolean; caseMonth: string };
+
+function parseBugLeakItem(page: any): BugLeakItem {
+  const p = page?.properties ?? {};
+  const resp = p["責任"];
+  return {
+    system: propertyToPlainText(p["サービス"]),
+    responsible: resp?.type === "checkbox" ? !!resp.checkbox : false,
+    caseMonth: propertyToPlainText(p["案件別"]),
+  };
+}
+
+async function queryAllBugLeakItems(databaseId: string): Promise<BugLeakItem[]> {
+  if (!notion) return [];
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) throw new Error("No data source found in NOTION_BUGLEAK_DATABASE_ID");
+  const pages: any[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+  while (hasMore) {
+    const r: any = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    pages.push(...r.results);
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  return pages.map(parseBugLeakItem);
+}
+
+// 案件一覧の品質下部「BUG流出」集計。year 必須、month 省略時は通年。
+app.get("/api/test-center/bug-leak", async (req, res) => {
+  const databaseId = process.env.NOTION_BUGLEAK_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_BUGLEAK_DATABASE_ID",
+    });
+  }
+  const year = req.query.year ? Number(req.query.year) : null;
+  const month = req.query.month ? Number(req.query.month) : null;
+  try {
+    const items = await queryAllBugLeakItems(databaseId);
+    const filtered = items.filter((it) => {
+      const m = (it.caseMonth || "").match(/^(\d{4})(\d{2})$/);
+      if (!m) return false;
+      if (year !== null && Number(m[1]) !== year) return false;
+      if (month !== null && Number(m[2]) !== month) return false;
+      return true;
+    });
+    const total = filtered.length;
+    const tcRelated = filtered.filter((it) => it.responsible).length;
+    const bySystemMap = new Map<string, number>();
+    for (const it of filtered) {
+      const s = it.system || "(未設定)";
+      bySystemMap.set(s, (bySystemMap.get(s) ?? 0) + 1);
+    }
+    const bySystem = Array.from(bySystemMap.entries())
+      .map(([system, count]) => ({ system, count }))
+      .sort((a, b) => b.count - a.count);
+    return res.json({ total, tcRelated, bySystem });
+  } catch (error) {
+    console.error("Bug-leak query error:", error);
+    return res.status(500).json({ error: "Failed to query Notion bug-leak database" });
+  }
+});
+
 // ── Monthly report (実績表 data source) ─────────────────────────────────
 // Queries the 実績表 Notion DB (NOTION_ACHIEVEMENT_DATABASE_ID) filtered by
 // year + month + selected systems. 年度 / 月次 are formula(number) fields.
