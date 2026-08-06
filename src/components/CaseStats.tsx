@@ -28,6 +28,7 @@ type CaseStatItem = {
   execActual: string;
   reviewActual: string;
   comment: string;
+  commentId: string;
   expectedCase: string;
   expectedNg: string;
   japanNgCount: string;
@@ -43,7 +44,7 @@ type CaseStatsProps = {
   initialMonth: 'all' | number;
 };
 
-const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v2';
+const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v3';
 const TH_KEY = 'testcenter:casestats:thresholds:v2';
 
 type CaseStatsCache = { items: CaseStatItem[]; updatedAt: number };
@@ -206,6 +207,42 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   const updateTh = (next: Thresholds) => {
     setTh(next);
     try { localStorage.setItem(TH_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  };
+
+  // 備考(実績表コメント)のインライン編集。フォーカスアウトで自動保存
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
+  const [commentSavingId, setCommentSavingId] = useState<string | null>(null);
+  const [commentSavedId, setCommentSavedId] = useState<string | null>(null);
+
+  const saveComment = async (caseId: string, commentId: string, original: string) => {
+    const draft = commentDrafts[caseId];
+    if (draft === undefined || draft === original) return; // 変更なし
+    if (!commentId) return; // 実績表の紐付け無し → 保存先なし
+    setCommentSavingId(caseId);
+    try {
+      const res = await fetch(`/api/test-center/achievement/${commentId}/comment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comment: draft }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      setItems((prev) => {
+        const next = prev.map((it) => (it.id === caseId ? { ...it, comment: draft } : it));
+        saveCaseStatsCache({ items: next, updatedAt: updatedAt ?? Date.now() });
+        return next;
+      });
+      setCommentDrafts((prev) => {
+        const n = { ...prev };
+        delete n[caseId];
+        return n;
+      });
+      setCommentSavedId(caseId);
+      setTimeout(() => setCommentSavedId((c) => (c === caseId ? null : c)), 2000);
+    } catch {
+      setError('備考の保存に失敗しました');
+    } finally {
+      setCommentSavingId(null);
+    }
   };
 
   const fetchStats = async () => {
@@ -647,6 +684,29 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     </thead>
   );
 
+  // 備考セル (実績表と紐付くもののみ編集可、フォーカスアウトで保存)
+  const renderCommentCell = (r: (typeof rows)[number]) => {
+    if (!r.it.commentId) {
+      return <td className={td0 + ' max-w-[160px] truncate'} title={r.it.comment}>{r.it.comment || '-'}</td>;
+    }
+    const val = commentDrafts[r.it.id] ?? r.it.comment;
+    return (
+      <td className={td0}>
+        <div className="flex items-center gap-1">
+          <input
+            value={val}
+            onChange={(e) => setCommentDrafts((prev) => ({ ...prev, [r.it.id]: e.target.value }))}
+            onBlur={() => saveComment(r.it.id, r.it.commentId, r.it.comment)}
+            className="w-full min-w-[110px] rounded border border-transparent hover:border-neutral-200 focus:border-neutral-400 px-1 py-0.5 text-xs focus:outline-none"
+            placeholder="-"
+          />
+          {commentSavingId === r.it.id && <Loader2 size={11} className="animate-spin text-neutral-400 shrink-0" />}
+          {commentSavedId === r.it.id && <CheckCircle2 size={11} className="text-emerald-500 shrink-0" />}
+        </div>
+      </td>
+    );
+  };
+
   const renderEffRow = (r: (typeof rows)[number]) => (
     <tr key={r.it.id} className="hover:bg-neutral-50">
       <td className={td0 + ' max-w-[220px] truncate'} title={r.it.projectName}>{r.it.projectName || '-'}</td>
@@ -662,7 +722,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.designEff, th.design)]}>{fmtEff(r.designEff)}</td>
       <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.execEff, th.exec)]}>{fmtEff(r.execEff)}</td>
       <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.reviewEff, th.review)]}>{fmtEff(r.reviewEff)}</td>
-      <td className={td0 + ' max-w-[160px] truncate'} title={r.it.comment}>{r.it.comment || '-'}</td>
+      {renderCommentCell(r)}
       <td className={td0}>{r.it.assignee || '-'}</td>
       <td className={td0}>{r.it.manager || '-'}</td>
     </tr>
@@ -720,7 +780,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           </span>
         ) : '-'}
       </td>
-      <td className={td0 + ' max-w-[160px] truncate'} title={r.it.comment}>{r.it.comment || '-'}</td>
+      {renderCommentCell(r)}
       <td className={td0}>{r.it.assignee || '-'}</td>
       <td className={td0}>{r.it.manager || '-'}</td>
     </tr>
