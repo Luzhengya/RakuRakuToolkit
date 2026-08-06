@@ -44,7 +44,7 @@ type CaseStatsProps = {
   initialMonth: 'all' | number;
 };
 
-const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v2';
+const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v3';
 const TH_KEY = 'testcenter:casestats:thresholds:v2';
 
 type CaseStatsCache = { items: CaseStatItem[]; updatedAt: number };
