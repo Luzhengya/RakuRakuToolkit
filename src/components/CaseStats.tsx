@@ -156,7 +156,7 @@ function band(v: number | null, th: EffTh): Band {
 const BAND_CLS: Record<Band, string> = {
   high: 'text-emerald-600 font-semibold',
   mid: 'text-neutral-700',
-  low: 'text-red-600 font-semibold',
+  low: 'bg-red-50 text-neutral-800 font-semibold',
   na: 'text-neutral-400',
 };
 
@@ -780,7 +780,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       <td className={tdNum}>{fmt(r.ng)}</td>
       <td className={tdNum}>{hasVal(r.it.japanTestCount) ? fmt(r.japanTest) : '-'}</td>
       <td className={tdNum}>{hasVal(r.it.japanNgCount) ? fmt(r.japanNg) : '-'}</td>
-      <td className={tdNum + (r.hasExpectedCase && r.caseDiff >= th.caseDiff.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
+      <td className={tdNum + (r.hasExpectedCase && r.caseDiff >= th.caseDiff.high ? ' text-red-600 font-semibold' : '')}>
         {r.hasExpectedCase ? (
           <span className="inline-flex items-center gap-0.5 justify-end">
             {r.hasExpectedCase && r.caseDiff >= th.caseDiff.high && <AlertTriangle size={11} />}{fmt(r.expectedCase)}
@@ -794,7 +794,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           <span className="inline-flex items-center gap-0.5 justify-end"><AlertTriangle size={11} />{fmtPct(r.ngLeakRate)}</span>
         ) : fmtPct(r.ngLeakRate)}
       </td>
-      <td className={tdNum + (r.hasExpectedNg && r.sensen >= th.sensen.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
+      <td className={tdNum + (r.hasExpectedNg && r.sensen >= th.sensen.high ? ' text-red-600 font-semibold' : '')}>
         {r.hasExpectedNg ? (
           <span className="inline-flex items-center gap-0.5 justify-end">
             {r.hasExpectedNg && r.sensen >= th.sensen.high && <AlertTriangle size={11} />}{fmt(r.sensen)}
