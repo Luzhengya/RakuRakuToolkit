@@ -671,6 +671,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         <th className={th0}>実績(review)</th>
         <th className={th0}>実績総</th>
         <th className={th0}>差分</th>
+        <th className={th0}>総効率</th>
         <th className={th0}>設計効率</th>
         <th className={th0}>実施効率</th>
         <th className={th0}>レビュー効率</th>
@@ -716,6 +717,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       <td className={tdNum}>{fmt(r.reviewA)}</td>
       <td className={tdNum}>{fmt(r.actual)}</td>
       <td className={tdNum + (r.diff > 0 ? ' text-red-600' : '')}>{(r.diff > 0 ? '+' : '') + fmt(r.diff)}</td>
+      <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.totalEff, th.total)]}>{fmtEff(r.totalEff)}</td>
       <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.designEff, th.design)]}>{fmtEff(r.designEff)}</td>
       <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.execEff, th.exec)]}>{fmtEff(r.execEff)}</td>
       <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.reviewEff, th.review)]}>{fmtEff(r.reviewEff)}</td>
