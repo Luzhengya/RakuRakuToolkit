@@ -36,6 +36,23 @@ type CaseStatItem = {
   tcNgCount: string;
 };
 
+type BugLeakDetail = {
+  system: string;
+  responsible: boolean;
+  caseMonth: string;
+  cmdb: string;
+  feature: string;
+  defect: string;
+  process: string;
+  category: string;
+  cause: string;
+  releaseTime: string;
+  tcResult: string;
+  status: string;
+  improvable: string;
+  checklist: string;
+};
+
 type CaseStatsProps = {
   onBack: () => void;
   onHome: () => void;
@@ -273,7 +290,12 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   }, []);
 
   // BUG流出集計 (品質下部)。期間(年 + 月次のみ月)に連動して取得
-  const [bugLeak, setBugLeak] = useState<{ total: number; tcRelated: number; bySystem: { system: string; count: number }[] } | null>(null);
+  const [bugLeak, setBugLeak] = useState<{
+    total: number;
+    tcRelated: number;
+    bySystem: { system: string; count: number }[];
+    items: BugLeakDetail[];
+  } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams({ year: String(year) });
     if (effectiveMonth !== 'all') params.set('month', String(effectiveMonth));
@@ -1323,6 +1345,52 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                   <p className="text-xs text-neutral-400">該当データなし</p>
                 )}
               </div>
+
+              {/* 詳細テーブル */}
+              {bugLeak.items.length > 0 && (
+                <div className="overflow-x-auto border border-neutral-200 rounded-lg">
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr>
+                        <th className={th0}>サービス</th>
+                        <th className={th0}>案件別</th>
+                        <th className={th0}>CMDB番号</th>
+                        <th className={th0}>機能(画面)名</th>
+                        <th className={th0}>障害内容</th>
+                        <th className={th0}>指摘工程</th>
+                        <th className={th0}>指摘分類</th>
+                        <th className={th0}>原因区分</th>
+                        <th className={th0}>リリース時期</th>
+                        <th className={th0}>TestCenter確認結果</th>
+                        <th className={th0}>状態</th>
+                        <th className={th0}>改善可/不可</th>
+                        <th className={th0}>責任</th>
+                        <th className={th0}>チェックリスト</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {bugLeak.items.map((b, i) => (
+                        <tr key={i} className="hover:bg-neutral-50">
+                          <td className={td0}>{b.system || '-'}</td>
+                          <td className={td0}>{b.caseMonth || '-'}</td>
+                          <td className={td0}>{b.cmdb || '-'}</td>
+                          <td className={td0 + ' max-w-[160px] truncate'} title={b.feature}>{b.feature || '-'}</td>
+                          <td className={td0 + ' max-w-[240px] truncate'} title={b.defect}>{b.defect || '-'}</td>
+                          <td className={td0}>{b.process || '-'}</td>
+                          <td className={td0}>{b.category || '-'}</td>
+                          <td className={td0}>{b.cause || '-'}</td>
+                          <td className={td0}>{b.releaseTime || '-'}</td>
+                          <td className={td0 + ' max-w-[180px] truncate'} title={b.tcResult}>{b.tcResult || '-'}</td>
+                          <td className={td0}>{b.status || '-'}</td>
+                          <td className={td0}>{b.improvable || '-'}</td>
+                          <td className={td0 + ' text-center'}>{b.responsible ? '✓' : '-'}</td>
+                          <td className={td0 + ' max-w-[160px] truncate'} title={b.checklist}>{b.checklist || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </>
           ) : (
             <p className="text-sm text-neutral-400">{loading ? '読み込み中...' : '該当データなし'}</p>

@@ -145,6 +145,8 @@ function propertyToPlainText(property: any): string {
         : "";
     case "status":
       return property.status?.name ?? "";
+    case "checkbox":
+      return property.checkbox ? "✓" : "";
     case "formula":
       if (!property.formula) return "";
       if (property.formula.type === "string") return property.formula.string ?? "";
@@ -814,7 +816,22 @@ app.post("/api/test-center/achievement/:id/comment", async (req, res) => {
 
 // ── BUG流出 (NOTION_BUGLEAK_DATABASE_ID) ────────────────────────────────
 // サービス=システム、責任(checkbox)=テストセンター関連、案件別(YYYYMM)=期間
-type BugLeakItem = { system: string; responsible: boolean; caseMonth: string };
+type BugLeakItem = {
+  system: string;
+  responsible: boolean;
+  caseMonth: string;
+  cmdb: string;
+  feature: string;
+  defect: string;
+  process: string;
+  category: string;
+  cause: string;
+  releaseTime: string;
+  tcResult: string;
+  status: string;
+  improvable: string;
+  checklist: string;
+};
 
 function parseBugLeakItem(page: any): BugLeakItem {
   const p = page?.properties ?? {};
@@ -823,6 +840,17 @@ function parseBugLeakItem(page: any): BugLeakItem {
     system: propertyToPlainText(p["サービス"]),
     responsible: resp?.type === "checkbox" ? !!resp.checkbox : false,
     caseMonth: propertyToPlainText(p["案件別"]),
+    cmdb: propertyToPlainText(p["CMDB番号"]),
+    feature: propertyToPlainText(p["機能(画面)名"]),
+    defect: propertyToPlainText(p["障害内容"]),
+    process: propertyToPlainText(p["指摘工程"]),
+    category: propertyToPlainText(p["指摘分類"]),
+    cause: propertyToPlainText(pickProperty(p, ["原因区分（要件定義、設計、実装）", "原因区分"])),
+    releaseTime: propertyToPlainText(p["リリース時期"]),
+    tcResult: propertyToPlainText(p["TestCenter確認結果"]),
+    status: propertyToPlainText(p["状態"]),
+    improvable: propertyToPlainText(p["改善可/不可"]),
+    checklist: propertyToPlainText(p["チェックリスト"]),
   };
 }
 
@@ -877,7 +905,7 @@ app.get("/api/test-center/bug-leak", async (req, res) => {
     const bySystem = Array.from(bySystemMap.entries())
       .map(([system, count]) => ({ system, count }))
       .sort((a, b) => b.count - a.count);
-    return res.json({ total, tcRelated, bySystem });
+    return res.json({ total, tcRelated, bySystem, items: filtered });
   } catch (error) {
     console.error("Bug-leak query error:", error);
     return res.status(500).json({ error: "Failed to query Notion bug-leak database" });
