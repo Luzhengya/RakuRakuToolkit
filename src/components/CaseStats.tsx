@@ -364,15 +364,13 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     const actualSum = rows.reduce((s, r) => s + r.actual, 0);
     const testSum = rows.reduce((s, r) => s + r.testTotal, 0);
     const ngSum = rows.reduce((s, r) => s + r.ng, 0);
-    // 要確認: いずれかの効率が低 or NG流出率超過 or 想定ケース差超過 or 潜在見逃し
+    // 要確認: いずれかの効率が低 or NG流出率超過 (想定ケース差/潜在見逃しは単独では警告しない)
     const attention = rows.filter((r) =>
       band(r.totalEff, th.total) === 'low' ||
       band(r.designEff, th.design) === 'low' ||
       band(r.execEff, th.exec) === 'low' ||
       band(r.reviewEff, th.review) === 'low' ||
-      (r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high) ||
-      (r.hasExpectedCase && r.caseDiff >= th.caseDiff.high) ||
-      (r.hasExpectedNg && r.sensen >= th.sensen.high)
+      (r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high)
     ).length;
     return {
       caseCount: rows.length,
@@ -457,23 +455,22 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           sensenCounts,
         };
         // 品質: 高(品質低=確認要) or 中(注意) の案件を抽出。理由(指標名+値)をラベル化
+        // 警告判定は NG流出率のみ。想定ケース差/潜在見逃しは単独では警告せず、
+        // NG流出率が高い(確認要/注意)時に付帯情報として併記する。
         const qualAttn = grp.flatMap((r) => {
-          const parts: { name: string; b: Band }[] = [];
-          if (r.ngLeakRate !== null) {
-            const b = band(r.ngLeakRate, th.ngLeak);
-            if (b === 'high' || b === 'mid') parts.push({ name: `NG流出率 ${fmtPct(r.ngLeakRate)}`, b });
-          }
+          if (r.ngLeakRate === null) return [];
+          const b = band(r.ngLeakRate, th.ngLeak);
+          if (b !== 'high' && b !== 'mid') return [];
+          const status: '確認要' | '注意' = b === 'high' ? '確認要' : '注意';
+          const labels = [`NG流出率 ${fmtPct(r.ngLeakRate)}`];
           if (r.hasExpectedCase) {
-            const b = band(r.caseDiff, th.caseDiff);
-            if (b === 'high' || b === 'mid') parts.push({ name: `想定ケース差 ${fmt(r.caseDiff)}`, b });
+            const cb = band(r.caseDiff, th.caseDiff);
+            if (cb === 'high' || cb === 'mid') labels.push(`想定ケース差 ${fmt(r.caseDiff)}`);
           }
           if (r.hasExpectedNg) {
-            const b = band(r.sensen, th.sensen);
-            if (b === 'high' || b === 'mid') parts.push({ name: `潜在見逃し ${fmt(r.sensen)}`, b });
+            const sb = band(r.sensen, th.sensen);
+            if (sb === 'high' || sb === 'mid') labels.push(`潜在見逃し ${fmt(r.sensen)}`);
           }
-          if (parts.length === 0) return [];
-          const status: '確認要' | '注意' = parts.some((p) => p.b === 'high') ? '確認要' : '注意';
-          const labels = parts.map((p) => p.name);
           return [{ r, status, labels }];
         });
 
