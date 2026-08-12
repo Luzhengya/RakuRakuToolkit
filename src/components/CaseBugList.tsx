@@ -207,13 +207,16 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
   const selectCls =
     'w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none';
 
+  // 判定=確認OK かつ 状態=対応不要 のバグは表示しない
+  const visibleItems = items.filter((b) => !(b.judgment === '確認OK' && b.status === '対応不要'));
+
   return (
     <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-3">
       <div className="flex items-center gap-2">
         <Bug size={16} className="text-neutral-500" />
         <h3 className="text-sm font-bold text-neutral-800">{L.title}</h3>
         {!loading && !error && (
-          <span className="text-xs text-neutral-400 tabular-nums">{items.length}{L.unit}</span>
+          <span className="text-xs text-neutral-400 tabular-nums">{visibleItems.length}{L.unit}</span>
         )}
       </div>
 
@@ -227,7 +230,7 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
           <AlertCircle size={16} />
           {error}
         </div>
-      ) : items.length === 0 ? (
+      ) : visibleItems.length === 0 ? (
         <p className="text-sm text-neutral-400 py-4">{L.empty}</p>
       ) : (
         <div className="border border-neutral-200 rounded-lg overflow-hidden">
@@ -243,7 +246,7 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
             <div />
           </div>
 
-          {items.map((bug) => {
+          {visibleItems.map((bug) => {
             const isOpen = openId === bug.id;
             const d = getDraft(bug);
             return (
