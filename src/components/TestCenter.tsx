@@ -2121,7 +2121,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             const r = await fetch(`/api/test-center/bugs/by-case/${it.id}`);
             if (!r.ok) return [it.id, []];
             const d = await r.json();
-            return [it.id, (d.items ?? []) as ReportBug[]];
+            // 判定=確認OK かつ 状態=対応不要 のバグは報告に含めない
+            const bugs = ((d.items ?? []) as ReportBug[]).filter(
+              (b) => !(b.judgment === '確認OK' && b.status === '対応不要')
+            );
+            return [it.id, bugs];
           } catch {
             return [it.id, []];
           }
