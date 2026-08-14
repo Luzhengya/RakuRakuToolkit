@@ -98,6 +98,9 @@ type ProgressItem = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  unexpectedNgCount: string;
+  japanCaseCount: string;
+  japanBugCount: string;
   designEstimate: string;
   implementationEstimate: string;
   executionEstimate: string;
@@ -121,6 +124,9 @@ type ResultUpdateItem = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  unexpectedNgCount: string;
+  japanCaseCount: string;
+  japanBugCount: string;
 };
 
 function richTextToPlainText(richText: any[] = []): string {
@@ -212,6 +218,9 @@ function parseProgressItem(page: any): ProgressItem {
     bugCount: propertyToPlainText(properties["NG数"]),
     testBlockedCount: propertyToPlainText(properties["Test不可"]),
     pendingConfirmCount: propertyToPlainText(properties["確認中件数"]),
+    unexpectedNgCount: propertyToPlainText(properties["想定外NG数"]),
+    japanCaseCount: propertyToPlainText(properties["日本側case数"]),
+    japanBugCount: propertyToPlainText(properties["日本側NG数"]),
     designEstimate: propertyToPlainText(
       pickProperty(properties, ["工数見積(設計書)", "工数見積(設計書)", "工数見積(設計)", "工数見積(設計)"])
     ),
@@ -627,6 +636,9 @@ app.get("/api/test-center", async (req, res) => {
         bugCount,
         testBlockedCount,
         pendingConfirmCount,
+        unexpectedNgCount,
+        japanCaseCount,
+        japanBugCount,
         designEstimate,
         implementationEstimate,
         executionEstimate,
@@ -649,6 +661,9 @@ app.get("/api/test-center", async (req, res) => {
         bugCount,
         testBlockedCount,
         pendingConfirmCount,
+        unexpectedNgCount,
+        japanCaseCount,
+        japanBugCount,
         designEstimate,
         implementationEstimate,
         executionEstimate,
@@ -1495,6 +1510,21 @@ app.post("/api/test-center/results", async (req, res) => {
           properties["確認中件数"],
           update.pendingConfirmCount ?? "",
           "確認中件数"
+        ),
+        ["想定外NG数"]: buildUpdatableProperty(
+          properties["想定外NG数"],
+          update.unexpectedNgCount ?? "",
+          "想定外NG数"
+        ),
+        ["日本側case数"]: buildUpdatableProperty(
+          properties["日本側case数"],
+          update.japanCaseCount ?? "",
+          "日本側case数"
+        ),
+        ["日本側NG数"]: buildUpdatableProperty(
+          properties["日本側NG数"],
+          update.japanBugCount ?? "",
+          "日本側NG数"
         ),
       };
 
