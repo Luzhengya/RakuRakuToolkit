@@ -68,6 +68,9 @@ type ProgressItem = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  unexpectedNgCount: string;
+  japanCaseCount: string;
+  japanBugCount: string;
   designEstimate: string;
   implementationEstimate: string;
   executionEstimate: string;
@@ -160,6 +163,9 @@ type ResultDraft = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  unexpectedNgCount: string;
+  japanCaseCount: string;
+  japanBugCount: string;
 };
 
 type SaveNotice = {
@@ -629,6 +635,7 @@ function buildResultReportHtml(
       const bug = parseNumber(item.bugCount);
       const blocked = parseNumber(item.testBlockedCount);
       const pending = parseNumber(item.pendingConfirmCount);
+      const unexpectedNg = parseNumber(item.unexpectedNgCount);
       const pass = Math.max(0, testTotal - bug - blocked - pending);
 
       // stats-row 直下に条件付き説明行を追加（案件名ヘッダーなし）
@@ -670,6 +677,7 @@ function buildResultReportHtml(
           <div class="stat-item"><span class="stat-label">テストOK</span><span class="stat-number ok-badge">${pass}</span></div>
           <div class="stat-item"><span class="stat-label">テスト不可</span><span class="stat-number pending-badge">${blocked}</span></div>
           <div class="stat-item"><span class="stat-label">テストNG</span><span class="stat-number ng-badge">${bug}</span></div>
+          <div class="stat-item"><span class="stat-label">想定外NG数</span><span class="stat-number ng-badge">${unexpectedNg}</span></div>
           <div class="stat-item"><span class="stat-label">判断不可/想定外</span><span class="stat-number pending-badge">${pending}</span></div>
         </div>
         ${explainHtml}
@@ -1482,6 +1490,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [savingResultMap, setSavingResultMap] = useState<Record<string, boolean>>({});
   const [resultSaveNoticeMap, setResultSaveNoticeMap] = useState<Record<string, SaveNotice>>({});
   const [editingResultItemId, setEditingResultItemId] = useState<string | null>(null);
+  // 案件行展开状态: 展示 7 输入项 (Test総件数/NG数/Test不可/確認中/想定外NG数/日本側case数/日本側NG数)
+  const [expandedInputsMap, setExpandedInputsMap] = useState<Record<string, boolean>>({});
+  const toggleInputsExpand = (id: string) => setExpandedInputsMap((prev) => ({ ...prev, [id]: !prev[id] }));
   const [htmlHistory, setHtmlHistory] = useState<HtmlHistory[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyShowAll, setHistoryShowAll] = useState(false);
@@ -1865,6 +1876,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             bugCount: item.bugCount || '',
             testBlockedCount: item.testBlockedCount || '',
             pendingConfirmCount: item.pendingConfirmCount || '',
+            unexpectedNgCount: item.unexpectedNgCount || '',
+            japanCaseCount: item.japanCaseCount || '',
+            japanBugCount: item.japanBugCount || '',
           };
         }
       }
@@ -1915,6 +1929,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           bugCount: '',
           testBlockedCount: '',
           pendingConfirmCount: '',
+          unexpectedNgCount: '',
+          japanCaseCount: '',
+          japanBugCount: '',
         }),
         [key]: value,
       },
@@ -1932,6 +1949,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     bugCount: resultDraftMap[item.id]?.bugCount ?? item.bugCount ?? '',
     testBlockedCount: resultDraftMap[item.id]?.testBlockedCount ?? item.testBlockedCount ?? '',
     pendingConfirmCount: resultDraftMap[item.id]?.pendingConfirmCount ?? item.pendingConfirmCount ?? '',
+    unexpectedNgCount: resultDraftMap[item.id]?.unexpectedNgCount ?? item.unexpectedNgCount ?? '',
+    japanCaseCount: resultDraftMap[item.id]?.japanCaseCount ?? item.japanCaseCount ?? '',
+    japanBugCount: resultDraftMap[item.id]?.japanBugCount ?? item.japanBugCount ?? '',
   });
 
   const isResultReady = (item: ProgressItem): boolean => {
@@ -1950,6 +1970,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       bugCount: item.bugCount || '',
       testBlockedCount: item.testBlockedCount || '',
       pendingConfirmCount: item.pendingConfirmCount || '',
+      unexpectedNgCount: item.unexpectedNgCount || '',
+      japanCaseCount: item.japanCaseCount || '',
+      japanBugCount: item.japanBugCount || '',
     };
 
     setSavingResultMap((prev) => ({ ...prev, [item.id]: true }));
@@ -2414,75 +2437,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           {!loading && !error && items.length > 0 && (
             editingResultItem ? (
               <div className="space-y-4">
-                <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-5">
-                  <div>
-                    <p className="text-xs uppercase tracking-wider text-neutral-400 font-semibold">{t('fieldCaseName')}</p>
-                    <p className="text-base font-semibold text-neutral-900 mt-1">{editingResultItem.projectName || '-'}</p>
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldTestTotal')}</p>
-                      <input
-                        type="text"
-                        value={getResultDraft(editingResultItem).testTotalCount}
-                        onChange={(e) => updateResultDraft(editingResultItem.id, 'testTotalCount', e.target.value)}
-                        className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder={t('inputPlaceholder')}
-                      />
-                    </label>
-                    <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldNgCount')}</p>
-                      <input
-                        type="text"
-                        value={getResultDraft(editingResultItem).bugCount}
-                        onChange={(e) => updateResultDraft(editingResultItem.id, 'bugCount', e.target.value)}
-                        className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder={t('inputPlaceholder')}
-                      />
-                    </label>
-                    <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldTestBlocked')}</p>
-                      <input
-                        type="text"
-                        value={getResultDraft(editingResultItem).testBlockedCount}
-                        onChange={(e) => updateResultDraft(editingResultItem.id, 'testBlockedCount', e.target.value)}
-                        className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder={t('inputPlaceholder')}
-                      />
-                    </label>
-                    <label className="space-y-1">
-                      <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldPendingCount')}</p>
-                      <input
-                        type="text"
-                        value={getResultDraft(editingResultItem).pendingConfirmCount}
-                        onChange={(e) => updateResultDraft(editingResultItem.id, 'pendingConfirmCount', e.target.value)}
-                        className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
-                        placeholder={t('inputPlaceholder')}
-                      />
-                    </label>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => handleSaveResultToNotion(editingResultItem)}
-                      disabled={!!savingResultMap[editingResultItem.id]}
-                      className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-not-allowed"
-                    >
-                      {savingResultMap[editingResultItem.id] ? <Loader2 size={14} className="animate-spin" /> : null}
-                      {t('btnSaveToNotion')}
-                    </button>
-                    {resultSaveNoticeMap[editingResultItem.id] && (
-                      <span
-                        className={`text-xs ${
-                          resultSaveNoticeMap[editingResultItem.id].type === 'success' ? 'text-emerald-600' : 'text-red-600'
-                        }`}
-                      >
-                        {resultSaveNoticeMap[editingResultItem.id].message}
-                      </span>
-                    )}
-                  </div>
+                <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
+                  <p className="text-xs uppercase tracking-wider text-neutral-400 font-semibold">{t('fieldCaseName')}</p>
+                  <p className="text-base font-semibold text-neutral-900 mt-1">{editingResultItem.projectName || '-'}</p>
                 </section>
 
                 <CaseBugList caseId={editingResultItem.id} lang={lang} />
@@ -2565,42 +2522,107 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 </div>
               )}
 
-              {currentItems.map((item) => (
-                <section
-                  key={item.id}
-                  className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-4"
-                >
-                  <div className="flex items-start gap-4">
-                    <input
-                      type="checkbox"
-                      checked={!!checkedMap[item.id]}
-                      onChange={(e) =>
-                        setCheckedMap((prev) => ({
-                          ...prev,
-                          [item.id]: e.target.checked,
-                        }))
-                      }
-                      className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
-                    />
-                    <div className="grid flex-1 grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-                      {renderField(t('fieldMonth'), item.month)}
-                      <div className="space-y-1">
-                        <p className="text-[11px] tracking-wider uppercase text-neutral-400 font-semibold">{t('fieldCaseName')}</p>
-                        <button
-                          type="button"
-                          onClick={() => setEditingResultItemId(item.id)}
-                          className="text-sm text-left text-blue-600 hover:text-blue-700 hover:underline break-all"
-                        >
-                          {item.projectName || '-'}
-                        </button>
+              {currentItems.map((item) => {
+                const expanded = !!expandedInputsMap[item.id];
+                const draft = getResultDraft(item);
+                const inputCls = 'w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none';
+                const labelCls = 'text-[11px] tracking-wider uppercase text-neutral-400 font-semibold';
+                return (
+                  <section
+                    key={item.id}
+                    className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-4"
+                  >
+                    <div className="flex items-start gap-4">
+                      <input
+                        type="checkbox"
+                        checked={!!checkedMap[item.id]}
+                        onChange={(e) =>
+                          setCheckedMap((prev) => ({
+                            ...prev,
+                            [item.id]: e.target.checked,
+                          }))
+                        }
+                        className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
+                      />
+                      <div className="grid flex-1 grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+                        {renderField(t('fieldMonth'), item.month)}
+                        <div className="space-y-1">
+                          <p className={labelCls}>{t('fieldCaseName')}</p>
+                          <button
+                            type="button"
+                            onClick={() => setEditingResultItemId(item.id)}
+                            className="text-sm text-left text-blue-600 hover:text-blue-700 hover:underline break-all"
+                          >
+                            {item.projectName || '-'}
+                          </button>
+                        </div>
+                        {renderField(t('fieldStatus'), item.status)}
+                        {renderField(t('fieldEstTotal'), item.estimateTotal)}
+                        {renderField(t('fieldActTotal'), item.actualTotal)}
                       </div>
-                      {renderField(t('fieldStatus'), item.status)}
-                      {renderField(t('fieldEstTotal'), item.estimateTotal)}
-                      {renderField(t('fieldActTotal'), item.actualTotal)}
+                      <button
+                        type="button"
+                        onClick={() => toggleInputsExpand(item.id)}
+                        className="mt-1 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-neutral-200 bg-white text-xs text-neutral-600 hover:bg-neutral-50 shrink-0"
+                        title={expanded ? '結果入力を閉じる' : '結果入力を開く'}
+                      >
+                        <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                        結果入力
+                      </button>
                     </div>
-                  </div>
-                </section>
-              ))}
+                    {expanded && (
+                      <div className="border-t border-neutral-100 pt-4 space-y-4">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <label className="space-y-1">
+                            <p className={labelCls}>{t('fieldTestTotal')}</p>
+                            <input type="text" value={draft.testTotalCount} onChange={(e) => updateResultDraft(item.id, 'testTotalCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                          <label className="space-y-1">
+                            <p className={labelCls}>{t('fieldNgCount')}</p>
+                            <input type="text" value={draft.bugCount} onChange={(e) => updateResultDraft(item.id, 'bugCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                          <label className="space-y-1">
+                            <p className={labelCls}>{t('fieldTestBlocked')}</p>
+                            <input type="text" value={draft.testBlockedCount} onChange={(e) => updateResultDraft(item.id, 'testBlockedCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                          <label className="space-y-1">
+                            <p className={labelCls}>{t('fieldPendingCount')}</p>
+                            <input type="text" value={draft.pendingConfirmCount} onChange={(e) => updateResultDraft(item.id, 'pendingConfirmCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                          <label className="space-y-1">
+                            <p className={labelCls}>想定外NG数</p>
+                            <input type="text" value={draft.unexpectedNgCount} onChange={(e) => updateResultDraft(item.id, 'unexpectedNgCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                          <label className="space-y-1">
+                            <p className={labelCls}>日本側case数</p>
+                            <input type="text" value={draft.japanCaseCount} onChange={(e) => updateResultDraft(item.id, 'japanCaseCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                          <label className="space-y-1">
+                            <p className={labelCls}>日本側NG数</p>
+                            <input type="text" value={draft.japanBugCount} onChange={(e) => updateResultDraft(item.id, 'japanBugCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => handleSaveResultToNotion(item)}
+                            disabled={!!savingResultMap[item.id]}
+                            className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-not-allowed"
+                          >
+                            {savingResultMap[item.id] ? <Loader2 size={14} className="animate-spin" /> : null}
+                            {t('btnSaveToNotion')}
+                          </button>
+                          {resultSaveNoticeMap[item.id] && (
+                            <span className={`text-xs ${resultSaveNoticeMap[item.id].type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
+                              {resultSaveNoticeMap[item.id].message}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                );
+              })}
             </div>
             )
           )}
