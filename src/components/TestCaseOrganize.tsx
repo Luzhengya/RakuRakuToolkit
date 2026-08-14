@@ -77,12 +77,12 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
       const res = await fetch('/api/testcase-format', { method: 'POST', body: formData });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || '整形失败，请重试');
+        throw new Error((data as { error?: string }).error || '整形に失敗しました。再試行してください');
       }
       const data = (await res.json()) as FormatResponse;
       setResponse(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '整形失败，请重试');
+      setError(err instanceof Error ? err.message : '整形に失敗しました。再試行してください');
       console.error(err);
     } finally {
       setLoading(false);
@@ -109,7 +109,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
         onClick={onBack}
         className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
       >
-        首页
+        ホーム
       </button>
       <span className="text-neutral-400">{'>>'}</span>
       <span className="text-neutral-900 font-medium">Testcase Format</span>
@@ -125,7 +125,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
     </div>
   );
 
-  // 案件別の原因 (備考=关键词後段)。備考が空なら「未記入」表示
+  // 案件別の原因 (備考=キーワード後段)。備考が空なら「未記入」表示
   const reasonBlock = (label: string, reasons: { no: string; remark: string }[]) => {
     if (reasons.length === 0) return null;
     return (
@@ -150,7 +150,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
       <div className="bg-white rounded-2xl shadow-sm border border-neutral-200 p-8">
         <div className="mb-8">
           <h2 className="text-2xl font-bold text-neutral-900 mb-2">Testcase Format</h2>
-          <p className="text-neutral-500">上传测试用例 CSV，整形为标准 Excel 格式并汇总测试结果</p>
+          <p className="text-neutral-500">テストケース CSV をアップロードして、標準 Excel 形式に整形し、テスト結果を集計します</p>
         </div>
 
         <div className="space-y-6">
@@ -178,9 +178,9 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
               </div>
               <div className="text-center">
                 <p className="font-semibold text-neutral-700">
-                  {isDragging ? '松开鼠标以上传文件' : files.length > 0 ? `已选择 ${files.length} 个文件` : '点击或拖拽上传 CSV 文件'}
+                  {isDragging ? 'ドロップしてアップロード' : files.length > 0 ? `${files.length} 個のファイルを選択済み` : 'クリックまたはドラッグして CSV ファイルをアップロード'}
                 </p>
-                <p className="text-xs text-neutral-400 mt-1">支持 .csv 格式，最多 20 个，单文件最大 50MB</p>
+                <p className="text-xs text-neutral-400 mt-1">.csv 形式、最大 20 個、1ファイル 50MB まで対応</p>
               </div>
             </div>
           </div>
@@ -191,7 +191,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-neutral-600 flex items-center gap-2">
                     <Loader2 size={14} className="animate-spin" />
-                    正在整形 {files.length} 个文件...
+                    {files.length} 個のファイルを整形中...
                   </span>
                 </div>
                 <div className="w-full h-2 bg-neutral-100 rounded-full overflow-hidden">
@@ -208,7 +208,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                 className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 transition-all flex items-center justify-center gap-2"
               >
                 <ClipboardList size={20} />
-                开始整形并汇总
+                整形と集計を開始
               </button>
             )
           )}
@@ -236,19 +236,19 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                   className="w-full py-3 bg-sky-600 text-white rounded-lg font-bold shadow hover:bg-sky-700 transition-all flex items-center justify-center gap-2"
                 >
                   <Download size={18} />
-                  下载 {response.downloadName}
+                  {response.downloadName} をダウンロード
                 </button>
 
                 <div className="space-y-4">
                   {response.results.map((r) => (
                     <div key={r.inputName} className="border border-neutral-200 rounded-lg p-4 space-y-3">
                       <p className="text-sm font-bold text-neutral-900 break-all">
-                        文件名：{r.inputName}
+                        ファイル名：{r.inputName}
                       </p>
                       {r.groups.map((g, idx) => (
                         <div key={idx} className="pl-3 border-l-2 border-sky-200 space-y-1">
                           <p className="text-sm font-semibold text-neutral-700">
-                            用例{idx + 1}：{g.label || '（空）'}
+                            テストケース{idx + 1}：{g.label || '（空）'}
                           </p>
                           <div className="text-sm text-neutral-700">テスト件数総計: {g.total}</div>
                           <div className="text-sm text-neutral-700">テストOK: {g.ok}</div>
