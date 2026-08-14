@@ -17,7 +17,6 @@ import {
   Users,
   Briefcase,
   Calendar,
-  Languages,
   ArrowLeft,
   ArrowRight,
   Cloud,
@@ -1187,25 +1186,25 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
     <div className="space-y-4">
       {/* Breadcrumb */}
       <nav className="flex items-center gap-1.5 text-sm text-neutral-500">
-        <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">{lang === 'zh' ? '首页' : 'ホーム'}</button>
+        <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
         <ChevronRight size={14} className="text-neutral-300 shrink-0" />
         <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">TestCenter</button>
         <ChevronRight size={14} className="text-neutral-300 shrink-0" />
-        <span className="text-neutral-900 font-medium">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</span>
+        <span className="text-neutral-900 font-medium">案件スケジュール</span>
       </nav>
 
       {/* Title bar */}
       <div className="flex items-end justify-between">
         <div className="flex items-baseline gap-3">
-          <h2 className="text-2xl font-bold text-neutral-900">{lang === 'zh' ? '案件进度甘特图' : '案件スケジュール'}</h2>
-          <span className="text-sm text-neutral-400 tabular-nums">{filtered.length}{lang === 'zh' ? '件' : '件'}</span>
+          <h2 className="text-2xl font-bold text-neutral-900">案件スケジュール</h2>
+          <span className="text-sm text-neutral-400 tabular-nums">{filtered.length}件</span>
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={() => setShowFilters((v) => !v)} className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${showFilters ? 'bg-neutral-900 border-neutral-900 text-white' : 'bg-white border-neutral-200 text-neutral-600 hover:bg-neutral-50'}`}>
-            <SlidersHorizontal size={14} />{lang === 'zh' ? '筛选' : 'フィルター'}
+            <SlidersHorizontal size={14} />フィルター
           </button>
           <button type="button" onClick={handleRefresh} disabled={refreshing} className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 transition-colors">
-            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />{lang === 'zh' ? '更新' : '更新'}
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />更新
           </button>
         </div>
       </div>
@@ -1217,7 +1216,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-neutral-600">
             <label className="flex items-center gap-1.5">
               <Calendar size={13} className="text-neutral-400" />
-              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '月份' : '月'}:</span>
+              <span className="text-neutral-500 font-medium">月:</span>
               <select className={selectClass} value={fMonthFrom} onChange={(e) => setFMonthFrom(Number(e.target.value))}>
                 {monthNums.map((m) => <option key={m} value={m}>{m}月</option>)}
               </select>
@@ -1227,21 +1226,21 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
               </select>
             </label>
             <div className="flex items-center gap-1.5">
-              <span className="text-neutral-500 font-medium">{lang === 'zh' ? '表示' : '表示'}:</span>
+              <span className="text-neutral-500 font-medium">表示:</span>
               <div className="flex rounded-lg border border-neutral-200 overflow-hidden">
-                {([['both', lang === 'zh' ? '予定と実績' : '予定と実績'], ['plan', lang === 'zh' ? '予定' : '予定'], ['actual', lang === 'zh' ? '実績' : '実績']] as [BarMode, string][]).map(([mode, label]) => (
+                {([['both', '予定と実績'], ['plan', '予定'], ['actual', '実績']] as [BarMode, string][]).map(([mode, label]) => (
                   <button key={mode} type="button" onClick={() => setBarMode(mode)} className={`px-2.5 py-1 text-xs transition-colors ${barMode === mode ? 'bg-neutral-900 text-white' : 'bg-white text-neutral-500 hover:bg-neutral-50'}`}>{label}</button>
                 ))}
               </div>
             </div>
             <button type="button" onClick={() => { setFMonthFrom(1); setFMonthTo(12); setFStatuses(new Set(statusOptions)); setFAreas(new Set(areaOptions.map(a => a.id))); setBarMode('both'); }} className="ml-auto text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
-              {lang === 'zh' ? '重置' : 'リセット'}
+              リセット
             </button>
           </div>
           {/* Row 2: status multi-select */}
           <div className="flex items-center gap-2 text-xs border-t border-neutral-100 pt-3">
-            <span className="text-neutral-500 font-medium shrink-0">{lang === 'zh' ? '状态' : 'ステータス'}:</span>
-            <button type="button" onClick={() => setFStatuses(isAllStatuses ? new Set() : new Set(statusOptions))} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isAllStatuses ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{lang === 'zh' ? '全部' : 'すべて'}</button>
+            <span className="text-neutral-500 font-medium shrink-0">ステータス:</span>
+            <button type="button" onClick={() => setFStatuses(isAllStatuses ? new Set() : new Set(statusOptions))} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isAllStatuses ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>すべて</button>
             {statusOptions.map(s => {
               const on = fStatuses === 'all' || fStatuses.has(s);
               return <button key={s} type="button" onClick={() => toggleStatus(s)} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{s}</button>;
@@ -1249,8 +1248,8 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
           </div>
           {/* Row 3: area multi-select */}
           <div className="flex items-center gap-2 text-xs border-t border-neutral-100 pt-3 flex-wrap">
-            <span className="text-neutral-500 font-medium shrink-0">{lang === 'zh' ? '系统' : 'システム'}:</span>
-            <button type="button" onClick={() => setFAreas(isAllAreas ? new Set() : new Set(areaOptions.map(a => a.id)))} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isAllAreas ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{lang === 'zh' ? '全部' : 'すべて'}</button>
+            <span className="text-neutral-500 font-medium shrink-0">システム:</span>
+            <button type="button" onClick={() => setFAreas(isAllAreas ? new Set() : new Set(areaOptions.map(a => a.id)))} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${isAllAreas ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>すべて</button>
             {areaOptions.map(a => {
               const on = fAreas === 'all' || fAreas.has(a.id);
               return <button key={a.id} type="button" onClick={() => toggleArea(a.id)} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>{a.label}</button>;
@@ -1267,10 +1266,10 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
         <div className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-sm">
           {/* Legend */}
           <div className="flex items-center gap-5 px-4 py-2 border-b border-neutral-200 bg-neutral-50/80 text-[11px] text-neutral-500">
-            {showPlan && <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bfdbfe' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#3b82f6' }} /><span>{lang === 'zh' ? '予定(設計/実施)' : '予定(設計/実施)'}</span></div>}
-            {showActual && <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bbf7d0' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#16a34a' }} /><span>{lang === 'zh' ? '実績(設計/実施)' : '実績(設計/実施)'}</span></div>}
-            <div className="flex items-center gap-1.5"><div className="w-0.5 h-3 bg-red-500 rounded-full" /><span>{lang === 'zh' ? '今日' : '今日'}</span></div>
-            <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-neutral-100 border border-neutral-200" /><span>{lang === 'zh' ? '周末' : '土日'}</span></div>
+            {showPlan && <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bfdbfe' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#3b82f6' }} /><span>予定(設計/実施)</span></div>}
+            {showActual && <div className="flex items-center gap-1.5"><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#bbf7d0' }} /><div className="w-3 h-[7px] rounded-sm" style={{ backgroundColor: '#16a34a' }} /><span>実績(設計/実施)</span></div>}
+            <div className="flex items-center gap-1.5"><div className="w-0.5 h-3 bg-red-500 rounded-full" /><span>今日</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-3 h-3 rounded-sm bg-neutral-100 border border-neutral-200" /><span>土日</span></div>
           </div>
 
           <div className="flex">
@@ -1278,8 +1277,8 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
             <div className="shrink-0" style={{ width: `${LEFT_W}px` }}>
               {/* Header */}
               <div className="flex border-b border-neutral-200 bg-neutral-50/60" style={{ height: '44px' }}>
-                <div className="w-60 shrink-0 px-4 border-r border-neutral-200 text-xs font-medium text-neutral-500 flex items-end pb-2">{lang === 'zh' ? '案件名' : '案件名'}</div>
-                <div className="w-[72px] shrink-0 px-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 text-right flex items-end justify-end pb-2">{lang === 'zh' ? '工数' : '工数'}</div>
+                <div className="w-60 shrink-0 px-4 border-r border-neutral-200 text-xs font-medium text-neutral-500 flex items-end pb-2">案件名</div>
+                <div className="w-[72px] shrink-0 px-2 border-r border-neutral-200 text-xs font-medium text-neutral-500 text-right flex items-end justify-end pb-2">工数</div>
               </div>
               {/* Rows */}
               {grouped.map((group) => (
@@ -1290,7 +1289,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
                   >
                     <ChevronDown size={14} className={`text-neutral-400 transition-transform ${collapsedGroups.has(group.areaId) ? '-rotate-90' : ''}`} />
                     <span className="text-[13px] font-bold text-neutral-700">{group.label}</span>
-                    <span className="text-xs text-neutral-400 tabular-nums">{group.items.length}{lang === 'zh' ? '件' : '件'}</span>
+                    <span className="text-xs text-neutral-400 tabular-nums">{group.items.length}件</span>
                   </div>
                   {!collapsedGroups.has(group.areaId) && group.items.map((it, idx) => {
                     const rowH = barMode === 'both' ? 44 : 22;
@@ -1377,7 +1376,7 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
           {/* Scroll slider */}
           {sliderMax > 0 && (
             <div className="px-4 py-2 border-t border-neutral-200 bg-neutral-50/80 flex items-center gap-3">
-              <span className="text-[10px] text-neutral-400 shrink-0">{lang === 'zh' ? '拖动查看' : 'スクロール'}</span>
+              <span className="text-[10px] text-neutral-400 shrink-0">スクロール</span>
               <input type="range" min={0} max={sliderMax} value={scrollLeft} onChange={handleSliderChange} className="flex-1 h-1.5 accent-neutral-400 cursor-pointer" style={{ marginLeft: `${LEFT_W}px` }} />
             </div>
           )}
@@ -1508,7 +1507,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [areaUpdatedAtMap, setAreaUpdatedAtMap] = useState<Record<string, number>>(initialAreaUpdatedAtMap);
   const [filterYear, setFilterYear] = useState<number>(() => new Date().getFullYear());
   const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
-  const [lang, setLang] = useState<Lang>('zh');
+  // 日本語固定（言語切替は廃止）
+  const lang: Lang = 'ja';
   const [monthlyReportOpen, setMonthlyReportOpen] = useState(false);
   const [caseStatsOpen, setCaseStatsOpen] = useState(false);
   const [bugListOpen, setBugListOpen] = useState(false);
@@ -2336,16 +2336,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             {editingResultItem ? t('caseDetail') : t('pageTitle')}
           </h2>
           <div className="flex items-center gap-2">
-            {/* 语言切换 */}
-            <button
-              type="button"
-              onClick={() => setLang((l) => l === 'zh' ? 'ja' : 'zh')}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs font-medium text-neutral-600 hover:bg-neutral-50 transition-colors select-none"
-              title={lang === 'zh' ? '日本語に切替' : '切换为中文'}
-            >
-              <Languages size={13} />
-              {lang === 'zh' ? '日本語' : '中文'}
-            </button>
             {selectedAreaId && (
               <>
                 {areaUpdatedAtMap[selectedAreaId] && (
@@ -2358,7 +2348,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   onClick={reloadAreaData}
                   disabled={loading}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  title={lang === 'zh' ? '从 Notion 重新拉取最新数据' : 'Notionから最新データを再取得'}
+                  title="Notionから最新データを再取得"
                 >
                   <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
                   {t('update')}
@@ -2642,7 +2632,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               onClick={fetchOverview}
               disabled={overviewLoading}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              title={overviewUpdatedAt ? `${t('lastUpdated')}：${formatUpdatedAt(overviewUpdatedAt)}` : (lang === 'zh' ? '从 Notion 拉取最新数据' : 'Notionから最新データを取得')}
+              title={overviewUpdatedAt ? `${t('lastUpdated')}：${formatUpdatedAt(overviewUpdatedAt)}` : 'Notionから最新データを取得'}
             >
               <RefreshCw size={14} className={overviewLoading ? 'animate-spin' : ''} />
               {t('update')}
@@ -2694,7 +2684,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint={lang === 'zh' ? '查看甘特图' : 'ガントチャート'}>
+            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="ガントチャート">
               <div className="space-y-2.5 pt-1">
                 {systemDistribution.slice(0, 6).map((row, idx) => {
                   const max = systemDistribution[0]?.count || 1;
@@ -2715,7 +2705,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={'案件一覧'} iconColor="bg-emerald-500" onClick={() => setCaseStatsOpen(true)} actionHint={lang === 'zh' ? '查看案件一览' : '案件一覧を開く'}>
+            <DashboardCard title={'案件一覧'} iconColor="bg-emerald-500" onClick={() => setCaseStatsOpen(true)} actionHint="案件一覧を開く">
               <StatusDonut data={statusDistribution} noDataLabel={t('noData')} caseLabel={t('caseLabel')} />
             </DashboardCard>
           </div>
@@ -2919,7 +2909,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               {selectedAreaId && (
                 <span className="text-xs text-neutral-400">
                   {historyShowAll
-                    ? `（${lang === 'zh' ? '全部区域' : '全エリア'}）`
+                    ? '（全エリア）'
                     : `（${selectedArea ? selectedArea.title[lang] : selectedAreaId}）`}
                 </span>
               )}

@@ -64,7 +64,7 @@ function Field({ label, value, pre }: { label: string; value: string; pre?: bool
 }
 
 export default function CaseBugList({ caseId, lang }: { caseId: string; lang: Lang }) {
-  const zh = lang === 'zh';
+  const zh = false;
   const L = {
     title: zh ? '关联BUG一览' : '関連バグ一覧',
     no: 'NO',

@@ -89,7 +89,7 @@ const SUMMARY_CARDS = [
 // dedicated request (one image per response) and deduped across all fragments.
 export default function BugList({ lang, onHome, onBack, initialMonth = '' }: BugListProps) {
   const L =
-    lang === 'zh'
+    false
       ? {
           home: '首页', testCenter: '测试中心', title: 'BUG一览',
           keyword: '关键字', keywordPh: 'NO / 测试案件名 / BUG概要',

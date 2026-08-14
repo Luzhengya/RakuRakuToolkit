@@ -246,7 +246,7 @@ export function buildBugListHtml(
   childContentMap: Record<string, string> = {}
 ): string {
   const L =
-    lang === 'zh'
+    false
       ? {
           reportTitle: '【TestCenter】BUG报告',
           period: '对象期间', project: '项目', createdAt: '创建日', assignee: '负责人',
@@ -363,7 +363,7 @@ export function buildBugListHtml(
   }).join('');
 
   return `<!DOCTYPE html>
-<html lang="${lang === 'zh' ? 'zh' : 'ja'}">
+<html lang="${false ? 'zh' : 'ja'}">
 <head>
 <meta charset="utf-8" />
 <title>${esc(L.reportTitle)}_${fmtNowCompact()}</title>
@@ -564,7 +564,7 @@ export function buildBugListHtml(
 
     <!-- Footer -->
     <footer class="report-footer">
-      <span>TestCenter-${lang === 'zh' ? 'BUG报告' : '不具合レポート'} ${fmtNowCompact()}</span>
+      <span>TestCenter-${false ? 'BUG报告' : '不具合レポート'} ${fmtNowCompact()}</span>
       <span>version1.0</span>
     </footer>
   </div>

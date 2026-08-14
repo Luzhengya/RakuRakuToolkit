@@ -41,7 +41,7 @@ function isNgVal(value: string, threshold: number, mode: 'gte' | 'lt'): boolean 
 }
 
 export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportProps) {
-  const homeLabel = lang === 'zh' ? '首页' : 'ホーム';
+  const homeLabel = false ? '首页' : 'ホーム';
   const [month, setMonth] = useState<string>(defaultMonth());
   const [selected, setSelected] = useState<Record<string, boolean>>(
     () => Object.fromEntries(SYSTEMS.map((s) => [s.name, true]))
@@ -93,11 +93,11 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
 
   const handleSearch = async () => {
     if (!/^\d{6}$/.test(month.trim())) {
-      setError(lang === 'zh' ? '月份请使用 YYYYMM 格式' : '月は YYYYMM 形式で入力してください');
+      setError(false ? '月份请使用 YYYYMM 格式' : '月は YYYYMM 形式で入力してください');
       return;
     }
     if (selectedSystems.length === 0) {
-      setError(lang === 'zh' ? '请至少选择一个系统' : 'システムを1つ以上選択してください');
+      setError(false ? '请至少选择一个系统' : 'システムを1つ以上選択してください');
       return;
     }
 
@@ -131,7 +131,7 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
   };
 
   const popupBlockedMsg =
-    lang === 'zh' ? '浏览器阻止了弹窗，请允许后重试。' : 'ポップアップがブロックされました。許可してから再試行してください。';
+    false ? '浏览器阻止了弹窗，请允许后重试。' : 'ポップアップがブロックされました。許可してから再試行してください。';
 
   // 「月次報告書 作成」→ 編集可能なプレビューを開く（計画資料と同じフロー）
   const handleCreateReport = () => {
@@ -179,10 +179,10 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || `保存失败 (${res.status})`);
       }
-      setHistoryNotice(lang === 'zh' ? '已保存履历到 Notion' : 'Notion に履歴を保存しました');
+      setHistoryNotice(false ? '已保存履历到 Notion' : 'Notion に履歴を保存しました');
     } catch (err) {
       setHistoryNotice(
-        (lang === 'zh' ? '履历保存失败：' : '履歴の保存に失敗しました：') +
+        (false ? '履历保存失败：' : '履歴の保存に失敗しました：') +
           (err instanceof Error ? err.message : 'Unknown error')
       );
     } finally {
@@ -210,7 +210,7 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
       </button>
       <ChevronRight size={14} className="text-neutral-300 shrink-0" />
       <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">
-        {lang === 'zh' ? '测试中心' : '測試中心'}
+        {false ? '测试中心' : '測試中心'}
       </button>
       <ChevronRight size={14} className="text-neutral-300 shrink-0" />
       <span className="text-neutral-900 font-medium">月次報告</span>
@@ -233,7 +233,7 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-neutral-600">
           <label className="flex items-center gap-1.5">
             <Calendar size={13} className="text-neutral-400" />
-            <span className="text-neutral-500 font-medium">{lang === 'zh' ? '月份' : '月'}:</span>
+            <span className="text-neutral-500 font-medium">{false ? '月份' : '月'}:</span>
             <select className={selectClass} value={monthYear} onChange={(e) => setMonth(`${e.target.value}${String(monthNum).padStart(2, '0')}`)}>
               {yearOptions.map((y) => <option key={y} value={y}>{y}年</option>)}
             </select>
@@ -249,18 +249,18 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg bg-neutral-900 font-medium text-white hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
-              {lang === 'zh' ? '检索' : '検索'}
+              {false ? '检索' : '検索'}
             </button>
             <button type="button" onClick={handleClear} className="text-xs text-neutral-500 hover:text-neutral-700 transition-colors">
-              {lang === 'zh' ? '重置' : 'リセット'}
+              {false ? '重置' : 'リセット'}
             </button>
           </div>
         </div>
         {/* Row 2: system pills */}
         <div className="flex items-center gap-2 text-xs border-t border-neutral-100 pt-3 flex-wrap">
-          <span className="text-neutral-500 font-medium shrink-0">{lang === 'zh' ? '系统' : 'システム'}:</span>
+          <span className="text-neutral-500 font-medium shrink-0">{false ? '系统' : 'システム'}:</span>
           <button type="button" onClick={toggleAll} className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${allChecked ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'}`}>
-            {lang === 'zh' ? '全部' : 'すべて'}
+            {false ? '全部' : 'すべて'}
           </button>
           {SYSTEMS.map((sys) => {
             const on = !!selected[sys.name];
@@ -386,7 +386,7 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
             <div className="flex items-center gap-3 min-w-0">
               <h3 className="text-base font-semibold text-neutral-900 whitespace-nowrap">月次報告書</h3>
               <span className="text-xs text-neutral-400 truncate">
-                {lang === 'zh' ? '可直接在预览中编辑，再保存为 PDF' : 'プレビュー内で直接編集してから PDF 保存できます'}
+                {false ? '可直接在预览中编辑，再保存为 PDF' : 'プレビュー内で直接編集してから PDF 保存できます'}
               </span>
               {historyNotice && (
                 <span className="inline-flex items-center gap-1 text-xs text-emerald-600 whitespace-nowrap">
@@ -403,14 +403,14 @@ export default function MonthlyReport({ lang, onHome, onBack }: MonthlyReportPro
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-500 disabled:bg-neutral-300 disabled:cursor-not-allowed"
               >
                 {savingPdf ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
-                {lang === 'zh' ? '保存为 PDF' : 'PDFとして保存'}
+                {false ? '保存为 PDF' : 'PDFとして保存'}
               </button>
               <button
                 type="button"
                 onClick={() => setReportOpen(false)}
                 className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
               >
-                {lang === 'zh' ? '关闭' : '閉じる'}
+                {false ? '关闭' : '閉じる'}
               </button>
             </div>
           </div>
