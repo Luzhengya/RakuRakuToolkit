@@ -2383,8 +2383,9 @@ const DEFAULT_ENV_VERSIONS: Record<string, string> = {
   Android: "16",
 };
 
-// name → version のマップを返す (name/version 属性を持つ Notion DB を読む)
-async function queryEnvVersions(databaseId: string): Promise<Record<string, string>> {
+// key → value のマップを返す (key/value 属性を持つ Notion DB を読む)
+// chrome/IOS/Android の環境バージョンに加え、KPI_XXX1 / KPI_XXX2 の目標値なども含む
+async function queryConfigTable(databaseId: string): Promise<Record<string, string>> {
   if (!notion) return {};
 
   const database = await notion.databases.retrieve({ database_id: databaseId });
@@ -2401,11 +2402,29 @@ async function queryEnvVersions(databaseId: string): Promise<Record<string, stri
   const map: Record<string, string> = {};
   for (const page of r.results ?? []) {
     const p = page?.properties ?? {};
-    const name = propertyToPlainText(p["name"]).trim();
-    const version = propertyToPlainText(p["version"]).trim();
-    if (name && version) map[name] = version;
+    const key = propertyToPlainText(p["key"]).trim();
+    const value = propertyToPlainText(p["value"]).trim();
+    if (key && value) map[key] = value;
   }
   return map;
+}
+
+// KPI_XXXn の行を 上期(1)/下期(2) に振り分ける。ラベルは KPI_ 接頭辞と末尾の 1/2 を除いた部分
+function partitionKpiTargets(map: Record<string, string>): {
+  first: { label: string; value: string }[];
+  second: { label: string; value: string }[];
+} {
+  const first: { label: string; value: string }[] = [];
+  const second: { label: string; value: string }[] = [];
+  for (const [key, value] of Object.entries(map)) {
+    if (!key.startsWith("KPI_")) continue;
+    const suffix = key.slice(-1);
+    if (suffix !== "1" && suffix !== "2") continue;
+    const label = key.slice(4, -1); // KPI_ を除き末尾の 1/2 を除く
+    if (!label) continue;
+    (suffix === "1" ? first : second).push({ label, value });
+  }
+  return { first, second };
 }
 
 app.get("/api/config/env-versions", async (_req, res) => {
@@ -2414,12 +2433,35 @@ app.get("/api/config/env-versions", async (_req, res) => {
     return res.json({ ...DEFAULT_ENV_VERSIONS });
   }
   try {
-    const map = await queryEnvVersions(databaseId);
-    // 既定値をベースに、表で取得できた値だけ上書き
-    return res.json({ ...DEFAULT_ENV_VERSIONS, ...map });
+    const map = await queryConfigTable(databaseId);
+    // 既定値をベースに、表で取得できた chrome/IOS/Android のみ上書き
+    // (KPI_ 行はここでは無視される。互換性のため既定値はそのまま返す)
+    const envOnly: Record<string, string> = {};
+    for (const [k, v] of Object.entries(map)) {
+      if (k === "chrome" || k === "IOS" || k === "ios" || k === "Android") {
+        // IOS/ios 表記の揺れを吸収して IOS に統一
+        envOnly[k === "ios" ? "IOS" : k] = v;
+      }
+    }
+    return res.json({ ...DEFAULT_ENV_VERSIONS, ...envOnly });
   } catch (error) {
     console.error("Env versions query error:", error);
     return res.json({ ...DEFAULT_ENV_VERSIONS });
+  }
+});
+
+// KPI 目標値を取得 (案件一覧の上期/下期モードで最上方に表示)
+app.get("/api/config/kpi-targets", async (_req, res) => {
+  const databaseId = process.env.NOTION_ENV_VERSION_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ first: [], second: [] });
+  }
+  try {
+    const map = await queryConfigTable(databaseId);
+    return res.json(partitionKpiTargets(map));
+  } catch (error) {
+    console.error("KPI targets query error:", error);
+    return res.json({ first: [], second: [] });
   }
 });
 
