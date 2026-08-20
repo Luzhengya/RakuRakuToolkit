@@ -84,6 +84,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       onClick: () => onSelectTool('testcase-organize'),
     },
     {
+      id: 'testcase-view',
+      title: 'TestCase',
+      description: 'Testcase Format で登録したテストケースを、月次・CMDB番号・分類などで絞り込んで確認します。',
+      category: '管理类',
+      icon: <ClipboardList className="text-indigo-600" size={24} />,
+      onClick: () => onSelectTool('testcase-view'),
+    },
+    {
       id: 'data-collection',
       title: '不安情報収集',
       description: '月次不安情報を集計・検索し、詳細確認やCSV出力ができます。',
