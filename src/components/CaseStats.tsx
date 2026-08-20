@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, FileText, Loader2, CheckCircle2 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
@@ -64,6 +64,18 @@ type CaseStatsProps = {
 
 const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v3';
 const TH_KEY = 'testcenter:casestats:thresholds:v2';
+const CHART_LAYOUT_KEY = 'testcenter:casestats:chartLayout:v1';
+
+type ChartLayout = { width?: number; height?: number; hidden?: boolean };
+function loadChartLayouts(): Record<string, ChartLayout> {
+  try {
+    const raw = localStorage.getItem(CHART_LAYOUT_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, ChartLayout>) : {};
+  } catch { return {}; }
+}
+function saveChartLayouts(m: Record<string, ChartLayout>) {
+  try { localStorage.setItem(CHART_LAYOUT_KEY, JSON.stringify(m)); } catch { /* ignore quota */ }
+}
 
 type CaseStatsCache = { items: CaseStatItem[]; updatedAt: number };
 
@@ -180,6 +192,24 @@ function matchPeriod(monthStr: string, year: number, month: 'all' | number): boo
   return true;
 }
 
+// チャート表示設定 pill 用のメタ (月次/年度モードそれぞれ)
+const MONTHLY_CHART_META: { id: string; title: string }[] = [
+  { id: 'm.pi.estimate', title: 'システム別 見積時間比率' },
+  { id: 'm.pi.actual', title: 'システム別 実績作業時間比率' },
+  { id: 'm.pi.testSum', title: 'システム別 テストケース件数比率' },
+];
+const YEARLY_CHART_META: { id: string; title: string }[] = [
+  { id: 'y.caseCount', title: '月別案件数' },
+  { id: 'y.testSum', title: '月別テスト件数' },
+  { id: 'y.ngSum', title: '月別NG件数' },
+  { id: 'y.ngLeak', title: '月別NG流出率(%)' },
+  { id: 'y.totalEff', title: '月別総効率' },
+  { id: 'y.pi.caseCount', title: 'システム別 案件数' },
+  { id: 'y.pi.actual', title: 'システム別 実績工数' },
+  { id: 'y.pi.ngLeak', title: 'システム別 NG流出率' },
+  { id: 'y.pi.totalEff', title: 'システム別 総効率' },
+];
+
 // 業務年度: year年2月 〜 (year+1)年1月
 // 上期(first): year年 2〜7月 / 下期(second): year年8月 〜 (year+1)年1月
 type HalfType = 'full' | 'first' | 'second';
@@ -239,6 +269,15 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [th, setTh] = useState<Thresholds>(() => loadThresholds());
+  // チャートのサイズ・表示状態を localStorage に保存
+  const [chartLayouts, setChartLayouts] = useState<Record<string, ChartLayout>>(() => loadChartLayouts());
+  const updateChartLayout = useCallback((id: string, patch: ChartLayout) => {
+    setChartLayouts((prev) => {
+      const next = { ...prev, [id]: { ...prev[id], ...patch } };
+      saveChartLayouts(next);
+      return next;
+    });
+  }, []);
   const [effOpen, setEffOpen] = useState(true);
   const [qualOpen, setQualOpen] = useState(true);
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
@@ -768,23 +807,98 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   );
 
   // 年度チャートカード (右下ハンドルでサイズ自由調節可、flex-wrapで隣接カードは自動再配置)
-  const ChartCard = ({ title, children }: { title: string; children: any }) => (
-    <div
-      className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col resize overflow-hidden"
-      style={{ width: 'calc(50% - 8px)', height: 300, minHeight: 200, minWidth: 240, flexShrink: 0 }}
-    >
-      <h4 className="text-sm font-semibold text-neutral-700 mb-3 shrink-0">{title}</h4>
-      <div className="flex-1 min-h-0">
-        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>{children}</ResponsiveContainer>
+  const ChartCard = ({ id, title, children }: { id: string; title: string; children: any }) => {
+    const layout = chartLayouts[id] || {};
+    const cardRef = useRef<HTMLDivElement>(null);
+    const saveTimerRef = useRef<number | null>(null);
+    useEffect(() => {
+      const el = cardRef.current;
+      if (!el) return;
+      const ro = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const box = entry.contentBoxSize?.[0] ?? entry.contentRect;
+          const width = 'inlineSize' in box ? (box as any).inlineSize : (box as DOMRectReadOnly).width;
+          const height = 'blockSize' in box ? (box as any).blockSize : (box as DOMRectReadOnly).height;
+          if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = window.setTimeout(() => {
+            updateChartLayout(id, { width: Math.round(width), height: Math.round(height) });
+          }, 400);
+        }
+      });
+      ro.observe(el);
+      return () => {
+        ro.disconnect();
+        if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [id]);
+    if (layout.hidden) return null;
+    return (
+      <div
+        ref={cardRef}
+        className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col resize overflow-hidden"
+        style={{
+          width: layout.width ? `${layout.width}px` : 'calc(50% - 8px)',
+          height: layout.height ?? 300,
+          minHeight: 200,
+          minWidth: 240,
+          flexShrink: 0,
+        }}
+      >
+        <div className="flex items-center justify-between mb-3 shrink-0 gap-2">
+          <h4 className="text-sm font-semibold text-neutral-700 truncate">{title}</h4>
+          <button
+            type="button"
+            onClick={() => updateChartLayout(id, { hidden: true })}
+            className="text-neutral-300 hover:text-red-500 text-sm leading-none shrink-0"
+            title="非表示"
+          >×</button>
+        </div>
+        <div className="flex-1 min-h-0">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>{children}</ResponsiveContainer>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
   const axisTick = { fontSize: 10, fill: '#94a3b8' };
   const tipStyle = { borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' };
   const monthLabel = (l: any) => `${l}月`;
+
+  // チャート表示/非表示の切替バー
+  const ChartVisibilityBar = ({ metas }: { metas: { id: string; title: string }[] }) => {
+    const hiddenCount = metas.filter((m) => chartLayouts[m.id]?.hidden).length;
+    return (
+      <div className="bg-white border border-neutral-200 rounded-xl px-4 py-2.5 flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-neutral-500 shrink-0">チャート表示:</span>
+        {metas.map((m) => {
+          const on = !chartLayouts[m.id]?.hidden;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => updateChartLayout(m.id, { hidden: on })}
+              className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-200 bg-white text-neutral-400 hover:bg-neutral-50'}`}
+              title={on ? '非表示にする' : '表示する'}
+            >
+              {m.title}
+            </button>
+          );
+        })}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => metas.forEach((m) => updateChartLayout(m.id, { hidden: false }))}
+            className="ml-auto text-xs text-neutral-500 hover:text-neutral-800 shrink-0"
+          >
+            全て表示
+          </button>
+        )}
+      </div>
+    );
+  };
   // システム別 円グラフカード (占比表示)
-  const PieCard = ({ title, data }: { title: string; data: { name: string; value: number }[] }) => (
-    <ChartCard title={title}>
+  const PieCard = ({ id, title, data }: { id: string; title: string; data: { name: string; value: number }[] }) => (
+    <ChartCard id={id} title={title}>
       <PieChart>
         <Tooltip contentStyle={tipStyle} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
@@ -1540,11 +1654,14 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
 
         {/* ─ システム別 円グラフ 3種 (月次モード用、レポート出力対象外) ─ */}
         {rows.length > 0 && (
-          <div className="flex flex-wrap gap-4 items-start">
-            <PieCard title="システム別 見積時間比率" data={systemPies.estimate} />
-            <PieCard title="システム別 実績作業時間比率" data={systemPies.actual} />
-            <PieCard title="システム別 テストケース件数比率" data={systemPies.testSum} />
-          </div>
+          <>
+            <ChartVisibilityBar metas={MONTHLY_CHART_META} />
+            <div className="flex flex-wrap gap-4 items-start">
+              <PieCard id="m.pi.estimate" title="システム別 見積時間比率" data={systemPies.estimate} />
+              <PieCard id="m.pi.actual" title="システム別 実績作業時間比率" data={systemPies.actual} />
+              <PieCard id="m.pi.testSum" title="システム別 テストケース件数比率" data={systemPies.testSum} />
+            </div>
+          </>
         )}
 
       </section>
@@ -1659,8 +1776,10 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         {rows.length === 0 ? (
           <p className="text-center text-sm text-neutral-400 py-12">{loading ? '読み込み中...' : '該当データなし'}</p>
         ) : (
+          <>
+          <ChartVisibilityBar metas={YEARLY_CHART_META} />
           <div className="flex flex-wrap gap-4 items-start">
-            <ChartCard title="月別案件数">
+            <ChartCard id="y.caseCount" title="月別案件数">
               <BarChart data={monthlySeries} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
@@ -1670,7 +1789,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </BarChart>
             </ChartCard>
 
-            <ChartCard title="月別テスト件数">
+            <ChartCard id="y.testSum" title="月別テスト件数">
               <BarChart data={monthlySeries} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
@@ -1680,7 +1799,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </BarChart>
             </ChartCard>
 
-            <ChartCard title="月別NG件数">
+            <ChartCard id="y.ngSum" title="月別NG件数">
               <BarChart data={monthlySeries} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
@@ -1690,7 +1809,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </BarChart>
             </ChartCard>
 
-            <ChartCard title="月別NG流出率(%)">
+            <ChartCard id="y.ngLeak" title="月別NG流出率(%)">
               <LineChart data={monthlySeries} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
@@ -1700,7 +1819,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </LineChart>
             </ChartCard>
 
-            <ChartCard title="月別総効率">
+            <ChartCard id="y.totalEff" title="月別総効率">
               <LineChart data={monthlySeries} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
@@ -1710,11 +1829,12 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </LineChart>
             </ChartCard>
 
-            <PieCard title="システム別 案件数" data={systemPies.caseCount} />
-            <PieCard title="システム別 実績工数" data={systemPies.actual} />
-            <PieCard title="システム別 NG流出率" data={systemPies.ngLeak} />
-            <PieCard title="システム別 総効率" data={systemPies.totalEff} />
+            <PieCard id="y.pi.caseCount" title="システム別 案件数" data={systemPies.caseCount} />
+            <PieCard id="y.pi.actual" title="システム別 実績工数" data={systemPies.actual} />
+            <PieCard id="y.pi.ngLeak" title="システム別 NG流出率" data={systemPies.ngLeak} />
+            <PieCard id="y.pi.totalEff" title="システム別 総効率" data={systemPies.totalEff} />
           </div>
+          </>
         )}
       </section>
       )}
