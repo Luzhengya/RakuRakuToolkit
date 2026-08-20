@@ -1523,7 +1523,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       /* ═══ 年度: 月別トレンド ═══ */
       <section className="space-y-4">
         <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">
-          {`年度サマリー (${year}年度 ${halfType === 'full' ? '通年' : halfType === 'first' ? '上期' : '下期'})`}
+          {`KPI (${year}年度 ${halfType === 'full' ? '通年' : halfType === 'first' ? '上期' : '下期'})`}
         </h3>
         {/* 期間累計 KPI */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -1540,25 +1540,33 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           ))}
         </div>
 
-        {/* KPI パネル: 8指標 (品質4 + 効率/規模4) */}
+        {/* KPI パネル: 品質(4) + 効率・規模(4) の2グループに分けて表示 */}
         {halfAgg && (() => {
+          type Half = typeof halfAgg.first;
           type FmtFn = (v: number | null) => string;
           const fmtNum: FmtFn = (v) => v === null ? '-' : fmt(v);
           const fmtDiff = (v: number): string => (v > 0 ? '+' : '') + fmt(v);
           const fmtDiffPct = (v: number): string => (v > 0 ? '+' : '') + fmt(v) + '%';
-          // higherIsWorse: 上升=劣化的指標(NG関連)。false=上升=改善
-          const defs = [
-            { key: 'NG率(総)',        pick: (h: typeof halfAgg.first) => h.ngRate,           higherIsWorse: true,  fmt: fmtPct as FmtFn, diffFmt: fmtDiffPct },
-            { key: 'NG流出率(総)',    pick: (h: typeof halfAgg.first) => h.ngLeakRate,       higherIsWorse: true,  fmt: fmtPct as FmtFn, diffFmt: fmtDiffPct },
-            { key: '想定外NG数(総)',  pick: (h: typeof halfAgg.first) => h.unexpectedNgSum,  higherIsWorse: true,  fmt: fmtNum,          diffFmt: fmtDiff },
-            { key: '総NG件数',        pick: (h: typeof halfAgg.first) => h.ngSum,            higherIsWorse: true,  fmt: fmtNum,          diffFmt: fmtDiff },
-            { key: '効率(総)',        pick: (h: typeof halfAgg.first) => h.totalEff,         higherIsWorse: false, fmt: fmtEff as FmtFn, diffFmt: fmtDiff },
-            { key: '見積対実績差分',  pick: (h: typeof halfAgg.first) => h.diff,             higherIsWorse: true,  fmt: fmtDiff as unknown as FmtFn, diffFmt: fmtDiff },
-            { key: '案件数(総)',      pick: (h: typeof halfAgg.first) => h.caseCount,        higherIsWorse: false, fmt: fmtNum,          diffFmt: fmtDiff },
-            { key: '総テスト件数',    pick: (h: typeof halfAgg.first) => h.testSum,          higherIsWorse: false, fmt: fmtNum,          diffFmt: fmtDiff },
+          type Def = { key: string; pick: (h: Half) => number | null; higherIsWorse: boolean; fmt: FmtFn; diffFmt: (v: number) => string };
+          // 品質グループ (4項)
+          const qualityDefs: Def[] = [
+            { key: 'NG率(総)',       pick: (h) => h.ngRate,          higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
+            { key: 'NG流出率(総)',   pick: (h) => h.ngLeakRate,      higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
+            { key: '想定外NG数(総)', pick: (h) => h.unexpectedNgSum, higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
+            { key: '総NG件数',       pick: (h) => h.ngSum,           higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
           ];
+          // 効率・規模グループ (4項)
+          const efficiencyDefs: Def[] = [
+            { key: '効率(総)',       pick: (h) => h.totalEff,        higherIsWorse: false, fmt: fmtEff, diffFmt: fmtDiff },
+            { key: '見積対実績差分', pick: (h) => h.diff,            higherIsWorse: true,  fmt: (v) => v === null ? '-' : fmtDiff(v), diffFmt: fmtDiff },
+            { key: '案件数(総)',     pick: (h) => h.caseCount,       higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
+            { key: '総テスト件数',   pick: (h) => h.testSum,         higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
+          ];
+          const groupHead = (label: string) => (
+            <h4 className="inline-block rounded-md bg-neutral-900 text-white text-xs font-bold px-3 py-1 mb-2">{label}</h4>
+          );
           if (halfType === 'full') {
-            return (
+            const renderTable = (defs: Def[]) => (
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
                 <div className="grid grid-cols-4 text-xs font-semibold text-neutral-500 bg-neutral-50 border-b border-neutral-200">
                   <div className="px-3 py-2">指標</div>
@@ -1586,9 +1594,15 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 })}
               </div>
             );
+            return (
+              <div className="space-y-4">
+                <div>{groupHead('品質')}{renderTable(qualityDefs)}</div>
+                <div>{groupHead('効率・規模')}{renderTable(efficiencyDefs)}</div>
+              </div>
+            );
           }
           const h = halfType === 'first' ? halfAgg.first : halfAgg.second;
-          return (
+          const renderCards = (defs: Def[]) => (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {defs.map((d) => (
                 <div key={d.key} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
@@ -1596,6 +1610,12 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                   <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{d.fmt(d.pick(h))}</p>
                 </div>
               ))}
+            </div>
+          );
+          return (
+            <div className="space-y-4">
+              <div>{groupHead('品質')}{renderCards(qualityDefs)}</div>
+              <div>{groupHead('効率・規模')}{renderCards(efficiencyDefs)}</div>
             </div>
           );
         })()}
