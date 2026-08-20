@@ -59,6 +59,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
   const [systemsLoading, setSystemsLoading] = useState(false);
   const [selectedSystem, setSelectedSystem] = useState('');
   const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState<number>(() => new Date().getMonth() + 1);
 
   const {
     files,
@@ -106,6 +107,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
       if (withNotion && selectedSystem) {
         formData.append('system', selectedSystem);
         formData.append('year', String(selectedYear));
+        formData.append('month', String(selectedMonth));
       }
 
       const res = await fetch('/api/testcase-format', { method: 'POST', body: formData });
@@ -370,18 +372,32 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
               )}
             </label>
 
-            <label className="block space-y-1">
-              <span className="text-xs font-semibold text-neutral-600">年度</span>
-              <select
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(Number(e.target.value))}
-                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
-              >
-                {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map((y) => (
-                  <option key={y} value={y}>{y}年</option>
-                ))}
-              </select>
-            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-neutral-600">年度 (テーブル単位)</span>
+                <select
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(Number(e.target.value))}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+                >
+                  {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map((y) => (
+                    <option key={y} value={y}>{y}年</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-neutral-600">月次 (行の属性)</span>
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+                >
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>{m}月</option>
+                  ))}
+                </select>
+              </label>
+            </div>
 
             <div className="flex items-center justify-end gap-2 pt-1">
               <button
