@@ -29,10 +29,6 @@ const dict = {
   chartMonthlyBug: '月別 BUG 推移',
   chartSystemDist: 'システム分類別 案件数',
   chartStatus: '案件ステータス',
-  // ── 月次报告入口 ──────────────────────────
-  monthlyReportTitle: '月次報告',
-  monthlyReportDesc: '月・システムを指定してテスト実績を検索し、月次報告書を作成します。',
-  monthlyReportEnter: '検索画面へ',
   bugListEnter: 'BUG一覧へ →',
   // ── 区域卡片 ──────────────────────────────
   caseLabel: '案件',
