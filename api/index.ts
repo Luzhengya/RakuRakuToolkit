@@ -2265,6 +2265,251 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
   };
 }
 
+// ── Testcase → Notion 登録 ────────────────────────────────────────────
+// 親ページ配下に「{システム}{年度}」という子データベースを作り、CSV の各ケースを upsert する。
+// ケース番号で突合し、差分があれば rich_text 項目を赤字にしてバージョンを +1、差分なしはスキップ。
+
+// Notion 側の属性名と、CSV(=Excel 出力) の列インデックスの対応。
+// col が null の列は CSV に対応が無いため常に空 (大分類/中分類/小分類)。
+// 「対応」(col 10) は Notion 側に作らない。
+type TcFieldKind = "title" | "select" | "rich_text" | "date" | "number";
+type TcField = { name: string; kind: TcFieldKind; col: number | null };
+const TESTCASE_NOTION_FIELDS: TcField[] = [
+  { name: "ケース番号", kind: "title", col: 0 },
+  { name: "システム", kind: "select", col: 1 },
+  { name: "大分類", kind: "rich_text", col: null },
+  { name: "中分類", kind: "rich_text", col: null },
+  { name: "小分類", kind: "rich_text", col: null },
+  { name: "機能名", kind: "rich_text", col: 2 },
+  { name: "要件名", kind: "rich_text", col: 3 },
+  { name: "テスト内容", kind: "rich_text", col: 4 },
+  { name: "前提条件", kind: "rich_text", col: 5 },
+  { name: "ステップ", kind: "rich_text", col: 6 },
+  { name: "予期結果", kind: "rich_text", col: 7 },
+  { name: "ポイント", kind: "rich_text", col: 8 },
+  { name: "優先級", kind: "rich_text", col: 9 },
+  { name: "カテゴリ", kind: "rich_text", col: 11 }, // CSV「適用段階」
+  { name: "状態", kind: "rich_text", col: 12 },
+  { name: "テスト結果", kind: "select", col: 13 },
+  { name: "作成者", kind: "rich_text", col: 14 },
+  { name: "作成日", kind: "date", col: 15 },
+  { name: "更新者", kind: "rich_text", col: 16 },
+  { name: "更新日", kind: "date", col: 17 },
+  { name: "バージョン", kind: "number", col: 18 },
+  { name: "関連NO", kind: "rich_text", col: 19 },
+  { name: "備考", kind: "rich_text", col: 20 },
+];
+const TC_VERSION_FIELD = "バージョン";
+
+// 「2026/8/3」「2026-08-03」→ ISO(YYYY-MM-DD)。解析できなければ null
+function toIsoDate(raw: string): string | null {
+  const s = (raw ?? "").trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if (!m) return null;
+  const [, y, mo, d] = m;
+  return `${y}-${String(Number(mo)).padStart(2, "0")}-${String(Number(d)).padStart(2, "0")}`;
+}
+
+// Excel 出力と同じ整形を適用した「1行 = 21列」を返す
+function normalizeTestcaseRow(r: string[]): string[] {
+  const out = new Array(TESTCASE_COL_COUNT).fill("");
+  for (let i = 0; i < TESTCASE_COL_COUNT; i++) out[i] = (r[i] ?? "").trim();
+  out[RESULT_COL] = mapTestResult(out[RESULT_COL]);
+  const { point, remark } = splitKeyword(r[KEYWORD_COL] ?? "");
+  out[KEYWORD_COL] = point;
+  out[REMARK_COL] = remark;
+  return out;
+}
+
+// Notion プロパティ値を作る。changed=true の rich_text は赤字にする
+function buildTcPropertyValue(f: TcField, value: string, changed: boolean): any {
+  switch (f.kind) {
+    case "title":
+      return { title: value ? [{ type: "text", text: { content: value } }] : [] };
+    case "select":
+      return { select: value ? { name: value } : null };
+    case "date": {
+      const iso = toIsoDate(value);
+      return { date: iso ? { start: iso } : null };
+    }
+    case "number": {
+      const n = Number(value.replace(/[^0-9.\-]/g, ""));
+      return { number: Number.isFinite(n) && value !== "" ? n : null };
+    }
+    default:
+      return {
+        rich_text: value
+          ? [{ type: "text", text: { content: value }, annotations: { color: changed ? "red" : "default" } }]
+          : [],
+      };
+  }
+}
+
+// 既存ページから、比較用の素の文字列を取り出す
+function readTcPlain(page: any, f: TcField): string {
+  const p = page?.properties?.[f.name];
+  if (!p) return "";
+  if (f.kind === "date") return p.date?.start ?? "";
+  if (f.kind === "number") return p.number == null ? "" : String(p.number);
+  return propertyToPlainText(p);
+}
+
+// 親ページ配下から「{system}{year}」のデータベースを探し、無ければ作る
+async function ensureTestcaseDatabase(parentPageId: string, title: string): Promise<string> {
+  if (!notion) throw new Error("Notion client not configured");
+  // 親ページの子ブロックを走査して同名の child_database を探す
+  let cursor: string | undefined = undefined;
+  do {
+    const res: any = await notion.blocks.children.list({
+      block_id: parentPageId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    for (const block of res.results ?? []) {
+      if (block.type === "child_database" && (block.child_database?.title ?? "").trim() === title) {
+        return block.id as string;
+      }
+    }
+    cursor = res.has_more ? res.next_cursor : undefined;
+  } while (cursor);
+
+  // 無ければ作成
+  const properties: Record<string, any> = {};
+  for (const f of TESTCASE_NOTION_FIELDS) {
+    if (f.kind === "title") properties[f.name] = { title: {} };
+    else if (f.kind === "select") properties[f.name] = { select: {} };
+    else if (f.kind === "date") properties[f.name] = { date: {} };
+    else if (f.kind === "number") properties[f.name] = { number: {} };
+    else properties[f.name] = { rich_text: {} };
+  }
+  const created: any = await notion.databases.create({
+    parent: { type: "page_id", page_id: parentPageId },
+    title: [{ type: "text", text: { content: title } }],
+    properties,
+  } as any);
+  return created.id as string;
+}
+
+// データベース内の全ページを ケース番号 → page で引けるようにする
+async function loadTestcaseIndex(databaseId: string): Promise<Map<string, any>> {
+  const map = new Map<string, any>();
+  if (!notion) return map;
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) return map;
+  let cursor: string | undefined = undefined;
+  do {
+    const r: any = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    for (const page of r.results ?? []) {
+      const no = propertyToPlainText(page?.properties?.["ケース番号"]).trim();
+      if (no) map.set(no, page);
+    }
+    cursor = r.has_more ? r.next_cursor : undefined;
+  } while (cursor);
+  return map;
+}
+
+type TcUploadResult = { created: number; updated: number; skipped: number };
+
+// CSV 群を Notion の「{system}{year}」テーブルへ upsert
+async function uploadTestcasesToNotion(
+  parentPageId: string,
+  system: string,
+  year: number,
+  csvTexts: string[]
+): Promise<TcUploadResult> {
+  if (!notion) throw new Error("Notion client not configured");
+  const dbTitle = `${system}${year}`;
+  const databaseId = await ensureTestcaseDatabase(parentPageId, dbTitle);
+  const index = await loadTestcaseIndex(databaseId);
+
+  const result: TcUploadResult = { created: 0, updated: 0, skipped: 0 };
+  // 比較対象のフィールド (バージョンは比較しない: 更新時に +1 するため)
+  const compareFields = TESTCASE_NOTION_FIELDS.filter((f) => f.name !== TC_VERSION_FIELD);
+
+  for (const csvText of csvTexts) {
+    const rows = parseCsv(csvText)
+      .slice(1)
+      .filter((r) => r.some((c) => (c ?? "").trim() !== ""));
+    for (const raw of rows) {
+      const out = normalizeTestcaseRow(raw);
+      const caseNo = out[CASENO_COL];
+      if (!caseNo) continue;
+      const existing = index.get(caseNo);
+
+      if (!existing) {
+        const props: Record<string, any> = {};
+        for (const f of TESTCASE_NOTION_FIELDS) {
+          const v = f.col === null ? "" : out[f.col];
+          props[f.name] = buildTcPropertyValue(f, v, false);
+        }
+        // システムは選択された値で固定 (CSV 側の表記揺れを吸収)
+        props["システム"] = { select: { name: system } };
+        await notion.pages.create({ parent: { database_id: databaseId } as any, properties: props } as any);
+        result.created++;
+        continue;
+      }
+
+      // 差分判定
+      const changedNames = new Set<string>();
+      for (const f of compareFields) {
+        const next = f.col === null ? "" : out[f.col];
+        const nextCmp = f.kind === "date" ? (toIsoDate(next) ?? "") : next;
+        const cur = readTcPlain(existing, f);
+        if (nextCmp !== cur) changedNames.add(f.name);
+      }
+      // システムは選択値で固定するため差分判定から除外
+      changedNames.delete("システム");
+
+      if (changedNames.size === 0) {
+        result.skipped++;
+        continue;
+      }
+
+      const props: Record<string, any> = {};
+      for (const f of TESTCASE_NOTION_FIELDS) {
+        if (f.name === TC_VERSION_FIELD) continue;
+        const v = f.col === null ? "" : out[f.col];
+        // 変更された rich_text は赤字、それ以外は default に戻す (赤字は最新回の変更のみ示す)
+        props[f.name] = buildTcPropertyValue(f, v, changedNames.has(f.name));
+      }
+      props["システム"] = { select: { name: system } };
+      // バージョンは Notion 側の現在値 +1
+      const curVer = Number(existing?.properties?.[TC_VERSION_FIELD]?.number ?? 0);
+      props[TC_VERSION_FIELD] = { number: (Number.isFinite(curVer) ? curVer : 0) + 1 };
+
+      await notion.pages.update({ page_id: existing.id, properties: props } as any);
+      result.updated++;
+    }
+  }
+  return result;
+}
+
+// 弾窓のシステム候補 (進捗管理表の System を重複排除)
+app.get("/api/testcase-format/systems", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ systems: [] });
+  }
+  try {
+    const items = await queryAllProgressItems(databaseId);
+    const set = new Set<string>();
+    for (const it of items) {
+      const s = (it.system || "").trim();
+      if (s) set.add(s);
+    }
+    return res.json({ systems: Array.from(set).sort() });
+  } catch (error) {
+    console.error("Testcase systems query error:", error);
+    return res.json({ systems: [] });
+  }
+});
+
 app.post("/api/testcase-format", upload.array("files", 20), async (req, res) => {
   const multerFiles = req.files as Express.Multer.File[];
   if (!multerFiles || multerFiles.length === 0) {
@@ -2272,11 +2517,33 @@ app.post("/api/testcase-format", upload.array("files", 20), async (req, res) => 
   }
   try {
     const built: { outputName: string; buffer: Buffer; groups: TestCaseGroupStat[]; inputName: string }[] = [];
+    const csvTexts: string[] = [];
     for (const file of multerFiles) {
       const inputName = Buffer.from(file.originalname, "latin1").toString("utf8");
       const csvText = file.buffer.toString("utf8");
+      csvTexts.push(csvText);
       const { outputName, buffer, groups } = await buildTestCaseXlsx(inputName, csvText);
       built.push({ inputName, outputName, buffer, groups });
+    }
+
+    // Notion 登録 (システム・年度が指定された場合のみ)。失敗しても Excel 出力は継続する
+    const system = String((req.body as any)?.system ?? "").trim();
+    const yearRaw = String((req.body as any)?.year ?? "").trim();
+    const year = Number(yearRaw);
+    let notionResult: TcUploadResult | null = null;
+    let notionError: string | null = null;
+    if (system && Number.isFinite(year) && year > 0) {
+      const parentPageId = process.env.NOTION_TESTCASE_PARENT_PAGE_ID;
+      if (!notion || !parentPageId) {
+        notionError = "Notion 未設定 (NOTION_API_KEY / NOTION_TESTCASE_PARENT_PAGE_ID)";
+      } else {
+        try {
+          notionResult = await uploadTestcasesToNotion(parentPageId, system, year, csvTexts);
+        } catch (e) {
+          console.error("Testcase Notion upload error:", e);
+          notionError = e instanceof Error ? e.message : "Notion 登録に失敗しました";
+        }
+      }
     }
 
     const results = built.map((b) => ({
@@ -2314,7 +2581,7 @@ app.post("/api/testcase-format", upload.array("files", 20), async (req, res) => 
       downloadMime = "application/zip";
     }
 
-    return res.json({ results, downloadBase64, downloadName, downloadMime });
+    return res.json({ results, downloadBase64, downloadName, downloadMime, notionResult, notionError });
   } catch (error) {
     console.error("TestCase format error:", error);
     return res.status(500).json({ error: "Failed to format testcase CSV" });
