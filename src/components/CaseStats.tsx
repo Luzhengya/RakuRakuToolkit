@@ -322,6 +322,21 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // KPI目標 (上期=1 / 下期=2 の項目を Notion 設定表から取得。年度モードで最上方に表示)
+  type KpiTarget = { label: string; value: string };
+  const [kpiTargets, setKpiTargets] = useState<{ first: KpiTarget[]; second: KpiTarget[] }>({ first: [], second: [] });
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/config/kpi-targets')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((d) => {
+        if (!alive || !d) return;
+        setKpiTargets({ first: d.first ?? [], second: d.second ?? [] });
+      })
+      .catch(() => { /* 失敗時は空のまま */ });
+    return () => { alive = false; };
+  }, []);
+
   // BUG流出集計 (品質下部)。期間(年 + 月次のみ月)に連動して取得
   const [bugLeak, setBugLeak] = useState<{
     total: number;
@@ -1525,20 +1540,26 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">
           {`KPI (${year}年度 ${halfType === 'full' ? '通年' : halfType === 'first' ? '上期' : '下期'})`}
         </h3>
-        {/* 期間累計 KPI */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { label: '案件数(総)', value: fmt(kpi.caseCount) },
-            { label: '用例件数(総)', value: fmt(kpi.testSum) },
-            { label: 'NG件数(総)', value: fmt(kpi.ngSum) },
-            { label: '効率(総)', value: fmtEff(kpi.totalEff) },
-          ].map((c) => (
-            <div key={c.label} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
-              <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{c.label}</p>
-              <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{c.value}</p>
+
+        {/* KPI目標 (上期/下期モードのみ表示、通年は非表示) */}
+        {halfType !== 'full' && (() => {
+          const targets = halfType === 'first' ? kpiTargets.first : kpiTargets.second;
+          if (targets.length === 0) return null;
+          const label = halfType === 'first' ? '上期目標' : '下期目標';
+          return (
+            <div>
+              <h4 className="inline-block rounded-md bg-indigo-600 text-white text-xs font-bold px-3 py-1 mb-2">{label}</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {targets.map((t) => (
+                  <div key={t.label} className="bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2.5">
+                    <p className="text-[10px] text-indigo-500 font-semibold tracking-wider truncate">{t.label}</p>
+                    <p className="text-xl font-bold text-indigo-900 mt-0.5 tabular-nums">{t.value}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
+          );
+        })()}
 
         {/* KPI パネル: 品質(4) + 効率・規模(4) の2グループに分けて表示 */}
         {halfAgg && (() => {
