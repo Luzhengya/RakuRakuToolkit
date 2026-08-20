@@ -54,7 +54,7 @@ Full-stack TypeScript app ("ToolSetLimo") — one Express server serves both the
 ### Frontend
 
 - **Routing**: `App.tsx` holds a `view` string state and renders the matching component. No router library. Each tool component receives an `onBack` callback.
-- **TestCenter is the largest component** (`src/components/TestCenter.tsx`, ~2850 lines) — it internally renders `MonthlyReport.tsx` and `BugList.tsx` as tabs; those two are not separate top-level `view`s in `App.tsx`.
+- **TestCenter is the largest component** (`src/components/TestCenter.tsx`) — it internally renders `BugList.tsx` and `CaseStats.tsx` etc. as sub-views; those are not separate top-level `view`s in `App.tsx`.
 - **PdfEditor is client-side only** — uses `pdf-lib`/`pdfjs-dist` in the browser to render and edit PDF text regions; the only server involvement is `GET /api/pdf-status` (checks whether Adobe credentials are configured, used by PdfToWord).
 - **Styling**: Tailwind CSS v4 via `@tailwindcss/vite` plugin — no `tailwind.config.js` or PostCSS config.
 - **Animations**: `motion` (Framer Motion) for view transitions.
@@ -76,7 +76,6 @@ All configured via env vars (see `.env.example`):
 | `GET /api/pdf-status` | Whether Adobe PDF Services credentials are configured |
 | `GET /api/test-center` | Progress list from Notion progress DB |
 | `GET /api/test-center/overview` | Aggregated overview stats |
-| `GET /api/test-center/monthly-report` | Monthly report data from Notion achievement DB |
 | `GET /api/test-center/bugs` | Bug list from Notion bug DB |
 | `GET /api/test-center/bugs/:id/children` | Child bug records for a given bug page |
 | `POST /api/test-center/results` | Update test results |

@@ -989,19 +989,6 @@ function parseAchievementItem(page: any): AchievementItem {
   };
 }
 
-async function fetchPageComments(pageId: string): Promise<string[]> {
-  if (!notion) return [];
-  try {
-    const res: any = await notion.comments.list({ block_id: pageId });
-    return (res.results ?? [])
-      .map((c: any) => richTextToPlainText(c.rich_text))
-      .filter((text: string) => text.length > 0);
-  } catch (error) {
-    console.error(`Failed to fetch comments for ${pageId}:`, error);
-    return [];
-  }
-}
-
 async function queryAllAchievementItems(databaseId: string): Promise<AchievementItem[]> {
   if (!notion) return [];
 
@@ -1030,47 +1017,6 @@ async function queryAllAchievementItems(databaseId: string): Promise<Achievement
 
   return items;
 }
-
-app.get("/api/test-center/monthly-report", async (req, res) => {
-  const monthParam = String(req.query.month ?? "").trim();
-  const systemsParam = String(req.query.systems ?? "").trim();
-  const match = monthParam.match(/^(\d{4})(\d{2})$/);
-  if (!match) {
-    return res.status(400).json({ error: "month must be in YYYYMM format" });
-  }
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const systems = systemsParam
-    ? systemsParam.split(",").map((s) => s.trim()).filter(Boolean)
-    : [];
-
-  const databaseId = process.env.NOTION_ACHIEVEMENT_DATABASE_ID;
-  if (!notion || !databaseId) {
-    return res.status(503).json({
-      error: "Notion API credentials not configured",
-      detail: "Please set NOTION_API_KEY and NOTION_ACHIEVEMENT_DATABASE_ID",
-    });
-  }
-
-  try {
-    const allItems = await queryAllAchievementItems(databaseId);
-    const systemSet = new Set(systems);
-    const filtered = allItems.filter(
-      (item) =>
-        item.year === year &&
-        item.month === month &&
-        (systemSet.size === 0 || systemSet.has(item.system))
-    );
-    // Notion のコメント（評論）を行ごとに並列取得して付与
-    const withComments = await Promise.all(
-      filtered.map(async (item) => ({ ...item, comments: await fetchPageComments(item.id) }))
-    );
-    return res.json({ items: withComments, total: withComments.length, year, month, systems });
-  } catch (error) {
-    console.error("Monthly report query error:", error);
-    return res.status(500).json({ error: "Failed to query Notion achievement database" });
-  }
-});
 
 // ── Bug list (全体バグ一覧表 data source) ───────────────────────────────
 // NOTION_BUG_DATABASE_ID の「全体バグ一覧表」を取得。システム/月次は rollup、
