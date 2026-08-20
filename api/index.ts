@@ -789,6 +789,7 @@ app.get("/api/test-center/case-stats", async (_req, res) => {
         bugCount: item.bugCount,
         testBlockedCount: item.testBlockedCount,
         pendingConfirmCount: item.pendingConfirmCount,
+        unexpectedNgCount: item.unexpectedNgCount,
         designActual: item.designActual,
         implActual: item.implActual,
         execActual: item.execActual,

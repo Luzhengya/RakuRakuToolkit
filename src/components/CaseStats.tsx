@@ -23,6 +23,7 @@ type CaseStatItem = {
   bugCount: string;
   testBlockedCount: string;
   pendingConfirmCount: string;
+  unexpectedNgCount: string;
   designActual: string;
   implActual: string;
   execActual: string;
@@ -586,7 +587,16 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   // 半期集計 (通年モードで上期vs下期を比較するため、halfTypeに関係なく年度全体から集計)
   const halfAgg = useMemo(() => {
     if (periodType !== 'year') return null;
-    const empty = () => ({ caseCount: 0, testSum: 0, ngSum: 0, _actual: 0 });
+    const empty = () => ({
+      caseCount: 0,
+      testSum: 0,
+      ngSum: 0,
+      unexpectedNgSum: 0,
+      _actual: 0,
+      _estimate: 0,
+      _tcng: 0,
+      _japanNg: 0,
+    });
     const first = empty();
     const second = empty();
     // rows は現在 halfType でフィルタ済み。通年モードで上下期を比較するため、
@@ -602,15 +612,27 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       target.caseCount++;
       target.testSum += num(it.testTotalCount);
       target.ngSum += num(it.bugCount);
+      target.unexpectedNgSum += num(it.unexpectedNgCount);
       target._actual += num(it.actualTotal);
+      target._estimate += num(it.estimateTotal);
+      target._tcng += num(it.tcNgCount);
+      target._japanNg += num(it.japanNgCount);
     }
-    const finalize = (h: ReturnType<typeof empty>) => ({
-      caseCount: h.caseCount,
-      testSum: h.testSum,
-      ngSum: h.ngSum,
-      ngRate: h.testSum > 0 ? (h.ngSum / h.testSum) * 100 : null,
-      totalEff: h._actual > 0 ? h.testSum / h._actual : null,
-    });
+    const finalize = (h: ReturnType<typeof empty>) => {
+      const leakDen = h._tcng + h._japanNg;
+      return {
+        caseCount: h.caseCount,
+        testSum: h.testSum,
+        ngSum: h.ngSum,
+        unexpectedNgSum: h.unexpectedNgSum,
+        estimateSum: h._estimate,
+        actualSum: h._actual,
+        diff: Number((h._actual - h._estimate).toFixed(2)),
+        ngRate: h.testSum > 0 ? (h.ngSum / h.testSum) * 100 : null,
+        ngLeakRate: leakDen > 0 ? (h._japanNg / leakDen) * 100 : null,
+        totalEff: h._actual > 0 ? h.testSum / h._actual : null,
+      };
+    };
     return { first: finalize(first), second: finalize(second) };
   }, [items, year, periodType, deselected]);
 
@@ -1518,58 +1540,65 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           ))}
         </div>
 
-        {/* 半期 KPI パネル */}
-        {halfType === 'full' && halfAgg && (
-          <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
-            <div className="grid grid-cols-4 text-xs font-semibold text-neutral-500 bg-neutral-50 border-b border-neutral-200">
-              <div className="px-3 py-2">指標</div>
-              <div className="px-3 py-2 text-right">上期</div>
-              <div className="px-3 py-2 text-right">下期</div>
-              <div className="px-3 py-2 text-right">差分</div>
+        {/* KPI パネル: 8指標 (品質4 + 効率/規模4) */}
+        {halfAgg && (() => {
+          type FmtFn = (v: number | null) => string;
+          const fmtNum: FmtFn = (v) => v === null ? '-' : fmt(v);
+          const fmtDiff = (v: number): string => (v > 0 ? '+' : '') + fmt(v);
+          const fmtDiffPct = (v: number): string => (v > 0 ? '+' : '') + fmt(v) + '%';
+          // higherIsWorse: 上升=劣化的指標(NG関連)。false=上升=改善
+          const defs = [
+            { key: 'NG率(総)',        pick: (h: typeof halfAgg.first) => h.ngRate,           higherIsWorse: true,  fmt: fmtPct as FmtFn, diffFmt: fmtDiffPct },
+            { key: 'NG流出率(総)',    pick: (h: typeof halfAgg.first) => h.ngLeakRate,       higherIsWorse: true,  fmt: fmtPct as FmtFn, diffFmt: fmtDiffPct },
+            { key: '想定外NG数(総)',  pick: (h: typeof halfAgg.first) => h.unexpectedNgSum,  higherIsWorse: true,  fmt: fmtNum,          diffFmt: fmtDiff },
+            { key: '総NG件数',        pick: (h: typeof halfAgg.first) => h.ngSum,            higherIsWorse: true,  fmt: fmtNum,          diffFmt: fmtDiff },
+            { key: '効率(総)',        pick: (h: typeof halfAgg.first) => h.totalEff,         higherIsWorse: false, fmt: fmtEff as FmtFn, diffFmt: fmtDiff },
+            { key: '見積対実績差分',  pick: (h: typeof halfAgg.first) => h.diff,             higherIsWorse: true,  fmt: fmtDiff as unknown as FmtFn, diffFmt: fmtDiff },
+            { key: '案件数(総)',      pick: (h: typeof halfAgg.first) => h.caseCount,        higherIsWorse: false, fmt: fmtNum,          diffFmt: fmtDiff },
+            { key: '総テスト件数',    pick: (h: typeof halfAgg.first) => h.testSum,          higherIsWorse: false, fmt: fmtNum,          diffFmt: fmtDiff },
+          ];
+          if (halfType === 'full') {
+            return (
+              <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-4 text-xs font-semibold text-neutral-500 bg-neutral-50 border-b border-neutral-200">
+                  <div className="px-3 py-2">指標</div>
+                  <div className="px-3 py-2 text-right">上期</div>
+                  <div className="px-3 py-2 text-right">下期</div>
+                  <div className="px-3 py-2 text-right">差分</div>
+                </div>
+                {defs.map((d) => {
+                  const a = d.pick(halfAgg.first);
+                  const b = d.pick(halfAgg.second);
+                  const diff = a !== null && b !== null ? Number((b - a).toFixed(2)) : null;
+                  const cls = diff === null || diff === 0
+                    ? 'text-neutral-500'
+                    : d.higherIsWorse
+                      ? (diff > 0 ? 'text-red-600 font-semibold' : 'text-emerald-600 font-semibold')
+                      : (diff > 0 ? 'text-emerald-600 font-semibold' : 'text-red-600 font-semibold');
+                  return (
+                    <div key={d.key} className="grid grid-cols-4 text-sm border-t border-neutral-100 first:border-t-0">
+                      <div className="px-3 py-2 text-neutral-700">{d.key}</div>
+                      <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{d.fmt(a)}</div>
+                      <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{d.fmt(b)}</div>
+                      <div className={`px-3 py-2 text-right tabular-nums ${cls}`}>{diff === null ? '-' : d.diffFmt(diff)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          }
+          const h = halfType === 'first' ? halfAgg.first : halfAgg.second;
+          return (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {defs.map((d) => (
+                <div key={d.key} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+                  <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{d.key}</p>
+                  <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{d.fmt(d.pick(h))}</p>
+                </div>
+              ))}
             </div>
-            {([
-              { key: '案件数(総)', a: halfAgg.first.caseCount, b: halfAgg.second.caseCount, higherIsWorse: false, fmt: (v: number | null) => v === null ? '-' : fmt(v) },
-              { key: '総テスト件数', a: halfAgg.first.testSum, b: halfAgg.second.testSum, higherIsWorse: false, fmt: (v: number | null) => v === null ? '-' : fmt(v) },
-              { key: '総NG件数', a: halfAgg.first.ngSum, b: halfAgg.second.ngSum, higherIsWorse: true, fmt: (v: number | null) => v === null ? '-' : fmt(v) },
-              { key: 'NG率(総)', a: halfAgg.first.ngRate, b: halfAgg.second.ngRate, higherIsWorse: true, fmt: (v: number | null) => fmtPct(v) },
-              { key: '効率(総)', a: halfAgg.first.totalEff, b: halfAgg.second.totalEff, higherIsWorse: false, fmt: (v: number | null) => fmtEff(v) },
-            ] as const).map((r) => {
-              const diff = r.a !== null && r.b !== null ? Number((r.b - r.a).toFixed(2)) : null;
-              const cls = diff === null || diff === 0
-                ? 'text-neutral-500'
-                : (r.higherIsWorse ? (diff > 0 ? 'text-red-600 font-semibold' : 'text-emerald-600 font-semibold') : (diff > 0 ? 'text-emerald-600 font-semibold' : 'text-red-600 font-semibold'));
-              const diffText = diff === null ? '-' : (diff > 0 ? '+' : '') + (r.key === 'NG率(総)' ? fmt(diff) + '%' : fmt(diff));
-              return (
-                <div key={r.key} className="grid grid-cols-4 text-sm border-t border-neutral-100 first:border-t-0">
-                  <div className="px-3 py-2 text-neutral-700">{r.key}</div>
-                  <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{r.fmt(r.a)}</div>
-                  <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{r.fmt(r.b)}</div>
-                  <div className={`px-3 py-2 text-right tabular-nums ${cls}`}>{diffText}</div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {halfType !== 'full' && (
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {(() => {
-              const h = halfType === 'first' ? halfAgg?.first : halfAgg?.second;
-              if (!h) return null;
-              return [
-                { label: '案件数(総)', value: fmt(h.caseCount) },
-                { label: '総テスト件数', value: fmt(h.testSum) },
-                { label: '総NG件数', value: fmt(h.ngSum) },
-                { label: 'NG率(総)', value: fmtPct(h.ngRate) },
-                { label: '効率(総)', value: fmtEff(h.totalEff) },
-              ].map((c) => (
-                <div key={c.label} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
-                  <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{c.label}</p>
-                  <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{c.value}</p>
-                </div>
-              ));
-            })()}
-          </div>
-        )}
+          );
+        })()}
 
         {rows.length === 0 ? (
           <p className="text-center text-sm text-neutral-400 py-12">{loading ? '読み込み中...' : '該当データなし'}</p>
