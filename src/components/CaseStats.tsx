@@ -1547,20 +1547,20 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           const fmtNum: FmtFn = (v) => v === null ? '-' : fmt(v);
           const fmtDiff = (v: number): string => (v > 0 ? '+' : '') + fmt(v);
           const fmtDiffPct = (v: number): string => (v > 0 ? '+' : '') + fmt(v) + '%';
-          type Def = { key: string; pick: (h: Half) => number | null; higherIsWorse: boolean; fmt: FmtFn; diffFmt: (v: number) => string };
+          type Def = { key: string; desc: string; pick: (h: Half) => number | null; higherIsWorse: boolean; fmt: FmtFn; diffFmt: (v: number) => string };
           // 品質グループ (4項)
           const qualityDefs: Def[] = [
-            { key: 'NG率(総)',       pick: (h) => h.ngRate,          higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
-            { key: 'NG流出率(総)',   pick: (h) => h.ngLeakRate,      higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
-            { key: '想定外NG数(総)', pick: (h) => h.unexpectedNgSum, higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
-            { key: '総NG件数',       pick: (h) => h.ngSum,           higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
+            { key: 'NG率(総)',       desc: 'NG率(総) = 総NG件数 ÷ 総テスト件数 × 100\n各案件のNG数と検出テスト件数を合算して算出',                            pick: (h) => h.ngRate,          higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
+            { key: 'NG流出率(総)',   desc: 'NG流出率(総) = 日本側NG件数 ÷ (TCNG数 + 日本側NG件数) × 100\n日本側で検出されたNGの割合(テスト後流出したNG比率)', pick: (h) => h.ngLeakRate,      higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
+            { key: '想定外NG数(総)', desc: '想定外NG数(総) = 各案件の想定外NG数の合計\n仕様外・想定外の重大不具合を集計',                                   pick: (h) => h.unexpectedNgSum, higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
+            { key: '総NG件数',       desc: '総NG件数 = 各案件のNG数の合計\n対象期間内で検出された全NG件数',                                                  pick: (h) => h.ngSum,           higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
           ];
           // 効率・規模グループ (4項)
           const efficiencyDefs: Def[] = [
-            { key: '効率(総)',       pick: (h) => h.totalEff,        higherIsWorse: false, fmt: fmtEff, diffFmt: fmtDiff },
-            { key: '見積対実績差分', pick: (h) => h.diff,            higherIsWorse: true,  fmt: (v) => v === null ? '-' : fmtDiff(v), diffFmt: fmtDiff },
-            { key: '案件数(総)',     pick: (h) => h.caseCount,       higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
-            { key: '総テスト件数',   pick: (h) => h.testSum,         higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
+            { key: '効率(総)',       desc: '効率(総) = 総テスト件数 ÷ 実績工数(合計)\n1人日あたりのテスト件数(生産性の指標)',                     pick: (h) => h.totalEff,        higherIsWorse: false, fmt: fmtEff, diffFmt: fmtDiff },
+            { key: '見積対実績差分', desc: '見積対実績差分 = 実績工数(合計) − 見積工数(合計)\nプラス=見積超過、マイナス=見積内(工数管理の指標)', pick: (h) => h.diff,            higherIsWorse: true,  fmt: (v) => v === null ? '-' : fmtDiff(v), diffFmt: fmtDiff },
+            { key: '案件数(総)',     desc: '案件数(総) = 対象期間内の案件数の合計',                                                                pick: (h) => h.caseCount,       higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
+            { key: '総テスト件数',   desc: '総テスト件数 = 各案件のテスト件数の合計\n対象期間内で実施したテスト用例の総数',                       pick: (h) => h.testSum,         higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
           ];
           const groupHead = (label: string) => (
             <h4 className="inline-block rounded-md bg-neutral-900 text-white text-xs font-bold px-3 py-1 mb-2">{label}</h4>
@@ -1584,7 +1584,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                       ? (diff > 0 ? 'text-red-600 font-semibold' : 'text-emerald-600 font-semibold')
                       : (diff > 0 ? 'text-emerald-600 font-semibold' : 'text-red-600 font-semibold');
                   return (
-                    <div key={d.key} className="grid grid-cols-4 text-sm border-t border-neutral-100 first:border-t-0">
+                    <div key={d.key} title={d.desc} className="grid grid-cols-4 text-sm border-t border-neutral-100 first:border-t-0 cursor-help hover:bg-neutral-50/60">
                       <div className="px-3 py-2 text-neutral-700">{d.key}</div>
                       <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{d.fmt(a)}</div>
                       <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{d.fmt(b)}</div>
@@ -1605,7 +1605,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           const renderCards = (defs: Def[]) => (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {defs.map((d) => (
-                <div key={d.key} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+                <div key={d.key} title={d.desc} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5 cursor-help hover:border-neutral-300 transition-colors">
                   <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{d.key}</p>
                   <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{d.fmt(d.pick(h))}</p>
                 </div>
