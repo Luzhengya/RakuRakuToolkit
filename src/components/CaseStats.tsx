@@ -1501,22 +1501,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       /* ═══ 年度: 月別トレンド ═══ */
       <section className="space-y-4">
         <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">
-          {`年度サマリー (${year}年度 ${halfType === 'full' ? '通年' : halfType === 'first' ? '上期' : '下期'})`}
+          {`KPI (${year}年度 ${halfType === 'full' ? '通年' : halfType === 'first' ? '上期' : '下期'})`}
         </h3>
-        {/* 期間累計 KPI */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {[
-            { label: '案件数(総)', value: fmt(kpi.caseCount) },
-            { label: '用例件数(総)', value: fmt(kpi.testSum) },
-            { label: 'NG件数(総)', value: fmt(kpi.ngSum) },
-            { label: '効率(総)', value: fmtEff(kpi.totalEff) },
-          ].map((c) => (
-            <div key={c.label} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
-              <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{c.label}</p>
-              <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{c.value}</p>
-            </div>
-          ))}
-        </div>
 
         {/* 半期 KPI パネル */}
         {halfType === 'full' && halfAgg && (
