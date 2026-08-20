@@ -33,11 +33,15 @@ type FileResult = {
   groups: GroupStat[];
 };
 
+type NotionResult = { created: number; updated: number; skipped: number };
+
 type FormatResponse = {
   results: FileResult[];
   downloadBase64: string;
   downloadName: string;
   downloadMime: string;
+  notionResult?: NotionResult | null;
+  notionError?: string | null;
 };
 
 function base64ToBlob(b64: string, mime: string): Blob {
@@ -49,6 +53,12 @@ function base64ToBlob(b64: string, mime: string): Blob {
 
 export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
   const [response, setResponse] = useState<FormatResponse | null>(null);
+  // Notion 登録先の選択ダイアログ
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [systems, setSystems] = useState<string[]>([]);
+  const [systemsLoading, setSystemsLoading] = useState(false);
+  const [selectedSystem, setSelectedSystem] = useState('');
+  const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
 
   const {
     files,
@@ -64,8 +74,28 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
     setError,
   } = useFileUpload({ accept: ['.csv'], maxFiles: 20, skipUpload: true });
 
-  const handleFormat = async () => {
+  // 「整形と集計を開始」→ まず登録先(システム/年度)を選ぶダイアログを開く
+  const openDialog = () => {
     if (files.length === 0) return;
+    setDialogOpen(true);
+    if (systems.length === 0) {
+      setSystemsLoading(true);
+      fetch('/api/testcase-format/systems')
+        .then((res) => (res.ok ? res.json() : { systems: [] }))
+        .then((d: any) => {
+          const list = (d?.systems ?? []) as string[];
+          setSystems(list);
+          if (list.length > 0) setSelectedSystem((cur) => cur || list[0]);
+        })
+        .catch(() => setSystems([]))
+        .finally(() => setSystemsLoading(false));
+    }
+  };
+
+  // withNotion=false の場合は system を送らず、Notion 登録をスキップして整形のみ実行
+  const handleFormat = async (withNotion: boolean) => {
+    if (files.length === 0) return;
+    setDialogOpen(false);
     setLoading(true);
     setError(null);
     setResponse(null);
@@ -73,6 +103,10 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
     try {
       const formData = new FormData();
       files.forEach((f) => formData.append('files', f));
+      if (withNotion && selectedSystem) {
+        formData.append('system', selectedSystem);
+        formData.append('year', String(selectedYear));
+      }
 
       const res = await fetch('/api/testcase-format', { method: 'POST', body: formData });
       if (!res.ok) {
@@ -204,7 +238,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
               </div>
             ) : (
               <button
-                onClick={handleFormat}
+                onClick={openDialog}
                 className="w-full py-4 bg-neutral-900 text-white rounded-lg font-bold shadow-lg hover:bg-neutral-800 transition-all flex items-center justify-center gap-2"
               >
                 <ClipboardList size={20} />
@@ -238,6 +272,28 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                   <Download size={18} />
                   {response.downloadName} をダウンロード
                 </button>
+
+                {/* Notion 登録結果 */}
+                {response.notionResult && (
+                  <div className="border border-emerald-200 bg-emerald-50 rounded-lg p-3">
+                    <p className="text-sm font-bold text-emerald-800 mb-1">Notion 登録結果</p>
+                    <div className="flex flex-wrap gap-4 text-sm text-emerald-900">
+                      <span>新規 <b className="tabular-nums">{response.notionResult.created}</b> 件</span>
+                      <span>更新 <b className="tabular-nums">{response.notionResult.updated}</b> 件</span>
+                      <span>スキップ <b className="tabular-nums">{response.notionResult.skipped}</b> 件</span>
+                    </div>
+                  </div>
+                )}
+                {response.notionError && (
+                  <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 flex items-start gap-2">
+                    <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+                    <div className="text-sm text-amber-800">
+                      <p className="font-bold">Notion 登録に失敗しました</p>
+                      <p className="text-xs mt-0.5">{response.notionError}</p>
+                      <p className="text-xs mt-0.5 text-amber-700">Excel の整形結果は正常に出力されています。</p>
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-4">
                   {response.results.map((r) => (
@@ -277,6 +333,84 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
       <div className="pt-4 border-t border-neutral-200">
         {breadcrumb}
       </div>
+
+      {/* Notion 登録先の選択ダイアログ */}
+      {dialogOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-xl border border-neutral-200 shadow-xl p-5 space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-neutral-900">Notion 登録先の選択</h3>
+              <p className="text-xs text-neutral-500 mt-1">
+                選択したシステム・年度の表（{selectedSystem || 'システム'}{selectedYear}）にテストケースを登録します。表が無い場合は自動作成されます。
+              </p>
+            </div>
+
+            <label className="block space-y-1">
+              <span className="text-xs font-semibold text-neutral-600">システム</span>
+              {systemsLoading ? (
+                <span className="flex items-center gap-2 text-sm text-neutral-400 py-2">
+                  <Loader2 size={14} className="animate-spin" />
+                  読み込み中...
+                </span>
+              ) : systems.length > 0 ? (
+                <select
+                  value={selectedSystem}
+                  onChange={(e) => setSelectedSystem(e.target.value)}
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+                >
+                  {systems.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              ) : (
+                <input
+                  value={selectedSystem}
+                  onChange={(e) => setSelectedSystem(e.target.value)}
+                  placeholder="システム名を入力"
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
+                />
+              )}
+            </label>
+
+            <label className="block space-y-1">
+              <span className="text-xs font-semibold text-neutral-600">年度</span>
+              <select
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(Number(e.target.value))}
+                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+              >
+                {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map((y) => (
+                  <option key={y} value={y}>{y}年</option>
+                ))}
+              </select>
+            </label>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDialogOpen(false)}
+                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFormat(false)}
+                className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+                title="Notionへは登録せず、整形と集計のみ実行します"
+              >
+                Notion登録せず実行
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFormat(true)}
+                disabled={!selectedSystem}
+                className="px-4 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed"
+              >
+                登録して実行
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
