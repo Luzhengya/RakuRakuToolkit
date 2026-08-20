@@ -241,6 +241,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   const [th, setTh] = useState<Thresholds>(() => loadThresholds());
   const [effOpen, setEffOpen] = useState(true);
   const [qualOpen, setQualOpen] = useState(true);
+  const [incidentOpen, setIncidentOpen] = useState(true);
+  const [chartsOpen, setChartsOpen] = useState(true);
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
   // 報告書プレビュー
   const [reportOpen, setReportOpen] = useState(false);
@@ -1454,11 +1456,20 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         </div>
 
         {/* ─ インシデント確認 (旧 BUG流出について) ─ */}
-        <div className="border border-neutral-200 rounded-xl p-4 space-y-3">
-          <div>
-            <h3 className="text-sm font-bold text-neutral-800">インシデント確認</h3>
-            <p className="text-xs text-neutral-500 mt-0.5">テストセンターに関連する案件を確認し、調査結果を記録する</p>
-          </div>
+        <div className="border border-neutral-200 rounded-xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setIncidentOpen((v) => !v)}
+            className="w-full flex items-center gap-2 px-4 py-2.5 bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
+          >
+            {incidentOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            <div className="flex flex-col text-left">
+              <span className="text-sm font-bold text-neutral-800">インシデント確認</span>
+              <span className="text-xs text-neutral-500 mt-0.5">テストセンターに関連する案件を確認し、調査結果を記録する</span>
+            </div>
+          </button>
+          {incidentOpen && (
+          <div className="p-4 space-y-3">
           {bugLeak ? (
             <>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -1536,14 +1547,30 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           ) : (
             <p className="text-sm text-neutral-400">{loading ? '読み込み中...' : '該当データなし'}</p>
           )}
+          </div>
+          )}
         </div>
 
-        {/* ─ システム別 円グラフ 3種 (月次モード用、レポート出力対象外) ─ */}
+        {/* ─ 図形 (月次モード用、レポート出力対象外) ─ */}
         {rows.length > 0 && (
-          <div className="flex flex-wrap gap-4 items-start">
-            <PieCard title="システム別 見積時間比率" data={systemPies.estimate} />
-            <PieCard title="システム別 実績作業時間比率" data={systemPies.actual} />
-            <PieCard title="システム別 テストケース件数比率" data={systemPies.testSum} />
+          <div className="border border-neutral-200 rounded-xl overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setChartsOpen((v) => !v)}
+              className="w-full flex items-center gap-2 px-4 py-2.5 bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
+            >
+              {chartsOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              <span className="text-sm font-bold text-neutral-800">図形</span>
+            </button>
+            {chartsOpen && (
+              <div className="p-4">
+                <div className="flex flex-wrap gap-4 items-start">
+                  <PieCard title="システム別 見積時間比率" data={systemPies.estimate} />
+                  <PieCard title="システム別 実績作業時間比率" data={systemPies.actual} />
+                  <PieCard title="システム別 テストケース件数比率" data={systemPies.testSum} />
+                </div>
+              </div>
+            )}
           </div>
         )}
 
