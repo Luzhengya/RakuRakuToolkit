@@ -179,6 +179,36 @@ function matchPeriod(monthStr: string, year: number, month: 'all' | number): boo
   return true;
 }
 
+// 業務年度: year年2月 〜 (year+1)年1月
+// 上期(first): year年 2〜7月 / 下期(second): year年8月 〜 (year+1)年1月
+type HalfType = 'full' | 'first' | 'second';
+
+// 月次文字列を YYYYMM(数値) に正規化。判定不能なら null
+function parseMonthKey(monthStr: string, fallbackYear?: number): number | null {
+  const t = (monthStr || '').trim();
+  const compact = t.match(/^(\d{4})(\d{2})$/);
+  if (compact) return Number(compact[1]) * 100 + Number(compact[2]);
+  const full = t.match(/(\d{4})[\-/.年](\d{1,2})/);
+  if (full) return Number(full[1]) * 100 + Number(full[2]);
+  const only = t.match(/(\d{1,2})月/);
+  if (only && fallbackYear !== undefined) return fallbackYear * 100 + Number(only[1]);
+  return null;
+}
+
+// 年度・半期の YYYYMM 範囲 [from, to] を返す
+function halfPeriodRange(year: number, half: HalfType): { from: number; to: number } {
+  if (half === 'first') return { from: year * 100 + 2, to: year * 100 + 7 };
+  if (half === 'second') return { from: year * 100 + 8, to: (year + 1) * 100 + 1 };
+  return { from: year * 100 + 2, to: (year + 1) * 100 + 1 }; // full = 業務年 2〜次年1月
+}
+
+// 業務年順の月配列。full=12ヶ月(2,3,...,12,1)、first=2〜7、second=8,9,...,12,1
+function halfMonthsOrder(half: HalfType): number[] {
+  if (half === 'first') return [2, 3, 4, 5, 6, 7];
+  if (half === 'second') return [8, 9, 10, 11, 12, 1];
+  return [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1];
+}
+
 // 月次文字列から月(1-12)を抽出
 function extractMonth(monthStr: string): number | null {
   const t = (monthStr || '').trim();
@@ -199,6 +229,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   const [periodType, setPeriodType] = useState<'month' | 'year'>('month');
   const [year, setYear] = useState<number>(initialYear);
   const [month, setMonth] = useState<'all' | number>(initialMonth);
+  // 年度モード時の半期区分 (通年/上期/下期)
+  const [halfType, setHalfType] = useState<HalfType>('full');
   // 年度モードは通年集計 (月フィルタ無効)
   const effectiveMonth: 'all' | number = periodType === 'year' ? 'all' : month;
   const [items, setItems] = useState<CaseStatItem[]>(initialCache?.items ?? []);
@@ -318,8 +350,16 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   }, [items, initialYear]);
 
   const periodRows = useMemo(() => {
+    // 年度モードは業務年(2月〜次年1月)+半期でフィルタ、月次モードは従来通り
+    const range = periodType === 'year' ? halfPeriodRange(year, halfType) : null;
     return items
-      .filter((it) => matchPeriod(it.month, year, effectiveMonth))
+      .filter((it) => {
+        if (periodType === 'year' && range) {
+          const key = parseMonthKey(it.month, year);
+          return key !== null && key >= range.from && key <= range.to;
+        }
+        return matchPeriod(it.month, year, effectiveMonth);
+      })
       .map((it) => {
         const estimate = num(it.estimateTotal);
         const actual = num(it.actualTotal);
@@ -367,7 +407,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           ngLeakRate: ngLeakDenom > 0 ? (japanNg / ngLeakDenom) * 100 : (hasNgData ? 0 : null),
         };
       });
-  }, [items, year, effectiveMonth]);
+  }, [items, year, effectiveMonth, periodType, halfType]);
 
   // 対象期間に存在するシステム一覧 (システム選択の候補)
   const allSystems = useMemo(
@@ -505,10 +545,12 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   }, [rows, th]);
 
   // 年度: 月次(1-12)集計シリーズ
+  // 業務年順(2,3,...,12,1)で並べたシリーズ。halfTypeで first=前6ヶ月/second=後6ヶ月/full=12ヶ月
   const monthlySeries = useMemo(() => {
-    const arr = Array.from({ length: 12 }, (_, i) => ({
-      month: i + 1,
-      label: String(i + 1),
+    const order = halfMonthsOrder(halfType);
+    const arr = order.map((mo) => ({
+      month: mo,
+      label: String(mo),
       caseCount: 0,
       testSum: 0,
       ngSum: 0,
@@ -516,10 +558,14 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       _tcng: 0,
       _japanNg: 0,
     }));
+    const idxMap = new Map<number, number>();
+    order.forEach((m, i) => idxMap.set(m, i));
     for (const r of rows) {
       const mo = extractMonth(r.it.month);
-      if (mo === null || mo < 1 || mo > 12) continue;
-      const b = arr[mo - 1];
+      if (mo === null) continue;
+      const i = idxMap.get(mo);
+      if (i === undefined) continue;
+      const b = arr[i];
       b.caseCount++;
       b.testSum += r.testTotal;
       b.ngSum += r.ng;
@@ -535,7 +581,38 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         ngLeakRate: leakDen > 0 ? Number(((b._japanNg / leakDen) * 100).toFixed(2)) : null,
       };
     });
-  }, [rows]);
+  }, [rows, halfType]);
+
+  // 半期集計 (通年モードで上期vs下期を比較するため、halfTypeに関係なく年度全体から集計)
+  const halfAgg = useMemo(() => {
+    if (periodType !== 'year') return null;
+    const empty = () => ({ caseCount: 0, testSum: 0, ngSum: 0, _actual: 0 });
+    const first = empty();
+    const second = empty();
+    // rows は現在 halfType でフィルタ済み。通年モードで上下期を比較するため、
+    // items から改めて業務年フル範囲で走査する
+    const fullRange = halfPeriodRange(year, 'full');
+    const firstMonths = new Set(halfMonthsOrder('first'));
+    for (const it of items) {
+      const key = parseMonthKey(it.month, year);
+      if (key === null || key < fullRange.from || key > fullRange.to) continue;
+      if (it.system && deselected.has(it.system)) continue;
+      const mo = key % 100;
+      const target = firstMonths.has(mo) ? first : second;
+      target.caseCount++;
+      target.testSum += num(it.testTotalCount);
+      target.ngSum += num(it.bugCount);
+      target._actual += num(it.actualTotal);
+    }
+    const finalize = (h: ReturnType<typeof empty>) => ({
+      caseCount: h.caseCount,
+      testSum: h.testSum,
+      ngSum: h.ngSum,
+      ngRate: h.testSum > 0 ? (h.ngSum / h.testSum) * 100 : null,
+      totalEff: h._actual > 0 ? h.testSum / h._actual : null,
+    });
+    return { first: finalize(first), second: finalize(second) };
+  }, [items, year, periodType, deselected]);
 
   // 年度: システム別集計 (円グラフ4種: 案件数 / 実績工数 / NG流出率 / 総効率)
   const systemPies = useMemo(() => {
@@ -1000,22 +1077,43 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </button>
             ))}
           </div>
-          <select
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
-          >
-            {availableYears.map((y) => <option key={y} value={y}>{y}年</option>)}
-          </select>
-          {periodType === 'month' && (
+          {periodType === 'year' ? (
+            // 年度モード: 年+半期を1つの select に統合 (通年/上期/下期)
             <select
-              value={month === 'all' ? 'all' : String(month)}
-              onChange={(e) => setMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+              value={`${year}:${halfType}`}
+              onChange={(e) => {
+                const [y, h] = e.target.value.split(':');
+                setYear(Number(y));
+                setHalfType(h as HalfType);
+              }}
               className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
             >
-              <option value="all">{'全月'}</option>
-              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}月</option>)}
+              {availableYears.flatMap((y) => (
+                (['full', 'first', 'second'] as HalfType[]).map((h) => (
+                  <option key={`${y}:${h}`} value={`${y}:${h}`}>
+                    {y}年 {h === 'full' ? '通年' : h === 'first' ? '上期' : '下期'}
+                  </option>
+                ))
+              ))}
             </select>
+          ) : (
+            <>
+              <select
+                value={year}
+                onChange={(e) => setYear(Number(e.target.value))}
+                className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
+              >
+                {availableYears.map((y) => <option key={y} value={y}>{y}年</option>)}
+              </select>
+              <select
+                value={month === 'all' ? 'all' : String(month)}
+                onChange={(e) => setMonth(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                className="appearance-none bg-white border border-neutral-200 rounded-lg px-3 py-1.5 text-sm font-medium text-neutral-700 focus:outline-none focus:border-neutral-400"
+              >
+                <option value="all">{'全月'}</option>
+                {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => <option key={m} value={m}>{m}月</option>)}
+              </select>
+            </>
           )}
           <button
             type="button"
@@ -1402,8 +1500,10 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       ) : (
       /* ═══ 年度: 月別トレンド ═══ */
       <section className="space-y-4">
-        <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">{`年度サマリー (${year}年度)`}</h3>
-        {/* 年度累計 KPI */}
+        <h3 className="block w-full rounded-lg bg-neutral-900 text-white text-sm font-bold px-4 py-2">
+          {`年度サマリー (${year}年度 ${halfType === 'full' ? '通年' : halfType === 'first' ? '上期' : '下期'})`}
+        </h3>
+        {/* 期間累計 KPI */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             { label: '案件数(総)', value: fmt(kpi.caseCount) },
@@ -1417,6 +1517,59 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
             </div>
           ))}
         </div>
+
+        {/* 半期 KPI パネル */}
+        {halfType === 'full' && halfAgg && (
+          <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+            <div className="grid grid-cols-4 text-xs font-semibold text-neutral-500 bg-neutral-50 border-b border-neutral-200">
+              <div className="px-3 py-2">指標</div>
+              <div className="px-3 py-2 text-right">上期</div>
+              <div className="px-3 py-2 text-right">下期</div>
+              <div className="px-3 py-2 text-right">差分</div>
+            </div>
+            {([
+              { key: '案件数(総)', a: halfAgg.first.caseCount, b: halfAgg.second.caseCount, higherIsWorse: false, fmt: (v: number | null) => v === null ? '-' : fmt(v) },
+              { key: '総テスト件数', a: halfAgg.first.testSum, b: halfAgg.second.testSum, higherIsWorse: false, fmt: (v: number | null) => v === null ? '-' : fmt(v) },
+              { key: '総NG件数', a: halfAgg.first.ngSum, b: halfAgg.second.ngSum, higherIsWorse: true, fmt: (v: number | null) => v === null ? '-' : fmt(v) },
+              { key: 'NG率(総)', a: halfAgg.first.ngRate, b: halfAgg.second.ngRate, higherIsWorse: true, fmt: (v: number | null) => fmtPct(v) },
+              { key: '効率(総)', a: halfAgg.first.totalEff, b: halfAgg.second.totalEff, higherIsWorse: false, fmt: (v: number | null) => fmtEff(v) },
+            ] as const).map((r) => {
+              const diff = r.a !== null && r.b !== null ? Number((r.b - r.a).toFixed(2)) : null;
+              const cls = diff === null || diff === 0
+                ? 'text-neutral-500'
+                : (r.higherIsWorse ? (diff > 0 ? 'text-red-600 font-semibold' : 'text-emerald-600 font-semibold') : (diff > 0 ? 'text-emerald-600 font-semibold' : 'text-red-600 font-semibold'));
+              const diffText = diff === null ? '-' : (diff > 0 ? '+' : '') + (r.key === 'NG率(総)' ? fmt(diff) + '%' : fmt(diff));
+              return (
+                <div key={r.key} className="grid grid-cols-4 text-sm border-t border-neutral-100 first:border-t-0">
+                  <div className="px-3 py-2 text-neutral-700">{r.key}</div>
+                  <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{r.fmt(r.a)}</div>
+                  <div className="px-3 py-2 text-right tabular-nums text-neutral-800">{r.fmt(r.b)}</div>
+                  <div className={`px-3 py-2 text-right tabular-nums ${cls}`}>{diffText}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {halfType !== 'full' && (
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {(() => {
+              const h = halfType === 'first' ? halfAgg?.first : halfAgg?.second;
+              if (!h) return null;
+              return [
+                { label: '案件数(総)', value: fmt(h.caseCount) },
+                { label: '総テスト件数', value: fmt(h.testSum) },
+                { label: '総NG件数', value: fmt(h.ngSum) },
+                { label: 'NG率(総)', value: fmtPct(h.ngRate) },
+                { label: '効率(総)', value: fmtEff(h.totalEff) },
+              ].map((c) => (
+                <div key={c.label} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
+                  <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{c.label}</p>
+                  <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{c.value}</p>
+                </div>
+              ));
+            })()}
+          </div>
+        )}
 
         {rows.length === 0 ? (
           <p className="text-center text-sm text-neutral-400 py-12">{loading ? '読み込み中...' : '該当データなし'}</p>
