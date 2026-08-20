@@ -610,6 +610,7 @@ function buildResultReportHtml(
 
   const totalTestCount = completedItems.reduce((sum, item) => sum + parseNumber(item.testTotalCount), 0);
   const totalBugCount = completedItems.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
+  const totalUnexpectedNgCount = completedItems.reduce((sum, item) => sum + parseNumber(item.unexpectedNgCount), 0);
   const totalBlockedCount = completedItems.reduce((sum, item) => sum + parseNumber(item.testBlockedCount), 0);
   const totalPendingCount = completedItems.reduce((sum, item) => sum + parseNumber(item.pendingConfirmCount), 0);
   const totalEstimateEffort = completedItems.reduce((sum, item) => sum + parseNumber(item.estimateTotal), 0);
@@ -738,6 +739,7 @@ function buildResultReportHtml(
   html = replaceToken(html, '{{TC実施完了予定日+2}}', addDays(tcExec, 2));
   html = replaceToken(html, '{{TEST_TOTAL_COUNT}}', String(totalTestCount));
   html = replaceToken(html, '{{BUG_COUNT}}', String(totalBugCount));
+  html = replaceToken(html, '{{UNEXPECTED_NG_COUNT}}', String(totalUnexpectedNgCount));
   html = replaceToken(html, '{{TEST_BLOCKED_COUNT}}', String(totalBlockedCount));
   html = replaceToken(html, '{{PENDING_CONFIRM_COUNT}}', String(totalPendingCount));
   html = replaceToken(html, '{{ESTIMATE_TOTAL_EFFORT}}', totalEstimateEffortStr);

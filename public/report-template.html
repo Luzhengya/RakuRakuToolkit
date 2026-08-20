@@ -79,7 +79,7 @@
     }
     .stats {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 10px;
       margin-top: 12px;
     }
@@ -404,6 +404,7 @@
   <div class="stats">
     <div class="stat-box"><div class="stat-label">テスト総件数</div><div class="stat-value">{{TEST_TOTAL_COUNT}}</div></div>
     <div class="stat-box"><div class="stat-label">NG数</div><div class="stat-value">{{BUG_COUNT}}</div></div>
+    <div class="stat-box"><div class="stat-label">想定外NG数</div><div class="stat-value">{{UNEXPECTED_NG_COUNT}}</div></div>
     <div class="stat-box"><div class="stat-label">テスト不可</div><div class="stat-value">{{TEST_BLOCKED_COUNT}}</div></div>
     <div class="stat-box"><div class="stat-label">判断不可/想定外件数</div><div class="stat-value">{{PENDING_CONFIRM_COUNT}}</div></div>
   </div>
