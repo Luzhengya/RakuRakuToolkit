@@ -109,6 +109,7 @@ type Thresholds = {
   ngLeak: EffTh;   // NG流出率(%)  high以上=要確認
   caseDiff: EffTh; // 想定ケース差 high以上=要確認
   sensen: EffTh;   // 潜在見逃し   high以上=要確認
+  diff: EffTh;     // 見積対実績差分(人日) high以上=要確認 (担当者別用)
 };
 
 // 暫定の既定値 (画面で編集可)
@@ -120,6 +121,7 @@ const DEFAULT_TH: Thresholds = {
   ngLeak: { high: 50, mid: 30 },
   caseDiff: { high: 10, mid: 5 },
   sensen: { high: 1, mid: 0.5 },
+  diff: { high: 10, mid: 5 },
 };
 
 function loadThresholds(): Thresholds {
@@ -280,6 +282,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   }, []);
   const [effOpen, setEffOpen] = useState(true);
   const [qualOpen, setQualOpen] = useState(true);
+  const [assigneeOpen, setAssigneeOpen] = useState(true);
   const [incidentOpen, setIncidentOpen] = useState(true);
   const [chartsOpen, setChartsOpen] = useState(true);
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
@@ -601,6 +604,94 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       .sort((a, b) => b.count - a.count);
   }, [rows, th]);
 
+  // 担当者別グルーピング (確認要件数降順)。効率4指標 + NG流出率 + 見積対実績差分 を統合した単一の確認要・注意リストを持つ。
+  const rowsByAssignee = useMemo(() => {
+    const map = new Map<string, typeof rows>();
+    for (const r of rows) {
+      const key = r.it.assignee || '(未設定)';
+      const arr = map.get(key);
+      if (arr) arr.push(r);
+      else map.set(key, [r]);
+    }
+    const tally = (grp: typeof rows, pick: (r: (typeof rows)[number]) => number | null, t: EffTh) => {
+      const c = { high: 0, mid: 0, low: 0 };
+      for (const r of grp) {
+        const b = band(pick(r), t);
+        if (b === 'high') c.high++;
+        else if (b === 'mid') c.mid++;
+        else if (b === 'low') c.low++;
+      }
+      return c;
+    };
+    return Array.from(map.entries())
+      .map(([assignee, grp]) => {
+        const testSum = grp.reduce((s, r) => s + r.testTotal, 0);
+        const actualSum = grp.reduce((s, r) => s + r.actual, 0);
+        const estimateSum = grp.reduce((s, r) => s + r.estimate, 0);
+        const designDen = grp.reduce((s, r) => s + r.designA + r.implA, 0);
+        const execDen = grp.reduce((s, r) => s + r.execA, 0);
+        const reviewDen = grp.reduce((s, r) => s + r.reviewA, 0);
+        const effStats = {
+          total: { agg: effVal(testSum, actualSum), counts: tally(grp, (r) => r.totalEff, th.total) },
+          design: { agg: effVal(testSum, designDen), counts: tally(grp, (r) => r.designEff, th.design) },
+          exec: { agg: effVal(testSum, execDen), counts: tally(grp, (r) => r.execEff, th.exec) },
+          review: { agg: effVal(testSum, reviewDen), counts: tally(grp, (r) => r.reviewEff, th.review) },
+        };
+        const tcngSum = grp.reduce((s, r) => s + r.tcng, 0);
+        const japanNgSum = grp.reduce((s, r) => s + r.japanNg, 0);
+        const leakDen = tcngSum + japanNgSum;
+        const grpHasNgData = grp.some((r) => r.hasNgData);
+        const ngLeakRate = leakDen > 0 ? (japanNgSum / leakDen) * 100 : (grpHasNgData ? 0 : null);
+        const ngLeakCounts = tally(grp, (r) => r.ngLeakRate, th.ngLeak);
+        const diffSum = actualSum - estimateSum;
+        const diffCounts = tally(grp, (r) => r.diff, th.diff);
+
+        // 確認要・注意: 効率4指標(低=悪化) / NG流出率・見積対実績差分(高=悪化) を1件ずつ統合
+        const attn = grp.flatMap((r) => {
+          const parts: { label: string; severity: 'high' | 'mid' }[] = [];
+          const addEff = (name: string, v: number | null, t: EffTh) => {
+            const b = band(v, t);
+            if (b === 'low') parts.push({ label: `${name}:低`, severity: 'high' });
+            else if (b === 'mid') parts.push({ label: `${name}:中`, severity: 'mid' });
+          };
+          addEff('総効率', r.totalEff, th.total);
+          addEff('設計効率', r.designEff, th.design);
+          addEff('実施効率', r.execEff, th.exec);
+          addEff('レビュー効率', r.reviewEff, th.review);
+          if (r.ngLeakRate !== null) {
+            const b = band(r.ngLeakRate, th.ngLeak);
+            if (b === 'high') parts.push({ label: `NG流出率 ${fmtPct(r.ngLeakRate)}`, severity: 'high' });
+            else if (b === 'mid') parts.push({ label: `NG流出率 ${fmtPct(r.ngLeakRate)}`, severity: 'mid' });
+          }
+          {
+            const b = band(r.diff, th.diff);
+            const diffText = `見積対実績差分 ${r.diff > 0 ? '+' : ''}${fmt(r.diff)}`;
+            if (b === 'high') parts.push({ label: diffText, severity: 'high' });
+            else if (b === 'mid') parts.push({ label: diffText, severity: 'mid' });
+          }
+          if (parts.length === 0) return [];
+          const status: '確認要' | '注意' = parts.some((p) => p.severity === 'high') ? '確認要' : '注意';
+          return [{ r, status, labels: parts.map((p) => p.label) }];
+        });
+        const confirmCount = attn.filter((x) => x.status === '確認要').length;
+
+        return {
+          assignee,
+          rows: grp,
+          count: grp.length,
+          totalEff: effVal(testSum, actualSum),
+          effStats,
+          ngLeakRate,
+          ngLeakCounts,
+          diffSum,
+          diffCounts,
+          attn,
+          confirmCount,
+        };
+      })
+      .sort((a, b) => b.confirmCount - a.confirmCount || b.attn.length - a.attn.length);
+  }, [rows, th]);
+
   // 年度: 月次(1-12)集計シリーズ
   // 業務年順(2,3,...,12,1)で並べたシリーズ。halfTypeで first=前6ヶ月/second=後6ヶ月/full=12ヶ月
   const monthlySeries = useMemo(() => {
@@ -749,7 +840,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     />
   );
 
-  type ThKey = 'total' | 'design' | 'exec' | 'review' | 'ngLeak' | 'caseDiff' | 'sensen';
+  type ThKey = 'total' | 'design' | 'exec' | 'review' | 'ngLeak' | 'caseDiff' | 'sensen' | 'diff';
   const effRow = (key: ThKey, label: string, hiLabel = '高≥', midLabel = '中≥') => (
     <div className="flex items-center gap-2 text-xs">
       <span className="w-24 text-neutral-600">{label}</span>
@@ -804,6 +895,32 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         <span className={counts.high > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'品質低'} {counts.high}</span>
         <span className="text-slate-500">{'品質中'} {counts.mid}</span>
         <span className="text-emerald-600">{'品質高'} {counts.low}</span>
+      </div>
+    </div>
+  );
+
+  // 見積対実績差分サマリカード (high=超過/悪い。counts.high=確認要件数, counts.low=適正件数) ─ 担当者別用
+  const diffSummaryBlock = (aggText: string, counts: { high: number; mid: number; low: number }) => (
+    <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs font-semibold text-neutral-600">見積対実績差分</span>
+        <span className="text-lg font-bold text-neutral-900 tabular-nums">{aggText}</span>
+      </div>
+      <div className="mt-1.5"><HealthBar high={counts.high} mid={counts.mid} low={counts.low} reverse /></div>
+      <div className="flex items-center gap-3 mt-1 text-[11px]">
+        <span className={counts.high > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'確認要'} {counts.high}</span>
+        <span className="text-slate-500">{'注意'} {counts.mid}</span>
+        <span className="text-emerald-600">{'適正'} {counts.low}</span>
+      </div>
+    </div>
+  );
+
+  // 担当件数カード (健康バー無し、単純な件数表示) ─ 担当者別用
+  const workloadBlock = (label: string, count: number) => (
+    <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
+      <div className="flex items-baseline justify-between">
+        <span className="text-xs font-semibold text-neutral-600">{label}</span>
+        <span className="text-lg font-bold text-neutral-900 tabular-nums">{fmt(count)}</span>
       </div>
     </div>
   );
@@ -1055,6 +1172,48 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       {qualBlock('潜在見逃し', '', qs.sensenCounts)}
     </div>
   );
+
+  // 担当者別 詳細テーブル (案件名/システム/状態/テスト件数/実績総/設計・実施・レビュー効率/NG流出率/見積対実績差分/備考)
+  const assigneeHead = (
+    <thead>
+      <tr>
+        <th className={th0}>案件名</th>
+        <th className={th0}>システム</th>
+        <th className={th0}>状態</th>
+        <th className={th0}>テスト件数</th>
+        <th className={th0}>実績総</th>
+        <th className={th0}>設計効率</th>
+        <th className={th0}>実施効率</th>
+        <th className={th0}>レビュー効率</th>
+        <th className={th0}>NG流出率</th>
+        <th className={th0}>見積対実績差分</th>
+        <th className={th0}>備考</th>
+      </tr>
+    </thead>
+  );
+
+  const renderAssigneeRow = (r: (typeof rows)[number]) => {
+    const diffBand = band(r.diff, th.diff);
+    return (
+      <tr key={r.it.id} className="hover:bg-neutral-50">
+        <td className={td0 + ' max-w-[220px] truncate'} title={r.it.projectName}>{r.it.projectName || '-'}</td>
+        <td className={td0}>{r.it.system || '-'}</td>
+        <td className={td0}>{r.it.status || '-'}</td>
+        <td className={tdNum}>{fmt(r.testTotal)}</td>
+        <td className={tdNum}>{fmt(r.actual)}</td>
+        <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.designEff, th.design)]}>{fmtEff(r.designEff)}</td>
+        <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.execEff, th.exec)]}>{fmtEff(r.execEff)}</td>
+        <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.reviewEff, th.review)]}>{fmtEff(r.reviewEff)}</td>
+        <td className={tdNum + (r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
+          {fmtPct(r.ngLeakRate)}
+        </td>
+        <td className={tdNum + (diffBand === 'high' ? ' bg-red-50 text-red-600 font-semibold' : diffBand === 'mid' ? ' text-amber-600 font-semibold' : '')}>
+          {(r.diff > 0 ? '+' : '') + fmt(r.diff)}
+        </td>
+        {renderCommentCell(r)}
+      </tr>
+    );
+  };
 
   // ── 報告書 ──
   const reportMonthKey = periodType === 'year'
@@ -1371,10 +1530,10 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         </div>
       </section>
 
-      {/* ═══ 詳細 (案件別) ═══ */}
+      {/* ═══ 詳細 ═══ */}
       <section className="space-y-4">
         <h3 className="block w-full rounded-lg bg-blue-600 text-white text-sm font-bold px-4 py-2">
-          {'詳細 / 案件別'}
+          {'詳細'}
         </h3>
 
         {/* ─ 効率 ─ */}
@@ -1554,6 +1713,107 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                             <table className="w-full border-collapse">
                               {qualHead}
                               <tbody>{g.rows.map(renderQualRow)}</tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {rows.length === 0 && (
+                  <p className="text-center text-sm text-neutral-400 py-8">{loading ? '読み込み中...' : '該当データなし'}</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ─ 担当者別 ─ */}
+        <div className="border border-neutral-200 rounded-xl overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setAssigneeOpen((v) => !v)}
+            className="w-full flex items-center gap-2 px-4 py-2.5 bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
+          >
+            {assigneeOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            <span className="text-sm font-bold text-neutral-800">{'担当者別'}</span>
+          </button>
+
+          {assigneeOpen && (
+            <div className="p-4 space-y-4">
+              {/* 閾値設定: 効率/NG流出率は効率・品質タブと共通。見積対実績差分のみここで設定 */}
+              <div className="flex flex-wrap gap-x-6 gap-y-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
+                <span className="text-[11px] font-semibold text-neutral-400 w-full">
+                  {'閾値設定 (編集可・自動保存 / 効率・NG流出率は効率・品質タブと共通、見積対実績差分は値が大きいほど悪い)'}
+                </span>
+                {effRow('diff', '見積対実績差分(人日)')}
+              </div>
+
+              {/* 担当者別: 要確認 多い順・折りたたみ */}
+              <div className="space-y-3">
+                {rowsByAssignee.map((a) => {
+                  const key = `assignee:${a.assignee}`;
+                  const open = isSysOpen(key, a.attn.length > 0);
+                  const cautionCount = a.attn.length - a.confirmCount;
+                  const safe = a.count - a.attn.length;
+                  return (
+                    <div key={a.assignee} className="border border-neutral-200 rounded-lg overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => toggleSys(key, a.attn.length > 0)}
+                        className="w-full flex items-center gap-3 px-4 py-2.5 bg-neutral-50 hover:bg-neutral-100 transition-colors text-left"
+                      >
+                        {open ? <ChevronDown size={16} className="shrink-0" /> : <ChevronRight size={16} className="shrink-0" />}
+                        <span className="text-sm font-bold text-neutral-800 truncate">{a.assignee}</span>
+                        <div className="w-24 shrink-0 hidden sm:block" title={`安全${safe} / 注意${cautionCount} / 確認要${a.confirmCount}`}><HealthBar high={safe} mid={cautionCount} low={a.confirmCount} /></div>
+                        <span className="text-xs text-neutral-500 shrink-0">総効率 <b className="text-neutral-900 tabular-nums">{fmtEff(a.totalEff)}</b></span>
+                        <span className="ml-auto flex items-center gap-2 shrink-0">
+                          {a.confirmCount > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-red-100 text-red-700 text-[11px] font-bold px-2 py-0.5">
+                              <AlertTriangle size={11} />確認要 {a.confirmCount}
+                            </span>
+                          )}
+                          {cautionCount > 0 && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold px-2 py-0.5">
+                              注意 {cautionCount}
+                            </span>
+                          )}
+                          <span className="text-xs text-neutral-400">担当 {a.count}</span>
+                        </span>
+                      </button>
+                      {open && (
+                        <div className="p-3 space-y-3">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            {summaryBlock('総効率', a.effStats.total.agg, a.effStats.total.counts)}
+                            {summaryBlock('設計効率', a.effStats.design.agg, a.effStats.design.counts)}
+                            {summaryBlock('実施効率', a.effStats.exec.agg, a.effStats.exec.counts)}
+                            {summaryBlock('レビュー効率', a.effStats.review.agg, a.effStats.review.counts)}
+                            {qualBlock('NG流出率', fmtPct(a.ngLeakRate), a.ngLeakCounts)}
+                            {diffSummaryBlock((a.diffSum > 0 ? '+' : '') + fmt(a.diffSum), a.diffCounts)}
+                            {workloadBlock('担当件数', a.count)}
+                          </div>
+                          {a.attn.length > 0 && (
+                            <div className="border border-amber-200 bg-amber-50/50 rounded-lg p-3">
+                              <p className="text-xs font-bold text-neutral-700 mb-2 flex items-center gap-1">
+                                <AlertTriangle size={12} />確認要・注意 {a.attn.length}件
+                              </p>
+                              <ul className="space-y-1">
+                                {a.attn.map(({ r, status, labels }) => (
+                                  <li key={r.it.id} className="flex items-center justify-between gap-3 text-xs">
+                                    <span className="truncate text-neutral-800" title={r.it.projectName}>{r.it.projectName || '-'}</span>
+                                    <span className="shrink-0 flex items-center gap-2">
+                                      <span className={status === '確認要' ? 'text-red-600 font-bold' : 'text-amber-600 font-semibold'}>{status}</span>
+                                      <span className="text-neutral-500">{labels.join(' / ')}</span>
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          <div className="overflow-x-auto border border-neutral-200 rounded-lg">
+                            <table className="w-full border-collapse">
+                              {assigneeHead}
+                              <tbody>{a.rows.map(renderAssigneeRow)}</tbody>
                             </table>
                           </div>
                         </div>
