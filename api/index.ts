@@ -2383,9 +2383,10 @@ const DEFAULT_ENV_VERSIONS: Record<string, string> = {
   Android: "16",
 };
 
-// key → value のマップを返す (key/value 属性を持つ Notion DB を読む)
-// chrome/IOS/Android の環境バージョンに加え、KPI_XXX1 / KPI_XXX2 の目標値なども含む
-async function queryConfigTable(databaseId: string): Promise<Record<string, string>> {
+// key → { value, comment } のマップを返す (key/value/comment 属性を持つ Notion DB を読む)
+// chrome/IOS/Android の環境バージョンに加え、KPI_N_M の目標値も含む
+type ConfigRow = { value: string; comment: string };
+async function queryConfigTable(databaseId: string): Promise<Record<string, ConfigRow>> {
   if (!notion) return {};
 
   const database = await notion.databases.retrieve({ database_id: databaseId });
@@ -2399,30 +2400,42 @@ async function queryConfigTable(databaseId: string): Promise<Record<string, stri
     page_size: 100,
   });
 
-  const map: Record<string, string> = {};
+  const map: Record<string, ConfigRow> = {};
   for (const page of r.results ?? []) {
     const p = page?.properties ?? {};
     const key = propertyToPlainText(p["key"]).trim();
     const value = propertyToPlainText(p["value"]).trim();
-    if (key && value) map[key] = value;
+    const comment = propertyToPlainText(p["comment"]).trim();
+    if (key && value) map[key] = { value, comment };
   }
   return map;
 }
 
-// KPI_XXXn の行を 上期(1)/下期(2) に振り分ける。ラベルは KPI_ 接頭辞と末尾の 1/2 を除いた部分
-function partitionKpiTargets(map: Record<string, string>): {
+// KPI_N_M の行を 上期(_1)/下期(_2) に振り分ける。ラベルは comment 列から取得し、
+// "上期" / "下期" 接頭辞は表示側でグループ見出しがあるため取り除く
+function partitionKpiTargets(map: Record<string, ConfigRow>): {
   first: { label: string; value: string }[];
   second: { label: string; value: string }[];
 } {
   const first: { label: string; value: string }[] = [];
   const second: { label: string; value: string }[] = [];
-  for (const [key, value] of Object.entries(map)) {
+  const stripPrefix = (s: string) => s.replace(/^(上期|下期)/, '').trim();
+  // key 名の N をソート順とするための補助
+  const parseIndex = (key: string): number => {
+    const m = key.match(/^KPI_(\d+)_[12]$/);
+    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const rows: { key: string; row: ConfigRow; suffix: '1' | '2' }[] = [];
+  for (const [key, row] of Object.entries(map)) {
     if (!key.startsWith("KPI_")) continue;
-    const suffix = key.slice(-1);
-    if (suffix !== "1" && suffix !== "2") continue;
-    const label = key.slice(4, -1); // KPI_ を除き末尾の 1/2 を除く
+    if (key.endsWith("_1")) rows.push({ key, row, suffix: '1' });
+    else if (key.endsWith("_2")) rows.push({ key, row, suffix: '2' });
+  }
+  rows.sort((a, b) => parseIndex(a.key) - parseIndex(b.key));
+  for (const { row, suffix } of rows) {
+    const label = stripPrefix(row.comment) || row.comment;
     if (!label) continue;
-    (suffix === "1" ? first : second).push({ label, value });
+    (suffix === '1' ? first : second).push({ label, value: row.value });
   }
   return { first, second };
 }
@@ -2437,10 +2450,10 @@ app.get("/api/config/env-versions", async (_req, res) => {
     // 既定値をベースに、表で取得できた chrome/IOS/Android のみ上書き
     // (KPI_ 行はここでは無視される。互換性のため既定値はそのまま返す)
     const envOnly: Record<string, string> = {};
-    for (const [k, v] of Object.entries(map)) {
+    for (const [k, row] of Object.entries(map)) {
       if (k === "chrome" || k === "IOS" || k === "ios" || k === "Android") {
         // IOS/ios 表記の揺れを吸収して IOS に統一
-        envOnly[k === "ios" ? "IOS" : k] = v;
+        envOnly[k === "ios" ? "IOS" : k] = row.value;
       }
     }
     return res.json({ ...DEFAULT_ENV_VERSIONS, ...envOnly });
