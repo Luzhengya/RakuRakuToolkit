@@ -2357,10 +2357,31 @@ function readTcPlain(page: any, f: TcField): string {
   return propertyToPlainText(p);
 }
 
-// 親ページ配下から「{system}{year}」のデータベースを探し、無ければ作る
-async function ensureTestcaseDatabase(parentPageId: string, title: string): Promise<string> {
+// TESTCASE_NOTION_FIELDS から Notion のプロパティ定義を組み立てる
+function buildTestcaseSchema(): Record<string, any> {
+  const properties: Record<string, any> = {};
+  for (const f of TESTCASE_NOTION_FIELDS) {
+    if (f.kind === "title") properties[f.name] = { title: {} };
+    else if (f.kind === "select") properties[f.name] = { select: {} };
+    else if (f.kind === "date") properties[f.name] = { date: {} };
+    else if (f.kind === "number") properties[f.name] = { number: {} };
+    else properties[f.name] = { rich_text: {} };
+  }
+  return properties;
+}
+
+// 親ページ配下から「{system}{year}」のデータベースを探し、無ければ作る。
+// SDK v5 (data source モデル) ではプロパティは data source 側に定義されるため、
+// ページ作成・更新に使う data_source_id を返す。
+// 既存テーブルに不足しているプロパティがあれば追加する (旧バージョンで作られた表への追従)。
+async function ensureTestcaseDatabase(
+  parentPageId: string,
+  title: string
+): Promise<{ databaseId: string; dataSourceId: string }> {
   if (!notion) throw new Error("Notion client not configured");
+
   // 親ページの子ブロックを走査して同名の child_database を探す
+  let existingDbId: string | null = null;
   let cursor: string | undefined = undefined;
   do {
     const res: any = await notion.blocks.children.list({
@@ -2370,36 +2391,49 @@ async function ensureTestcaseDatabase(parentPageId: string, title: string): Prom
     });
     for (const block of res.results ?? []) {
       if (block.type === "child_database" && (block.child_database?.title ?? "").trim() === title) {
-        return block.id as string;
+        existingDbId = block.id as string;
+        break;
       }
     }
-    cursor = res.has_more ? res.next_cursor : undefined;
+    cursor = existingDbId ? undefined : res.has_more ? res.next_cursor : undefined;
   } while (cursor);
 
-  // 無ければ作成
-  const properties: Record<string, any> = {};
-  for (const f of TESTCASE_NOTION_FIELDS) {
-    if (f.kind === "title") properties[f.name] = { title: {} };
-    else if (f.kind === "select") properties[f.name] = { select: {} };
-    else if (f.kind === "date") properties[f.name] = { date: {} };
-    else if (f.kind === "number") properties[f.name] = { number: {} };
-    else properties[f.name] = { rich_text: {} };
+  const schema = buildTestcaseSchema();
+
+  if (existingDbId) {
+    const db: any = await notion.databases.retrieve({ database_id: existingDbId });
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) throw new Error(`データソースが見つかりません: ${title}`);
+    // 既存プロパティを確認し、不足分のみ追加
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const existingProps = new Set(Object.keys(ds?.properties ?? {}));
+    const missing: Record<string, any> = {};
+    for (const [name, def] of Object.entries(schema)) {
+      // title は作成時に必ず存在する (名前が異なる場合もあるため追加対象にしない)
+      if (name === "ケース番号") continue;
+      if (!existingProps.has(name)) missing[name] = def;
+    }
+    if (Object.keys(missing).length > 0) {
+      await (notion as any).dataSources.update({ data_source_id: dataSourceId, properties: missing });
+    }
+    return { databaseId: existingDbId, dataSourceId };
   }
+
+  // 無ければ作成 (v5 では initial_data_source にスキーマを渡す)
   const created: any = await notion.databases.create({
     parent: { type: "page_id", page_id: parentPageId },
     title: [{ type: "text", text: { content: title } }],
-    properties,
+    initial_data_source: { properties: schema },
   } as any);
-  return created.id as string;
+  const newDsId = created?.data_sources?.[0]?.id as string | undefined;
+  if (!newDsId) throw new Error(`作成したデータベースのデータソースが取得できません: ${title}`);
+  return { databaseId: created.id as string, dataSourceId: newDsId };
 }
 
-// データベース内の全ページを ケース番号 → page で引けるようにする
-async function loadTestcaseIndex(databaseId: string): Promise<Map<string, any>> {
+// データソース内の全ページを ケース番号 → page で引けるようにする
+async function loadTestcaseIndex(dataSourceId: string): Promise<Map<string, any>> {
   const map = new Map<string, any>();
   if (!notion) return map;
-  const database = await notion.databases.retrieve({ database_id: databaseId });
-  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
-  if (!dataSourceId) return map;
   let cursor: string | undefined = undefined;
   do {
     const r: any = await notion.dataSources.query({
@@ -2428,8 +2462,8 @@ async function uploadTestcasesToNotion(
 ): Promise<TcUploadResult> {
   if (!notion) throw new Error("Notion client not configured");
   const dbTitle = `${system}${year}`;
-  const databaseId = await ensureTestcaseDatabase(parentPageId, dbTitle);
-  const index = await loadTestcaseIndex(databaseId);
+  const { dataSourceId } = await ensureTestcaseDatabase(parentPageId, dbTitle);
+  const index = await loadTestcaseIndex(dataSourceId);
 
   const result: TcUploadResult = { created: 0, updated: 0, skipped: 0 };
   // 比較対象のフィールド (バージョンは比較しない: 更新時に +1 するため)
@@ -2454,7 +2488,11 @@ async function uploadTestcasesToNotion(
         // システム・月次は選択された値で固定 (CSV 側の表記揺れを吸収 / CSVに月の情報が無い)
         props["システム"] = { select: { name: system } };
         props["月次"] = { select: { name: String(month) } };
-        await notion.pages.create({ parent: { database_id: databaseId } as any, properties: props } as any);
+        // v5 では data_source_id を parent に指定する (database_id ではプロパティが解決されない)
+        await notion.pages.create({
+          parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+          properties: props,
+        } as any);
         result.created++;
         continue;
       }
@@ -2532,7 +2570,12 @@ app.get("/api/testcase/list", async (req, res) => {
 
     if (!databaseId) return res.json({ items: [], total: 0, exists: false, dbTitle });
 
-    const index = await loadTestcaseIndex(databaseId);
+    // v5: プロパティ/行は data source 側にあるため data_source_id を解決する
+    const db: any = await notion.databases.retrieve({ database_id: databaseId });
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.json({ items: [], total: 0, exists: false, dbTitle });
+
+    const index = await loadTestcaseIndex(dataSourceId);
     const items = Array.from(index.values()).map((page: any) => {
       const row: Record<string, string> = { id: page.id };
       for (const f of TESTCASE_NOTION_FIELDS) row[f.name] = readTcPlain(page, f);
