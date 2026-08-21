@@ -2406,15 +2406,23 @@ async function ensureTestcaseDatabase(
     if (!dataSourceId) throw new Error(`データソースが見つかりません: ${title}`);
     // 既存プロパティを確認し、不足分のみ追加
     const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
-    const existingProps = new Set(Object.keys(ds?.properties ?? {}));
-    const missing: Record<string, any> = {};
-    for (const [name, def] of Object.entries(schema)) {
-      // title は作成時に必ず存在する (名前が異なる場合もあるため追加対象にしない)
-      if (name === "ケース番号") continue;
-      if (!existingProps.has(name)) missing[name] = def;
+    const currentProps: Record<string, any> = ds?.properties ?? {};
+    const existingProps = new Set(Object.keys(currentProps));
+    const patch: Record<string, any> = {};
+
+    // title プロパティは 1 つだけで型変更もできない。既定名(名前/Name 等)のままなら
+    // 「ケース番号」にリネームする (別名だと未定義扱いで書き込みに失敗するため)
+    if (!existingProps.has("ケース番号")) {
+      const titleName = Object.entries(currentProps).find(([, def]) => (def as any)?.type === "title")?.[0];
+      if (titleName) patch[titleName] = { name: "ケース番号" };
     }
-    if (Object.keys(missing).length > 0) {
-      await (notion as any).dataSources.update({ data_source_id: dataSourceId, properties: missing });
+
+    for (const [name, def] of Object.entries(schema)) {
+      if (name === "ケース番号") continue; // title は上のリネームで担保
+      if (!existingProps.has(name)) patch[name] = def;
+    }
+    if (Object.keys(patch).length > 0) {
+      await (notion as any).dataSources.update({ data_source_id: dataSourceId, properties: patch });
     }
     return { databaseId: existingDbId, dataSourceId };
   }
