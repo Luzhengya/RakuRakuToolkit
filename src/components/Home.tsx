@@ -68,6 +68,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       onClick: () => onSelectTool('pdf-edit'),
     },
     {
+      id: 'pdf-edit-table',
+      title: 'PDF编辑 (表格対応)',
+      description: 'テーブル構造を解析して、セル編集で列幅が自動調整される方式を検証中の実験版。',
+      category: '文档类',
+      icon: <FilePen className="text-indigo-600" size={24} />,
+      onClick: () => onSelectTool('pdf-edit-table'),
+    },
+    {
       id: 'test-center',
       title: '测试中心',
       description: '进入测试中心管理画面，按区域管理测试模块。',
