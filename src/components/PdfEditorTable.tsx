@@ -1382,7 +1382,9 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   // 覆いかぶせるテーブルの大きさが元と合わない。
   const [tableGeoms, setTableGeoms] = useState<Record<string, TableGeom>>({});
   useEffect(() => {
-    if (!tableEditMode || !currentPage || editableTables.length === 0) {
+    // 編集モードに関係なく走らせる。座標オーバーレイ側でも
+    // 「罫線がないので表として扱わない」領域を区別して描きたいため。
+    if (!currentPage || editableTables.length === 0) {
       setTableGeoms({});
       return;
     }
@@ -1409,7 +1411,7 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [tableEditMode, currentPage, editableTables]);
+  }, [currentPage, editableTables]);
 
   // テーブル編集モード中は、表の中に入る pdf.js の文字レイヤを隠す。
   // (HTMLテーブル側で編集するため、そのままだと二重に表示される)
@@ -1709,8 +1711,9 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                       </span>
                     </div>
                     <p className="text-xs text-neutral-500">
-                      下のページ画像に枠が重なります。枠が実際の表とズレていないか確認してください
-                      (青=表の外枠 / 緑=セル境界)。
+                      下のページ画像に枠が重なります (青=表の外枠 / 緑=セル境界)。
+                      <b>グレーの破線</b>は Adobe が表として返したものの、罫線が無いため
+                      表として扱わない領域です (表紙など)。
                       {extractResult.tables.filter(t => t.page === currentPageIdx).length === 0 && (
                         <span className="text-amber-600"> ※このページには検出された表がありません</span>
                       )}
@@ -1863,6 +1866,10 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                           .filter(tb => tb.page === currentPageIdx)
                           .map(tb => {
                             const rects: any[] = [];
+                            // 罫線が無く表として扱わない領域はグレーの破線で描く。
+                            // 青枠のままだと「表と認識している」ように見えて、
+                            // 編集レイヤ側の判定と矛盾して見えてしまう。
+                            const isTable = !!tableGeoms[`${tb.page}-${tb.index}`];
                             if (tb.bounds) {
                               const r = boundsToCanvasRect(tb.bounds, currentPage.scale, currentPage.canvasH);
                               rects.push(
@@ -1874,8 +1881,12 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                                     top: r.top,
                                     width: r.width,
                                     height: r.height,
-                                    border: '2px solid rgba(99,102,241,0.9)',
-                                    background: 'rgba(99,102,241,0.07)',
+                                    border: isTable
+                                      ? '2px solid rgba(99,102,241,0.9)'
+                                      : '2px dashed rgba(120,113,108,0.75)',
+                                    background: isTable
+                                      ? 'rgba(99,102,241,0.07)'
+                                      : 'rgba(120,113,108,0.05)',
                                     borderRadius: 2,
                                   }}
                                 >
@@ -1886,7 +1897,7 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                                       left: 0,
                                       fontSize: 10,
                                       fontWeight: 700,
-                                      color: '#4338ca',
+                                      color: isTable ? '#4338ca' : '#57534e',
                                       background: 'rgba(255,255,255,0.9)',
                                       padding: '0 3px',
                                       borderRadius: 2,
@@ -1894,6 +1905,7 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                                     }}
                                   >
                                     T{tb.index} ({tb.rows}×{tb.cols})
+                                    {!isTable && ' 罫線なし → 表として扱わない'}
                                   </span>
                                 </div>,
                               );
