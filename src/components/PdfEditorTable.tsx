@@ -317,27 +317,33 @@ function fitFontSize(text: string, targetW: number, fallback: number): number {
   return fs >= 4 && fs <= 40 ? fs : fallback;
 }
 
-// 表領域に重ねる編集可能な HTML テーブル。
-// 表全体の幅は元のまま固定し、セル編集で列幅を再配分する (溢れさせない)。
-// 列境界はドラッグで調整でき、隣の列が同じ分だけ縮む。
-function EditableTable({
-  tb, scale, canvasH, items, geom, edit, onCellChange, onColWidths,
-}: {
-  key?: string; // @types/react 未導入のため JSX の key を明示的に許可する
-  tb: ExtractedTable;
-  scale: number;
-  canvasH: number;
-  items: TextItem[];
-  geom?: TableGeom;
-  edit?: { cells: Record<string, string>; colWidths: number[] | null };
-  onCellChange: (row: number, col: number, text: string) => void;
-  onColWidths: (widths: number[]) => void;
-}) {
-  if (!tb.bounds) return null;
-  const adobeRect = boundsToCanvasRect(tb.bounds, scale, canvasH);
+// 罫線から決めたグリッドと、そこに割り当てたセル。
+// 画面のHTMLテーブルと、保存時のCanvas描き直しで同じものを使う
+// (別々に組むと画面で見た結果と出力がズレる)。
+interface TableGrid {
+  colPx: number[];      // 列境界 (canvas px)
+  rowPx: number[];      // 行境界 (canvas px)
+  nCols: number;
+  nRows: number;
+  rect: { left: number; top: number; width: number; height: number };
+  widths: number[];     // 列幅 (ドラッグ編集後の値を含む)
+  rowHeights: number[]; // 元の行の高さ (最低値として使う)
+  placed: Record<string, ExtractedCell>;
+  useDetCols: boolean;  // 列境界が罫線由来か (false なら文字位置からの推定)
+  useDetRows: boolean;
+  cellFont: (c: ExtractedCell) => number;
+  fallbackFont: number;
+}
 
-  // 罫線が検出できていない領域は表として扱わない (表紙などを弾く)
-  if (!geom) return null;
+function buildTableGrid(
+  tb: ExtractedTable,
+  scale: number,
+  canvasH: number,
+  items: TextItem[],
+  geom: TableGeom,
+  edit?: { cells: Record<string, string>; colWidths: number[] | null },
+): TableGrid | null {
+  if (!tb.bounds) return null;
 
   // 外形は必ず検出結果を使う。Adobe の幅は文字の範囲しか含まないので信用しない。
   // 内側の境界は、検出した罫線が足りていればそれを、足りなければ
@@ -355,18 +361,10 @@ function EditableTable({
 
   const colPx = useDetCols
     ? [geom.left, ...geom.xs, geom.right]
-    : fitInside(
-        (deriveColumnEdges(tb) ?? []).map(v => v * scale),
-        geom.left,
-        geom.right,
-      );
+    : fitInside((deriveColumnEdges(tb) ?? []).map(v => v * scale), geom.left, geom.right);
   const rowPx = useDetRows
     ? [geom.top, ...geom.ys, geom.bottom]
-    : fitInside(
-        (deriveRowEdges(tb) ?? []).map(v => canvasH - v * scale),
-        geom.top,
-        geom.bottom,
-      );
+    : fitInside((deriveRowEdges(tb) ?? []).map(v => canvasH - v * scale), geom.top, geom.bottom);
 
   const nCols = colPx.length - 1;
   const nRows = rowPx.length - 1;
@@ -379,13 +377,11 @@ function EditableTable({
     height: rowPx[nRows] - rowPx[0],
   };
 
-  // 列幅 (canvas px)。編集済みならそれを使う
+  // 列幅。ドラッグで編集済みならそれを使う
   const baseWidths = colPx.slice(1).map((e, i) => Math.max(1, e - colPx[i]));
   const widths =
     edit?.colWidths && edit.colWidths.length === baseWidths.length ? edit.colWidths : baseWidths;
-  const totalW = widths.reduce((a, b) => a + b, 0) || 1;
 
-  // 行の高さ。最低値として使い、文字が折り返せば伸びる
   const rowHeights = rowPx.slice(1).map((e, i) => Math.max(4, e - rowPx[i]));
 
   // Adobe のセルを、罫線から決めたグリッドに座標で割り当てる。
@@ -409,18 +405,18 @@ function EditableTable({
     if (ri < 0 || ci < 0 || ri >= nRows || ci >= nCols) continue;
     const k = `${ri + 1}-${ci + 1}`;
     // 同じマスに複数要素が来たらテキストを連結する
-    placed[k] = placed[k]
-      ? { ...placed[k], text: `${placed[k].text} ${c.text}`.trim() }
-      : c;
+    placed[k] = placed[k] ? { ...placed[k], text: `${placed[k].text} ${c.text}`.trim() } : c;
   }
 
   // 表内テキストのフォントサイズ中央値 (セル単位で取れなかった時のフォールバック)
-  const inTable = items.filter(
-    it =>
-      it.x + it.w / 2 >= rect.left && it.x + it.w / 2 <= rect.left + rect.width &&
-      it.y + it.h / 2 >= rect.top && it.y + it.h / 2 <= rect.top + rect.height,
-  );
-  const fonts = inTable.map(it => it.fontSize).sort((a, b) => a - b);
+  const fonts = items
+    .filter(
+      it =>
+        it.x + it.w / 2 >= rect.left && it.x + it.w / 2 <= rect.left + rect.width &&
+        it.y + it.h / 2 >= rect.top && it.y + it.h / 2 <= rect.top + rect.height,
+    )
+    .map(it => it.fontSize)
+    .sort((a, b) => a - b);
   const fallbackFont = fonts.length ? fonts[Math.floor(fonts.length / 2)] : 10;
 
   // セルのフォントサイズ。pdf.js のテキストの「幅」から逆算するので
@@ -452,6 +448,35 @@ function EditableTable({
     const w = Math.max(...sorted.map(it => it.x + it.w)) - Math.min(...sorted.map(it => it.x));
     return fitFontSize(text, w, hits[0].fontSize);
   };
+
+  return {
+    colPx, rowPx, nCols, nRows, rect, widths, rowHeights, placed,
+    useDetCols, useDetRows, cellFont, fallbackFont,
+  };
+}
+
+// 表領域に重ねる編集可能な HTML テーブル。
+// 表全体の幅は元のまま固定し、セル編集で列幅を再配分する (溢れさせない)。
+// 列境界はドラッグで調整でき、隣の列が同じ分だけ縮む。
+function EditableTable({
+  tb, scale, canvasH, items, geom, edit, onCellChange, onColWidths,
+}: {
+  key?: string; // @types/react 未導入のため JSX の key を明示的に許可する
+  tb: ExtractedTable;
+  scale: number;
+  canvasH: number;
+  items: TextItem[];
+  geom?: TableGeom;
+  edit?: { cells: Record<string, string>; colWidths: number[] | null };
+  onCellChange: (row: number, col: number, text: string) => void;
+  onColWidths: (widths: number[]) => void;
+}) {
+  // 罫線が検出できていない領域は表として扱わない (表紙などを弾く)
+  if (!geom) return null;
+  const grid = buildTableGrid(tb, scale, canvasH, items, geom, edit);
+  if (!grid) return null;
+  const { nCols, nRows, rect, widths, rowHeights, placed, cellFont, fallbackFont, useDetCols } = grid;
+  const totalW = widths.reduce((a, b) => a + b, 0) || 1;
 
   const cellAt = (row: number, col: number) => placed[`${row}-${col}`];
 
@@ -858,6 +883,176 @@ function wrapToWidth(ctx: CanvasRenderingContext2D, text: string, maxW: number):
   return lines;
 }
 
+// ── 表の描き直し (フェーズ3) ─────────────────────────────────────────
+// 元の表の矩形を消して、編集後のグリッドで罫線と文字を描き直す。
+// 色は元のレンダリング結果から採取して再現する
+// (ヘッダの淡い背景色や、灰色の細い罫線をそのまま活かす)。
+
+// 表の罫線の色。罫線のピクセルを何点も拾って最も多い色を採る。
+// 交点や文字に当たった点は少数派になるので影響しない。
+function sampleRuleColor(
+  ctx: CanvasRenderingContext2D,
+  geom: TableGeom,
+  grid: TableGrid,
+): string {
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+  const counts = new Map<string, number>();
+  const pick = (x: number, y: number) => {
+    const px = Math.max(0, Math.min(W - 1, Math.round(x)));
+    const py = Math.max(0, Math.min(H - 1, Math.round(y)));
+    const d = ctx.getImageData(px, py, 1, 1).data;
+    const key = `${d[0]},${d[1]},${d[2]}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  };
+  // 上下の枠線と内側の横罫線に沿って拾う
+  for (const y of [geom.top, geom.bottom, ...geom.ys]) {
+    for (let i = 1; i <= 8; i++) pick(geom.left + ((geom.right - geom.left) * i) / 9, y);
+  }
+  // 左右の枠線と内側の縦罫線に沿って拾う
+  for (const x of [geom.left, geom.right, ...geom.xs]) {
+    for (let i = 1; i <= 6; i++) pick(x, geom.top + ((geom.bottom - geom.top) * i) / 7);
+  }
+  let bestKey = '';
+  let bestN = 0;
+  for (const [k, n] of counts) if (n > bestN) { bestN = n; bestKey = k; }
+  if (!bestKey) return '#999999';
+  // 罫線を拾えず背景 (明るい色) が多数になった場合は無彩色のグレーで代用する
+  const [r, g, b] = bestKey.split(',').map(Number);
+  const lum = (r * 299 + g * 587 + b * 114) / 1000;
+  return lum > 220 ? '#999999' : `rgb(${bestKey})`;
+  // grid は将来セル単位で罫線色を変えたくなった時のために受け取っている
+  void grid;
+}
+
+// 表を描き直す。ctx には元のページが描かれている状態で呼ぶこと
+// (色を採取してから消す必要がある)。
+// 戻り値は描き直した矩形の下端 (元より下に伸びた場合の確認用)。
+function drawTableOnCanvas(
+  ctx: CanvasRenderingContext2D,
+  geom: TableGeom,
+  grid: TableGrid,
+  edit: { cells: Record<string, string>; colWidths: number[] | null } | undefined,
+): number {
+  const { nCols, nRows, rect, widths, rowHeights, placed, cellFont, fallbackFont } = grid;
+
+  // ── 1. 消す前に色を採取する ──
+  const ruleColor = sampleRuleColor(ctx, geom, grid);
+  // セルごとの背景色。元のグリッド位置から採る
+  const bg: string[][] = [];
+  for (let r = 0; r < nRows; r++) {
+    const row: string[] = [];
+    for (let c = 0; c < nCols; c++) {
+      row.push(
+        sampleBgColor(ctx, {
+          left: grid.colPx[c],
+          right: grid.colPx[c + 1],
+          top: grid.rowPx[r],
+          bottom: grid.rowPx[r + 1],
+        }),
+      );
+    }
+    bg.push(row);
+  }
+
+  // ── 2. 折り返しを計算して、必要な行の高さを求める ──
+  const pad = 2;
+  const cellLines: string[][][] = [];
+  const cellFs: number[][] = [];
+  const heights = [...rowHeights];
+  for (let r = 0; r < nRows; r++) {
+    cellLines.push([]);
+    cellFs.push([]);
+    for (let c = 0; c < nCols; c++) {
+      const cell = placed[`${r + 1}-${c + 1}`];
+      const text = edit?.cells[`${r + 1}-${c + 1}`] ?? cell?.text ?? '';
+      const fs = cell ? cellFont(cell) : fallbackFont;
+      ctx.font = `${fs}px sans-serif`;
+      const maxW = Math.max(1, widths[c] - pad * 2 - 2);
+      const lines = text ? wrapToWidth(ctx, text, maxW) : [''];
+      cellLines[r].push(lines);
+      cellFs[r].push(fs);
+      // 折り返しで元の行の高さを超えるなら行を伸ばす
+      const need = lines.length * fs * 1.15 + pad * 2;
+      if (need > heights[r]) heights[r] = need;
+    }
+  }
+
+  // ── 3. 元の表の矩形を消す ──
+  // 枠線ぶんだけ外側も含めて消し、周囲の背景色で塗る
+  const outerBg = sampleBgColor(ctx, {
+    left: rect.left,
+    right: rect.left + rect.width,
+    top: Math.max(0, rect.top - 8),
+    bottom: rect.top - 2,
+  });
+  ctx.fillStyle = outerBg;
+  ctx.fillRect(
+    rect.left - 1,
+    rect.top - 1,
+    rect.width + 2,
+    Math.max(rect.height, heights.reduce((a, b) => a + b, 0)) + 2,
+  );
+
+  // ── 4. 罫線と文字を描き直す ──
+  // 列の左端 (編集後の幅を積み上げる)
+  const colX = [rect.left];
+  for (const w of widths) colX.push(colX[colX.length - 1] + w);
+  // 行の上端
+  const rowY = [rect.top];
+  for (const h of heights) rowY.push(rowY[rowY.length - 1] + h);
+
+  // セルの背景を先に塗る
+  for (let r = 0; r < nRows; r++) {
+    for (let c = 0; c < nCols; c++) {
+      ctx.fillStyle = bg[r][c];
+      ctx.fillRect(colX[c], rowY[r], colX[c + 1] - colX[c], rowY[r + 1] - rowY[r]);
+    }
+  }
+
+  // 罫線
+  ctx.strokeStyle = ruleColor;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (const y of rowY) {
+    ctx.moveTo(colX[0], y + 0.5);
+    ctx.lineTo(colX[nCols], y + 0.5);
+  }
+  for (const x of colX) {
+    ctx.moveTo(x + 0.5, rowY[0]);
+    ctx.lineTo(x + 0.5, rowY[nRows]);
+  }
+  ctx.stroke();
+
+  // 文字
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#000000';
+  for (let r = 0; r < nRows; r++) {
+    for (let c = 0; c < nCols; c++) {
+      const lines = cellLines[r][c];
+      if (!lines.length || (lines.length === 1 && !lines[0])) continue;
+      const fs = cellFs[r][c];
+      const cell = placed[`${r + 1}-${c + 1}`];
+      ctx.font = `${fs}px sans-serif`;
+      const lh = fs * 1.15;
+      // HTMLテーブル側と同じく縦中央に置く
+      const blockH = lines.length * lh;
+      const startY = Math.max(rowY[r] + pad, (rowY[r] + rowY[r + 1]) / 2 - blockH / 2);
+      const innerL = colX[c] + pad + 1;
+      const innerR = colX[c + 1] - pad - 1;
+      lines.forEach((ln, i) => {
+        // ヘッダ行は元のPDFに合わせて中央揃え
+        const w = ctx.measureText(ln).width;
+        const x = cell?.isHeader ? innerL + (innerR - innerL - w) / 2 : innerL;
+        ctx.fillText(ln, Math.max(innerL, x), startY + i * lh);
+      });
+    }
+  }
+
+  return rowY[nRows];
+}
+
 /**
  * For each modified page: redraw the page with edits applied via Canvas 2D API
  * (handles CJK correctly since browser handles glyph rendering), then embed
@@ -868,15 +1063,25 @@ async function buildModifiedPdf(
   pages: PageData[],
   edits: Record<string, string>,
   aligns: Record<string, TextAlign>,
+  tables: ExtractedTable[],
+  tableEdits: Record<string, { cells: Record<string, string>; colWidths: number[] | null }>,
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(await file.arrayBuffer());
   const pdfPages = pdfDoc.getPages();
 
   for (const pd of pages) {
+    const pageIdx = pd.pageNum - 1;
     const changed = pd.items.filter(
       it => edits[it.id] !== undefined && edits[it.id] !== it.str,
     );
-    if (changed.length === 0) continue;
+    // このページで編集された表
+    const changedTables = tables.filter(tb => {
+      if (tb.page !== pageIdx || !tb.bounds) return false;
+      const e = tableEdits[`${tb.page}-${tb.index}`];
+      if (!e) return false;
+      return Object.keys(e.cells).length > 0 || !!e.colWidths;
+    });
+    if (changed.length === 0 && changedTables.length === 0) continue;
 
     // Build modified canvas frame
     const canvas = document.createElement('canvas');
@@ -901,9 +1106,37 @@ async function buildModifiedPdf(
       canvas.height,
     );
 
+    // 編集された表を描き直す。文字の書き換えより先に処理する
+    // (表の中の文字は表側で描くので、後から個別に描くと二重になる)。
+    const span = detectPageContentSpan(rules, canvas.width);
+    const redrawnRects: { left: number; right: number; top: number; bottom: number }[] = [];
+    for (const tb of changedTables) {
+      const r = boundsToCanvasRect(tb.bounds!, pd.scale, pd.canvasH);
+      const geom = detectTableGeom(rules, span, r);
+      if (!geom) continue;
+      const edit = tableEdits[`${tb.page}-${tb.index}`];
+      const grid = buildTableGrid(tb, pd.scale, pd.canvasH, pd.items, geom, edit);
+      if (!grid) continue;
+      const bottom = drawTableOnCanvas(ctx, geom, grid, edit);
+      redrawnRects.push({
+        left: grid.rect.left,
+        right: grid.rect.left + grid.rect.width,
+        top: grid.rect.top,
+        bottom: Math.max(bottom, grid.rect.top + grid.rect.height),
+      });
+    }
+    // 描き直した表の中に入る文字の編集はスキップする (表側で描画済み)
+    const insideRedrawn = (item: TextItem) =>
+      redrawnRects.some(r => {
+        const cx = item.x + item.w / 2;
+        const cy = item.y + item.h / 2;
+        return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
+      });
+
     // Apply each edit: erase original, draw new text
     // フォントサイズ・書体は変更しない。
     for (const item of changed) {
+      if (insideRedrawn(item)) continue;
       const newText = edits[item.id];
       const align = aligns[item.id] ?? 'left';
       ctx.font = `${item.fontSize}px sans-serif`;
@@ -1231,6 +1464,13 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
     return false;
   }).length;
 
+  // テーブル編集の件数。セルの書き換えと列幅の変更を数える
+  let totalTableEdits = 0;
+  for (const k of Object.keys(tableEdits)) {
+    const e = tableEdits[k];
+    totalTableEdits += Object.keys(e.cells).length + (e.colWidths ? 1 : 0);
+  }
+
   // Mirror totalEdits into a ref so stable callbacks can read the live value
   const totalEditsRef = useRef(0);
   useEffect(() => {
@@ -1311,12 +1551,19 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   };
 
   const handleSave = async () => {
-    if (!file || saving || totalEdits === 0) return;
+    if (!file || saving || totalEdits + totalTableEdits === 0) return;
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
     try {
-      const bytes = await buildModifiedPdf(file, pages, editedTexts, textAligns);
+      const bytes = await buildModifiedPdf(
+        file,
+        pages,
+        editedTexts,
+        textAligns,
+        extractResult?.tables ?? [],
+        tableEdits,
+      );
       const blob = new Blob([bytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1336,12 +1583,14 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   };
 
   const resetEditor = () => {
-    if (totalEdits > 0 && !window.confirm(`当前有 ${totalEdits} 处未保存的修改，确定要丢弃并重新上传吗？`)) {
+    const pend = totalEdits + totalTableEdits;
+    if (pend > 0 && !window.confirm(`当前有 ${pend} 处未保存的修改，确定要丢弃并重新上传吗？`)) {
       return;
     }
     setFile(null);
     setPages([]);
     setEditedTexts({});
+    setTableEdits({});
     setCurrentPageIdx(0);
     setSaveError(null);
     setSaveSuccess(false);
@@ -1349,8 +1598,9 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   };
 
   const confirmDiscardEdits = (): boolean => {
-    if (totalEdits === 0) return true;
-    return window.confirm(`当前有 ${totalEdits} 处未保存的修改，确定要丢弃并加载新文件吗？`);
+    const pend = totalEdits + totalTableEdits;
+    if (pend === 0) return true;
+    return window.confirm(`当前有 ${pend} 处未保存的修改，确定要丢弃并加载新文件吗？`);
   };
 
   const currentPage = pages[currentPageIdx];
@@ -1620,7 +1870,7 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                 {/* Save button */}
                 <button
                   onClick={handleSave}
-                  disabled={saving || totalEdits === 0}
+                  disabled={saving || totalEdits + totalTableEdits === 0}
                   className="flex items-center gap-2 px-4 py-2 bg-neutral-900 text-white text-sm font-bold rounded-lg hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed transition-all flex-shrink-0"
                 >
                   {saving ? (
