@@ -60,6 +60,23 @@ interface ExtractTablesResponse {
   tables: ExtractedTable[];
 }
 
+// Adobe Extract の座標 (PDFポイント, 原点=左下, [left,bottom,right,top]) を
+// canvas の座標 (px, 原点=左上) へ変換する。
+// PDF は下方向が原点なので y を反転させる。
+function boundsToCanvasRect(
+  bounds: number[],
+  scale: number,
+  canvasH: number,
+): { left: number; top: number; width: number; height: number } {
+  const [l, b, r, t] = bounds;
+  return {
+    left: l * scale,
+    top: canvasH - t * scale,
+    width: Math.max(0, (r - l) * scale),
+    height: Math.max(0, (t - b) * scale),
+  };
+}
+
 interface TextItem {
   id: string;
   str: string;
@@ -432,6 +449,8 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractTablesResponse | null>(null);
+  // 座標マッピングの検証用オーバーレイ表示 ('none' | 'table' | 'cell')
+  const [overlayMode, setOverlayMode] = useState<'none' | 'table' | 'cell'>('table');
 
   const runTableExtract = async () => {
     if (!file) return;
@@ -835,10 +854,39 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
 
                 {extractResult && (
                   <div className="space-y-3">
-                    <div className="flex flex-wrap gap-4 text-sm">
+                    <div className="flex flex-wrap items-center gap-4 text-sm">
                       <span>検出テーブル数: <b className="tabular-nums">{extractResult.tableCount}</b></span>
                       <span className="text-neutral-500">要素総数: <b className="tabular-nums">{extractResult.elementCount}</b></span>
+                      {/* 座標マッピング検証用の表示切替 */}
+                      <span className="flex items-center gap-1 ml-auto">
+                        <span className="text-xs text-neutral-500 mr-1">座標オーバーレイ:</span>
+                        {([
+                          ['none', '非表示'],
+                          ['table', '表の外枠'],
+                          ['cell', 'セル境界'],
+                        ] as ['none' | 'table' | 'cell', string][]).map(([mode, label]) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setOverlayMode(mode)}
+                            className={`px-2 py-0.5 rounded text-xs border transition-colors ${
+                              overlayMode === mode
+                                ? 'border-indigo-500 bg-indigo-100 text-indigo-700 font-medium'
+                                : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </span>
                     </div>
+                    <p className="text-xs text-neutral-500">
+                      下のページ画像に枠が重なります。枠が実際の表とズレていないか確認してください
+                      (青=表の外枠 / 緑=セル境界)。
+                      {extractResult.tables.filter(t => t.page === currentPageIdx).length === 0 && (
+                        <span className="text-amber-600"> ※このページには検出された表がありません</span>
+                      )}
+                    </p>
 
                     {extractResult.tables.length === 0 ? (
                       <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
@@ -919,6 +967,75 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                       }}
                       draggable={false}
                     />
+
+                    {/* テーブル座標のオーバーレイ (座標マッピングの検証用)。
+                        Adobe が返した座標を canvas 座標に変換して枠を重ねる。
+                        枠が実際の表とズレる場合は座標変換の見直しが必要。 */}
+                    {overlayMode !== 'none' && extractResult && (
+                      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
+                        {extractResult.tables
+                          .filter(tb => tb.page === currentPageIdx)
+                          .map(tb => {
+                            const rects: any[] = [];
+                            if (tb.bounds) {
+                              const r = boundsToCanvasRect(tb.bounds, currentPage.scale, currentPage.canvasH);
+                              rects.push(
+                                <div
+                                  key={`t-${tb.index}`}
+                                  style={{
+                                    position: 'absolute',
+                                    left: r.left,
+                                    top: r.top,
+                                    width: r.width,
+                                    height: r.height,
+                                    border: '2px solid rgba(99,102,241,0.9)',
+                                    background: 'rgba(99,102,241,0.07)',
+                                    borderRadius: 2,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      position: 'absolute',
+                                      top: -16,
+                                      left: 0,
+                                      fontSize: 10,
+                                      fontWeight: 700,
+                                      color: '#4338ca',
+                                      background: 'rgba(255,255,255,0.9)',
+                                      padding: '0 3px',
+                                      borderRadius: 2,
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    T{tb.index} ({tb.rows}×{tb.cols})
+                                  </span>
+                                </div>,
+                              );
+                            }
+                            if (overlayMode === 'cell') {
+                              for (const c of tb.cells) {
+                                if (!c.bounds) continue;
+                                const cr = boundsToCanvasRect(c.bounds, currentPage.scale, currentPage.canvasH);
+                                rects.push(
+                                  <div
+                                    key={`c-${tb.index}-${c.row}-${c.col}`}
+                                    style={{
+                                      position: 'absolute',
+                                      left: cr.left,
+                                      top: cr.top,
+                                      width: cr.width,
+                                      height: cr.height,
+                                      border: '1px solid rgba(16,185,129,0.85)',
+                                      background: 'rgba(16,185,129,0.08)',
+                                    }}
+                                  />,
+                                );
+                              }
+                            }
+                            return rects;
+                          })}
+                      </div>
+                    )}
 
                     {/* Editable text overlay */}
                     <div style={{ position: 'absolute', inset: 0 }}>
