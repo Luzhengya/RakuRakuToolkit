@@ -168,8 +168,8 @@ interface TableGeom {
   ys: number[];    // 内側の横罫線 (外枠は含まない)
 }
 
-// ページ画像を「暗いピクセル = 罫線または文字」の 0/1 マップに変換する
-async function loadPageBitmap(dataUrl: string, w: number, h: number): Promise<Uint8Array> {
+// ページ画像を輝度マップに変換する
+async function loadPageGray(dataUrl: string, w: number, h: number): Promise<Uint8Array> {
   const img = new Image();
   await new Promise<void>((res, rej) => {
     img.onload = () => res();
@@ -181,14 +181,21 @@ async function loadPageBitmap(dataUrl: string, w: number, h: number): Promise<Ui
   cv.height = h;
   const ctx = cv.getContext('2d')!;
   ctx.drawImage(img, 0, 0, w, h);
-  const d = ctx.getImageData(0, 0, w, h).data;
-  const dark = new Uint8Array(w * h);
-  for (let i = 0, p = 0; p < dark.length; i += 4, p++) {
-    // JPEG のノイズで薄い罫線が消えないよう閾値は緩めにする
-    dark[p] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 < 200 ? 1 : 0;
-  }
-  return dark;
+  return toGrayMap(ctx.getImageData(0, 0, w, h).data, w * h);
 }
+
+function toGrayMap(d: Uint8ClampedArray, n: number): Uint8Array {
+  const g = new Uint8Array(n);
+  for (let i = 0, p = 0; p < n; i += 4, p++) {
+    g[p] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+  }
+  return g;
+}
+
+// 「罫線かもしれない」とみなす輝度の上限。
+// 薄いグレーの罫線 (輝度 200 前後) を取り逃すと表が検出できないので緩めにする。
+// 淡い塗り潰しもここを通ってしまうが、下の局所コントラスト判定で除外する。
+const DARK_THRESHOLD = 228;
 
 // 隣接するピクセル座標をひとつの罫線としてまとめ、中心を返す
 // (罫線は 1px ではなく JPEG のにじみで数 px になる)
@@ -209,72 +216,42 @@ function clusterCenters(vals: number[], gap = 3): number[] {
   return out;
 }
 
+// 表の外形と内側の罫線を求める。
+// 罫線の収集は collectPageRules に任せる (長さと太さのフィルタが共通になり、
+// 薄い塗り潰しを罫線と誤認しない)。
 function detectTableGeom(
-  dark: Uint8Array,
-  W: number,
-  H: number,
+  rules: PageRules,
   r: { left: number; top: number; width: number; height: number },
 ): TableGeom | null {
   const pad = 6;
-  const y0 = Math.max(0, Math.round(r.top) - pad);
-  const y1 = Math.min(H - 1, Math.round(r.top + r.height) + pad);
+  const y0 = r.top - pad;
+  const y1 = r.top + r.height + pad;
   if (y1 - y0 < 4 || r.width < 20) return null;
 
-  // 横罫線: 行ごとに最長の連続する暗ピクセルを探す。
-  // Adobe の幅は信用できないので、横方向はページ全幅を探索して実際の左右端を求める。
+  // この帯に入る横罫線。Adobe の幅は信用できないので長さの下限だけで絞り、
+  // 実際の左右端は見つかった罫線の範囲から決める (空列があっても幅が足りる)。
   const minRun = Math.max(40, r.width * 0.5);
-  const hLines: { y: number; x0: number; x1: number }[] = [];
-  for (let y = y0; y <= y1; y++) {
-    let best = 0;
-    let bestStart = 0;
-    let cur = 0;
-    let curStart = 0;
-    const row = y * W;
-    for (let x = 0; x < W; x++) {
-      if (dark[row + x]) {
-        if (cur === 0) curStart = x;
-        cur++;
-        if (cur > best) {
-          best = cur;
-          bestStart = curStart;
-        }
-      } else {
-        cur = 0;
-      }
-    }
-    if (best >= minRun) hLines.push({ y, x0: bestStart, x1: bestStart + best - 1 });
-  }
-  if (!hLines.length) return null;
+  const hs = rules.h.filter(s => s.y >= y0 && s.y <= y1 && s.x1 - s.x0 + 1 >= minRun);
+  if (!hs.length) return null;
 
-  // 太い線は複数の走査行にまたがるので、まとめてから本数を数える
-  const yAll = clusterCenters(hLines.map(l => l.y));
+  const yAll = clusterCenters(hs.map(s => s.y));
   const top = yAll[0];
   const bottom = yAll[yAll.length - 1];
   // 上下の枠線が必要。見出しの下線1本だけを表と誤認しないよう高さも要求する
   // (「支店・支社」のような見出しが表として返ってくるケースを弾く)
   if (yAll.length < 2 || bottom - top < 8) return null;
 
-  const left = Math.min(...hLines.map(l => l.x0));
-  const right = Math.max(...hLines.map(l => l.x1));
+  const left = Math.min(...hs.map(s => s.x0));
+  const right = Math.max(...hs.map(s => s.x1));
   if (right - left < 20) return null;
 
-  // 縦罫線: 表の左右端の範囲内で、縦に長く続く列を探す
-  const bandH = y1 - y0 + 1;
-  const minVRun = Math.max(10, bandH * 0.6);
-  const vRaw: number[] = [];
-  for (let x = left; x <= right; x++) {
-    let best = 0;
-    let cur = 0;
-    for (let y = y0; y <= y1; y++) {
-      if (dark[y * W + x]) {
-        cur++;
-        if (cur > best) best = cur;
-      } else {
-        cur = 0;
-      }
-    }
-    if (best >= minVRun) vRaw.push(x);
-  }
+  // 表の高さの 60% 以上を占める縦罫線を列の境界とみなす
+  const minVLen = Math.max(10, (bottom - top) * 0.6);
+  const vs = rules.v.filter(
+    s =>
+      s.x >= left && s.x <= right &&
+      Math.min(s.y1, bottom) - Math.max(s.y0, top) + 1 >= minVLen,
+  );
 
   // 外枠は left/right/top/bottom で持つので、xs/ys は内側の罫線だけにする
   const margin = 3;
@@ -283,11 +260,10 @@ function detectTableGeom(
     right,
     top,
     bottom,
-    xs: clusterCenters(vRaw).filter(x => x > left + margin && x < right - margin),
+    xs: clusterCenters(vs.map(s => s.x)).filter(x => x > left + margin && x < right - margin),
     ys: yAll.filter(y => y > top + margin && y < bottom - margin),
   };
 }
-
 // ── フォントサイズ ──────────────────────────────────────────────────────
 // pdf.js が報告する文字の高さは字形のボックスなので、そのまま CSS の font-size に
 // すると実際の描画より大きく見える。元の文字が占めていた「幅」に合うサイズを
@@ -462,6 +438,29 @@ function EditableTable({
         outline: '1px solid rgba(99,102,241,0.5)',
       }}
     >
+      {/* 罫線検出の結果をテーブルの真上に出す。
+          パネルまでスクロールせずに、どの表が推定にフォールバックしたか分かるようにする */}
+      <span
+        style={{
+          position: 'absolute',
+          top: -14,
+          left: 0,
+          fontSize: 9,
+          fontWeight: 700,
+          whiteSpace: 'nowrap',
+          padding: '0 3px',
+          borderRadius: 2,
+          color: useDet ? '#15803d' : '#b45309',
+          background: useDet ? 'rgba(220,252,231,0.95)' : 'rgba(254,243,199,0.95)',
+        }}
+        title={
+          useDet
+            ? 'ページ画像から罫線を検出し、その位置をグリッドに使っています'
+            : '罫線が検出できず、文字位置からの推定を使っています'
+        }
+      >
+        T{tb.index} {useDet ? `罫線 ${nCols}列×${nRows}行` : `推定 ${nCols}列×${nRows}行`}
+      </span>
       <table
         style={{
           width: '100%',
@@ -643,40 +642,47 @@ interface PageRules {
 // ページ画像から罫線の線分を集める。
 // 長さの下限だけでは、太字や塗り潰しの塊を罫線と誤認する
 // (幅40px の文字ブロックは横罫線に見えてしまう)。
-// 罫線は細い (1〜3px) のに対し文字は十数 px あるので、太さでも弾く。
-const MAX_RULE_THICK = 4;
+// そこで「局所コントラスト」で判定する: 罫線は上下 (縦罫線なら左右) の両側より
+// はっきり暗い。塗り潰しの内部や文字の塊は周囲と同じ暗さなので弾かれる。
+// 太さで判定していた時は、淡い塗り潰しのヘッダに接した罫線が塊と一体化して
+// 消えてしまっていた。
+const RULE_PROBE = 3;      // 何px離れた両側と比べるか
+const RULE_CONTRAST = 30;  // 両側との輝度差の下限
 
-function collectPageRules(dark: Uint8Array, W: number, H: number): PageRules {
+function collectPageRules(gray: Uint8Array, W: number, H: number): PageRules {
   const MIN_V = 18; // 縦罫線の最小長 (px)。本文の文字より十分長い
   const MIN_H = 40; // 横罫線の最小長
 
-  // (x, y) を含む連続した暗ピクセルの縦方向の長さ
-  const thickY = (x: number, y: number) => {
-    let n = 1;
-    for (let k = y - 1; k >= 0 && dark[k * W + x]; k--) n++;
-    for (let k = y + 1; k < H && dark[k * W + x]; k++) n++;
-    return n;
+  // 横罫線らしさ: (x, y) が上下 RULE_PROBE px の両側よりはっきり暗い
+  const hContrast = (x: number, y: number) => {
+    if (y - RULE_PROBE < 0 || y + RULE_PROBE >= H) return true; // ページ端は判定不能
+    const c = gray[y * W + x];
+    return (
+      gray[(y - RULE_PROBE) * W + x] - c >= RULE_CONTRAST &&
+      gray[(y + RULE_PROBE) * W + x] - c >= RULE_CONTRAST
+    );
   };
-  // (x, y) を含む連続した暗ピクセルの横方向の長さ
-  const thickX = (x: number, y: number) => {
+  // 縦罫線らしさ: 左右の両側よりはっきり暗い
+  const vContrast = (x: number, y: number) => {
+    if (x - RULE_PROBE < 0 || x + RULE_PROBE >= W) return true;
     const row = y * W;
-    let n = 1;
-    for (let k = x - 1; k >= 0 && dark[row + k]; k--) n++;
-    for (let k = x + 1; k < W && dark[row + k]; k++) n++;
-    return n;
+    const c = gray[row + x];
+    return (
+      gray[row + x - RULE_PROBE] - c >= RULE_CONTRAST &&
+      gray[row + x + RULE_PROBE] - c >= RULE_CONTRAST
+    );
   };
 
-  // 線分に沿って何点か測り、太さの中央値を返す。
-  // 1点だけ見ると罫線の交点に当たって「太い」と誤判定してしまう。
-  const medianThickness = (
+  // 線分に沿って何点か調べ、過半数がコントラストを満たすかを見る。
+  // 1点だけ見ると罫線の交点や文字との重なりで誤判定する。
+  const mostlyContrasted = (
     start: number,
     len: number,
-    at: (pos: number) => number,
-  ): number => {
-    const vals: number[] = [];
-    for (let i = 1; i <= 5; i++) vals.push(at(start + Math.floor((len * i) / 6)));
-    vals.sort((a, b) => a - b);
-    return vals[2];
+    at: (pos: number) => boolean,
+  ): boolean => {
+    let n = 0;
+    for (let i = 1; i <= 5; i++) if (at(start + Math.floor((len * i) / 6))) n++;
+    return n >= 3;
   };
 
   const v: PageRules['v'] = [];
@@ -684,13 +690,12 @@ function collectPageRules(dark: Uint8Array, W: number, H: number): PageRules {
   for (let x = 0; x < W; x++) {
     let run = 0;
     for (let y = 0; y <= H; y++) {
-      if (y < H && dark[y * W + x] === 1) {
+      if (y < H && gray[y * W + x] < DARK_THRESHOLD) {
         run++;
       } else {
         if (run >= MIN_V) {
           const y0 = y - run;
-          // 横に太い塊 (塗り潰しなど) は縦罫線ではない
-          if (medianThickness(y0, run, pos => thickX(x, pos)) <= MAX_RULE_THICK) {
+          if (mostlyContrasted(y0, run, pos => vContrast(x, pos))) {
             v.push({ x, y0, y1: y - 1 });
           }
         }
@@ -702,13 +707,12 @@ function collectPageRules(dark: Uint8Array, W: number, H: number): PageRules {
     const row = y * W;
     let run = 0;
     for (let x = 0; x <= W; x++) {
-      if (x < W && dark[row + x] === 1) {
+      if (x < W && gray[row + x] < DARK_THRESHOLD) {
         run++;
       } else {
         if (run >= MIN_H) {
           const x0 = x - run;
-          // 縦に太い塊 (文字ブロックなど) は横罫線ではない
-          if (medianThickness(x0, run, pos => thickY(pos, y)) <= MAX_RULE_THICK) {
+          if (mostlyContrasted(x0, run, pos => hContrast(pos, y))) {
             h.push({ y, x0, x1: x - 1 });
           }
         }
@@ -718,7 +722,6 @@ function collectPageRules(dark: Uint8Array, W: number, H: number): PageRules {
   }
   return { v, h };
 }
-
 // item を囲むマスを罫線から求める。左右の罫線が見つからなければ null
 // (表の外のテキストなので従来どおりの処理に任せる)。
 function findCellBox(
@@ -841,11 +844,11 @@ async function buildModifiedPdf(
     // 罫線を集めておく。書き換えた文字がどのマスに入っているかを判定して、
     // 消去範囲をマス内に限り、はみ出す文字はマス幅で折り返す。
     const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    const dark = new Uint8Array(canvas.width * canvas.height);
-    for (let i = 0, p = 0; p < dark.length; i += 4, p++) {
-      dark[p] = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 < 200 ? 1 : 0;
-    }
-    const rules = collectPageRules(dark, canvas.width, canvas.height);
+    const rules = collectPageRules(
+      toGrayMap(px, canvas.width * canvas.height),
+      canvas.width,
+      canvas.height,
+    );
 
     // Apply each edit: erase original, draw new text
     // フォントサイズ・書体は変更しない。
@@ -1335,12 +1338,14 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
     let cancelled = false;
     (async () => {
       try {
-        const dark = await loadPageBitmap(currentPage.dataUrl, currentPage.canvasW, currentPage.canvasH);
+        const gray = await loadPageGray(currentPage.dataUrl, currentPage.canvasW, currentPage.canvasH);
         if (cancelled) return;
+        // 罫線の収集はページ単位で1回だけ
+        const rules = collectPageRules(gray, currentPage.canvasW, currentPage.canvasH);
         const out: Record<string, TableGeom> = {};
         for (const tb of editableTables) {
           const r = boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH);
-          const g = detectTableGeom(dark, currentPage.canvasW, currentPage.canvasH, r);
+          const g = detectTableGeom(rules, r);
           if (g) out[`${tb.page}-${tb.index}`] = g;
         }
         if (!cancelled) setTableGeoms(out);
