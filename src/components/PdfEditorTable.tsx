@@ -60,6 +60,62 @@ interface ExtractTablesResponse {
   tables: ExtractedTable[];
 }
 
+// セルの bounds は「文字の範囲」であり罫線の位置ではない。
+// (中央揃えのヘッダは列より狭い範囲になる)
+// そこで隣接する列の文字範囲の中間点を列の境界とみなし、両端は表の外形を使う。
+// 戻り値は cols+1 個の境界 (PDFポイント)。
+function deriveColumnEdges(tb: ExtractedTable): number[] | null {
+  if (!tb.bounds || tb.cols < 1) return null;
+  const spans: ({ l: number; r: number } | null)[] = [];
+  for (let c = 1; c <= tb.cols; c++) {
+    const cs = tb.cells.filter(x => x.col === c && x.bounds);
+    spans.push(
+      cs.length
+        ? { l: Math.min(...cs.map(x => x.bounds![0])), r: Math.max(...cs.map(x => x.bounds![2])) }
+        : null,
+    );
+  }
+  const edges: number[] = [tb.bounds[0]];
+  for (let i = 0; i < spans.length - 1; i++) {
+    const a = spans[i];
+    const b = spans[i + 1];
+    // 片方が空列なら直前の境界を引き継ぐ (幅0の列として扱う)
+    edges.push(a && b ? (a.r + b.l) / 2 : edges[edges.length - 1]);
+  }
+  edges.push(tb.bounds[2]);
+  // 単調増加を保証 (座標の乱れで逆順になるのを防ぐ)
+  for (let i = 1; i < edges.length; i++) {
+    if (edges[i] < edges[i - 1]) edges[i] = edges[i - 1];
+  }
+  return edges;
+}
+
+// 行の境界。列と同じ考え方で、隣接する行の中間点を境界とする。
+// PDF は上が大きい値なので降順で並べる。戻り値は rows+1 個 (PDFポイント)。
+function deriveRowEdges(tb: ExtractedTable): number[] | null {
+  if (!tb.bounds || tb.rows < 1) return null;
+  const spans: ({ b: number; t: number } | null)[] = [];
+  for (let r = 1; r <= tb.rows; r++) {
+    const cs = tb.cells.filter(x => x.row === r && x.bounds);
+    spans.push(
+      cs.length
+        ? { b: Math.min(...cs.map(x => x.bounds![1])), t: Math.max(...cs.map(x => x.bounds![3])) }
+        : null,
+    );
+  }
+  const edges: number[] = [tb.bounds[3]]; // 表の上端
+  for (let i = 0; i < spans.length - 1; i++) {
+    const a = spans[i];
+    const b = spans[i + 1];
+    edges.push(a && b ? (a.b + b.t) / 2 : edges[edges.length - 1]);
+  }
+  edges.push(tb.bounds[1]); // 表の下端
+  for (let i = 1; i < edges.length; i++) {
+    if (edges[i] > edges[i - 1]) edges[i] = edges[i - 1];
+  }
+  return edges;
+}
+
 // Adobe Extract の座標 (PDFポイント, 原点=左下, [left,bottom,right,top]) を
 // canvas の座標 (px, 原点=左上) へ変換する。
 // PDF は下方向が原点なので y を反転させる。
@@ -94,6 +150,177 @@ interface PageData {
   dataUrl: string;  // JPEG of rendered page
   scale: number;    // canvas px / PDF user unit
   items: TextItem[];
+}
+
+// 表領域に重ねる編集可能な HTML テーブル。
+// 表全体の幅は元のまま固定し、セル編集で列幅を再配分する (溢れさせない)。
+// 列境界はドラッグで調整でき、隣の列が同じ分だけ縮む。
+function EditableTable({
+  tb, scale, canvasH, items, edit, onCellChange, onColWidths,
+}: {
+  key?: string; // @types/react 未導入のため JSX の key を明示的に許可する
+  tb: ExtractedTable;
+  scale: number;
+  canvasH: number;
+  items: TextItem[];
+  edit?: { cells: Record<string, string>; colWidths: number[] | null };
+  onCellChange: (row: number, col: number, text: string) => void;
+  onColWidths: (widths: number[]) => void;
+}) {
+  if (!tb.bounds) return null;
+  const rect = boundsToCanvasRect(tb.bounds, scale, canvasH);
+  const colEdges = deriveColumnEdges(tb);
+  const rowEdges = deriveRowEdges(tb);
+  if (!colEdges || !rowEdges) return null;
+
+  // 列幅 (canvas px)。編集済みならそれを使う
+  const baseWidths = colEdges.slice(1).map((e, i) => Math.max(1, (e - colEdges[i]) * scale));
+  const widths =
+    edit?.colWidths && edit.colWidths.length === baseWidths.length ? edit.colWidths : baseWidths;
+  const totalW = widths.reduce((a, b) => a + b, 0) || 1;
+
+  // 行の高さ (canvas px)。最低値として使い、文字が折り返せば伸びる
+  const rowHeights = rowEdges.slice(1).map((e, i) => Math.max(4, (rowEdges[i] - e) * scale));
+
+  // 表内テキストのフォントサイズ中央値 (セル単位で取れなかった時のフォールバック)
+  const allFonts = items
+    .filter(it => it.x >= rect.left - 2 && it.x <= rect.left + rect.width + 2 &&
+                  it.y >= rect.top - 2 && it.y <= rect.top + rect.height + 2)
+    .map(it => it.fontSize)
+    .sort((a, b) => a - b);
+  const fallbackFont = allFonts.length ? allFonts[Math.floor(allFonts.length / 2)] : 10;
+
+  // セルの元のフォントサイズを pdf.js のテキストから取得する
+  const cellFont = (c: ExtractedCell): number => {
+    if (c.bounds) {
+      const r = boundsToCanvasRect(c.bounds, scale, canvasH);
+      const hits = items.filter(
+        it =>
+          it.x + it.w / 2 >= r.left && it.x + it.w / 2 <= r.left + r.width &&
+          it.y + it.h / 2 >= r.top && it.y + it.h / 2 <= r.top + r.height,
+      );
+      if (hits.length) return hits[0].fontSize;
+    }
+    return fallbackFont;
+  };
+
+  const cellAt = (row: number, col: number) =>
+    tb.cells.find(c => c.row === row && c.col === col);
+
+  // 列境界のドラッグ: 掴んだ境界の左右2列だけを増減させ、合計幅は不変
+  const startDrag = (e: any, edgeIdx: number) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const orig = [...widths];
+    const move = (ev: PointerEvent) => {
+      const min = 8;
+      let d = ev.clientX - startX;
+      d = Math.max(-(orig[edgeIdx] - min), Math.min(orig[edgeIdx + 1] - min, d));
+      const next = [...orig];
+      next[edgeIdx] = orig[edgeIdx] + d;
+      next[edgeIdx + 1] = orig[edgeIdx + 1] - d;
+      onColWidths(next);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        background: '#fff',
+        outline: '1px solid rgba(99,102,241,0.5)',
+      }}
+    >
+      <table
+        style={{
+          width: '100%',
+          tableLayout: 'fixed',
+          borderCollapse: 'collapse',
+          fontFamily: 'sans-serif',
+        }}
+      >
+        <colgroup>
+          {widths.map((w, i) => (
+            <col key={i} style={{ width: `${(w / totalW) * 100}%` }} />
+          ))}
+        </colgroup>
+        <tbody>
+          {Array.from({ length: tb.rows }, (_, ri) => (
+            <tr key={ri} style={{ height: rowHeights[ri] }}>
+              {Array.from({ length: tb.cols }, (_, ci) => {
+                const c = cellAt(ri + 1, ci + 1);
+                const key = `${ri + 1}-${ci + 1}`;
+                const text = edit?.cells[key] ?? c?.text ?? '';
+                const changed = edit?.cells[key] !== undefined && edit.cells[key] !== (c?.text ?? '');
+                const fs = c ? cellFont(c) : fallbackFont;
+                return (
+                  <td
+                    key={ci}
+                    style={{
+                      border: '1px solid #999',
+                      padding: '1px 3px',
+                      verticalAlign: 'middle',
+                      position: 'relative',
+                      // ヘッダ行は元のPDFに合わせて中央揃え
+                      textAlign: c?.isHeader ? 'center' : 'left',
+                      background: changed ? 'rgba(254,240,138,0.55)' : c?.isHeader ? 'rgba(0,0,0,0.04)' : undefined,
+                    }}
+                  >
+                    <div
+                      contentEditable
+                      suppressContentEditableWarning
+                      onBlur={(ev: any) => {
+                        const v = ev.currentTarget.textContent ?? '';
+                        if (v !== text) onCellChange(ri + 1, ci + 1, v);
+                      }}
+                      style={{
+                        fontSize: fs,
+                        lineHeight: 1.15,
+                        // 溢れさせず折り返す。列幅が足りなければ行が縦に伸びる
+                        whiteSpace: 'pre-wrap',
+                        overflowWrap: 'anywhere',
+                        outline: 'none',
+                        minHeight: fs,
+                        color: '#111',
+                      }}
+                    >
+                      {text}
+                    </div>
+                    {/* 右端の列境界ドラッグハンドル */}
+                    {ri === 0 && ci < tb.cols - 1 && (
+                      <div
+                        onPointerDown={(ev: any) => startDrag(ev, ci)}
+                        title="ドラッグで列幅を調整 (表全体の幅は変わりません)"
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          right: -3,
+                          width: 6,
+                          height: rect.height,
+                          cursor: 'col-resize',
+                          zIndex: 5,
+                        }}
+                      />
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -451,6 +678,27 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   const [extractResult, setExtractResult] = useState<ExtractTablesResponse | null>(null);
   // 座標マッピングの検証用オーバーレイ表示 ('none' | 'table' | 'cell')
   const [overlayMode, setOverlayMode] = useState<'none' | 'table' | 'cell'>('table');
+  // テーブル編集モード: 表領域に編集可能な HTML テーブルを重ねる
+  const [tableEditMode, setTableEditMode] = useState(false);
+  // 表ごとの編集内容。キーは `${page}-${tableIndex}`
+  // colWidths は canvas px。null なら元の列幅を使う
+  const [tableEdits, setTableEdits] = useState<
+    Record<string, { cells: Record<string, string>; colWidths: number[] | null }>
+  >({});
+
+  const tableKey = (tb: ExtractedTable) => `${tb.page}-${tb.index}`;
+  const setTableCell = (tb: ExtractedTable, row: number, col: number, text: string) =>
+    setTableEdits(prev => {
+      const k = tableKey(tb);
+      const cur = prev[k] ?? { cells: {}, colWidths: null };
+      return { ...prev, [k]: { ...cur, cells: { ...cur.cells, [`${row}-${col}`]: text } } };
+    });
+  const setTableColWidths = (tb: ExtractedTable, widths: number[]) =>
+    setTableEdits(prev => {
+      const k = tableKey(tb);
+      const cur = prev[k] ?? { cells: {}, colWidths: null };
+      return { ...prev, [k]: { ...cur, colWidths: widths } };
+    });
 
   const runTableExtract = async () => {
     if (!file) return;
@@ -605,6 +853,21 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   };
 
   const currentPage = pages[currentPageIdx];
+
+  // テーブル編集モード中は、表の中に入る pdf.js の文字レイヤを隠す。
+  // (HTMLテーブル側で編集するため、そのままだと二重に表示される)
+  const tableRects =
+    tableEditMode && extractResult && currentPage
+      ? extractResult.tables
+          .filter(tb => tb.page === currentPageIdx && tb.bounds)
+          .map(tb => boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH))
+      : [];
+  const hiddenByTable = (it: TextItem) =>
+    tableRects.some(r => {
+      const cx = it.x + it.w / 2;
+      const cy = it.y + it.h / 2;
+      return cx >= r.left && cx <= r.left + r.width && cy >= r.top && cy <= r.top + r.height;
+    });
 
   const breadcrumb = (
     <nav className="flex items-center gap-2 text-sm">
@@ -888,6 +1151,35 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                       )}
                     </p>
 
+                    {/* テーブル編集モード */}
+                    <div className="flex flex-wrap items-center gap-3 border-t border-neutral-200 pt-3">
+                      <button
+                        type="button"
+                        onClick={() => setTableEditMode(v => !v)}
+                        className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                          tableEditMode
+                            ? 'border-indigo-500 bg-indigo-600 text-white font-medium'
+                            : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50'
+                        }`}
+                      >
+                        {tableEditMode ? 'テーブル編集モード: ON' : 'テーブル編集モード: OFF'}
+                      </button>
+                      {tableEditMode && Object.keys(tableEdits).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setTableEdits({})}
+                          className="px-2.5 py-1 rounded-lg text-xs border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-50"
+                        >
+                          編集をリセット
+                        </button>
+                      )}
+                      <p className="text-xs text-neutral-500 flex-1 min-w-[240px]">
+                        表領域に編集可能なテーブルを重ねます。セルをクリックして書き換えると、
+                        <b>表全体の幅は変わらず</b>文字が折り返されるため元の領域を超えません。
+                        列幅を変えたい場合は<b>列の境界をドラッグ</b>してください (隣の列が同じ分縮みます)。
+                      </p>
+                    </div>
+
                     {extractResult.tables.length === 0 ? (
                       <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
                         テーブルとして認識されませんでした。このPDFでは表構造ベースの編集は使えません。
@@ -1037,9 +1329,31 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                       </div>
                     )}
 
-                    {/* Editable text overlay */}
+                    {/* 編集可能な HTML テーブルのオーバーレイ (フェーズ2)。
+                        表領域は元の文字レイヤの代わりにこちらで編集する。 */}
+                    {tableEditMode && extractResult && (
+                      <div style={{ position: 'absolute', inset: 0 }}>
+                        {extractResult.tables
+                          .filter(tb => tb.page === currentPageIdx && tb.bounds)
+                          .map(tb => (
+                            <EditableTable
+                              key={`et-${tb.index}`}
+                              tb={tb}
+                              scale={currentPage.scale}
+                              canvasH={currentPage.canvasH}
+                              items={currentPage.items}
+                              edit={tableEdits[tableKey(tb)]}
+                              onCellChange={(r, c, t) => setTableCell(tb, r, c, t)}
+                              onColWidths={w => setTableColWidths(tb, w)}
+                            />
+                          ))}
+                      </div>
+                    )}
+
+                    {/* Editable text overlay。
+                        テーブル編集モード中は表の中の文字レイヤを隠す (二重表示になるため) */}
                     <div style={{ position: 'absolute', inset: 0 }}>
-                      {currentPage.items.map(item => (
+                      {currentPage.items.filter(it => !hiddenByTable(it)).map(item => (
                         <EditableTextItem
                           key={item.id}
                           item={item}
