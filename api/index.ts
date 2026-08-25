@@ -104,11 +104,26 @@ type ExtractedTable = {
   cols: number;
   bounds: number[] | null; // 表全体の外形 (セルから算出)
   cells: ExtractedCell[];
+  caption: string | null;  // 表の直前の見出し (表の行として誤検出されたもの)
+  colFromBounds: boolean;  // 列を x 座標から再導出したか (デバッグ表示用)
 };
 
+// 列の左端座標をクラスタリングして列の開始位置を求める。
+// Adobe は「ラベル列と値列」を同一 TD にまとめてしまう場合があるため、
+// TD の索引ではなく実際の x 座標から列を再導出する。
+function clusterColumnStarts(lefts: number[], tolerance: number): number[] {
+  const sorted = [...lefts].sort((a, b) => a - b);
+  const starts: number[] = [];
+  for (const x of sorted) {
+    if (starts.length === 0 || x - starts[starts.length - 1] > tolerance) starts.push(x);
+  }
+  return starts;
+}
+
 function parseAdobeTables(elements: any[]): ExtractedTable[] {
-  // Table[n] ごとにセルを集約
-  const tableMap = new Map<number, ExtractedTable>();
+  // まず Table[n] ごとに「行・TD索引・座標・テキスト」の生要素を集める
+  type Raw = { row: number; td: number; text: string; bounds: number[] | null; isHeader: boolean };
+  const rawMap = new Map<number, { page: number; items: Raw[] }>();
 
   for (const el of elements ?? []) {
     const path: string = el?.Path ?? "";
@@ -118,26 +133,86 @@ function parseAdobeTables(elements: any[]): ExtractedTable[] {
     const tIdx = m[1] ? Number(m[1]) : 1;
     const row = m[2] ? Number(m[2]) : 1;
     const isHeader = m[3] === "TH";
-    const col = m[4] ? Number(m[4]) : 1;
+    const td = m[4] ? Number(m[4]) : 1;
 
-    let t = tableMap.get(tIdx);
-    if (!t) {
-      t = { index: tIdx, page: el?.Page ?? 0, rows: 0, cols: 0, bounds: null, cells: [] };
-      tableMap.set(tIdx, t);
+    let bucket = rawMap.get(tIdx);
+    if (!bucket) {
+      bucket = { page: el?.Page ?? 0, items: [] };
+      rawMap.set(tIdx, bucket);
     }
     const text = String(el?.Text ?? "").trim();
-    const bounds = Array.isArray(el?.Bounds) ? el.Bounds : null;
+    const bounds = Array.isArray(el?.Bounds) && el.Bounds.length === 4 ? el.Bounds : null;
+    // テキストが空の要素は列推定のノイズになるため除外
+    if (!text && !bounds) continue;
+    bucket.items.push({ row, td, text, bounds, isHeader });
+  }
 
-    // 同一セルが複数要素(P が複数)に分割される場合はテキストを連結
-    const found = t.cells.find((c) => c.row === row && c.col === col);
-    if (found) {
-      if (text) found.text = found.text ? `${found.text} ${text}` : text;
-      if (!found.bounds && bounds) found.bounds = bounds;
+  const tableMap = new Map<number, ExtractedTable>();
+
+  for (const [tIdx, bucket] of rawMap.entries()) {
+    const items = bucket.items;
+    const t: ExtractedTable = {
+      index: tIdx,
+      page: bucket.page,
+      rows: 0,
+      cols: 0,
+      bounds: null,
+      cells: [],
+      caption: null,
+      colFromBounds: false,
+    };
+
+    // 全要素に座標があれば x 座標から列を再導出する (Adobe の列マージを補正)
+    const withB = items.filter((it) => it.bounds);
+    const canUseBounds = withB.length === items.length && items.length > 0;
+
+    let colOf: (it: Raw) => number;
+    if (canUseBounds) {
+      const tableW = Math.max(...withB.map((i) => i.bounds![2])) - Math.min(...withB.map((i) => i.bounds![0]));
+      // 許容差は表幅の 1.5% (最低 4pt)。列間の微小なズレを同一列として束ねる
+      const tol = Math.max(4, tableW * 0.015);
+      const starts = clusterColumnStarts(withB.map((i) => i.bounds![0]), tol);
+      t.colFromBounds = true;
+      colOf = (it) => {
+        const x = it.bounds![0];
+        let idx = 0;
+        for (let i = 0; i < starts.length; i++) {
+          if (x >= starts[i] - tol) idx = i;
+          else break;
+        }
+        return idx + 1;
+      };
     } else {
-      t.cells.push({ row, col, text, bounds, isHeader });
+      colOf = (it) => it.td;
     }
-    t.rows = Math.max(t.rows, row);
-    t.cols = Math.max(t.cols, col);
+
+    for (const it of items) {
+      const col = colOf(it);
+      // 同一セル (行・列が一致) に複数要素が来た場合はテキストを連結
+      const found = t.cells.find((c) => c.row === it.row && c.col === col);
+      if (found) {
+        if (it.text) found.text = found.text ? `${found.text} ${it.text}` : it.text;
+        if (!found.bounds && it.bounds) found.bounds = it.bounds;
+      } else {
+        t.cells.push({ row: it.row, col, text: it.text, bounds: it.bounds, isHeader: it.isHeader });
+      }
+      t.rows = Math.max(t.rows, it.row);
+      t.cols = Math.max(t.cols, col);
+    }
+
+    // 1行目が単一セルのみで、2行目が複数セルある場合は「表の見出し」と判断して
+    // 行から切り離す (例: 支店・支社 / その他関連企業)
+    if (t.rows >= 2 && t.cols >= 2) {
+      const r1 = t.cells.filter((c) => c.row === 1 && c.text);
+      const r2 = t.cells.filter((c) => c.row === 2 && c.text);
+      if (r1.length === 1 && r2.length >= 2) {
+        t.caption = r1[0].text;
+        t.cells = t.cells.filter((c) => c.row !== 1).map((c) => ({ ...c, row: c.row - 1 }));
+        t.rows -= 1;
+      }
+    }
+
+    tableMap.set(tIdx, t);
   }
 
   // 表全体の外形をセル群から算出

@@ -50,6 +50,8 @@ interface ExtractedTable {
   cols: number;
   bounds: number[] | null;
   cells: ExtractedCell[];
+  caption: string | null;
+  colFromBounds: boolean;
 }
 interface ExtractTablesResponse {
   fileName: string;
@@ -853,10 +855,20 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                         }
                         return (
                           <div key={`${tb.page}-${tb.index}`} className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
-                            <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 text-xs text-neutral-600 flex flex-wrap gap-3">
+                            <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 text-xs text-neutral-600 flex flex-wrap gap-3 items-center">
                               <span>Table[{tb.index}]</span>
                               <span>ページ {tb.page + 1}</span>
                               <span><b>{tb.rows}</b> 行 × <b>{tb.cols}</b> 列</span>
+                              {tb.caption && (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                                  見出し: {tb.caption}
+                                </span>
+                              )}
+                              {tb.colFromBounds && (
+                                <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700" title="Adobeの列マージを座標から補正しました">
+                                  列を座標補正
+                                </span>
+                              )}
                               {tb.bounds && (
                                 <span className="text-neutral-400">
                                   外形 [{tb.bounds.map((v) => Math.round(v)).join(', ')}]
