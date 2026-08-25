@@ -108,16 +108,44 @@ type ExtractedTable = {
   colFromBounds: boolean;  // 列を x 座標から再導出したか (デバッグ表示用)
 };
 
-// 列の左端座標をクラスタリングして列の開始位置を求める。
-// Adobe は「ラベル列と値列」を同一 TD にまとめてしまう場合があるため、
-// TD の索引ではなく実際の x 座標から列を再導出する。
-function clusterColumnStarts(lefts: number[], tolerance: number): number[] {
-  const sorted = [...lefts].sort((a, b) => a - b);
-  const starts: number[] = [];
-  for (const x of sorted) {
-    if (starts.length === 0 || x - starts[starts.length - 1] > tolerance) starts.push(x);
+// 1行分の要素を「視覚的なセル」にまとめる。
+//
+// 列の判定に左端座標のクラスタリングは使えない。ヘッダは中央揃え・データは左揃えという
+// 表が多く、同じ列でも左端が大きくずれるため別列と誤判定されてしまう。
+// 代わりに x 区間の重なりを見る:
+//   - 同じセル内の複数行テキストは左右の範囲がほぼ一致する → 重なる
+//   - 別の列のテキストは罫線で隔てられている → 重ならない
+// まとめた後は行内の左から順に列番号を振る。
+function groupRowIntoCells(
+  items: { text: string; bounds: number[]; isHeader: boolean }[]
+): { text: string; bounds: number[]; isHeader: boolean }[] {
+  // 読み順(上の行から、左から右)に並べてテキストを連結できるようにする
+  // Bounds = [left, bottom, right, top] なので top の降順が上から下
+  const sorted = [...items].sort((a, b) => b.bounds[3] - a.bounds[3] || a.bounds[0] - b.bounds[0]);
+  const cells: { text: string; bounds: number[]; isHeader: boolean }[] = [];
+
+  for (const it of sorted) {
+    // 既存セルとの x 区間の重なり率 (狭い方を基準) が 50% を超えれば同一セルとみなす
+    const hit = cells.find((c) => {
+      const ov = Math.min(c.bounds[2], it.bounds[2]) - Math.max(c.bounds[0], it.bounds[0]);
+      if (ov <= 0) return false;
+      const narrow = Math.min(c.bounds[2] - c.bounds[0], it.bounds[2] - it.bounds[0]);
+      return narrow > 0 && ov / narrow > 0.5;
+    });
+    if (hit) {
+      if (it.text) hit.text = hit.text ? `${hit.text} ${it.text}` : it.text;
+      hit.bounds[0] = Math.min(hit.bounds[0], it.bounds[0]);
+      hit.bounds[1] = Math.min(hit.bounds[1], it.bounds[1]);
+      hit.bounds[2] = Math.max(hit.bounds[2], it.bounds[2]);
+      hit.bounds[3] = Math.max(hit.bounds[3], it.bounds[3]);
+      hit.isHeader = hit.isHeader || it.isHeader;
+    } else {
+      cells.push({ text: it.text, bounds: [...it.bounds], isHeader: it.isHeader });
+    }
   }
-  return starts;
+
+  // 左から右の順に並べ替える (この順序が列番号になる)
+  return cells.sort((a, b) => a.bounds[0] - b.bounds[0]);
 }
 
 function parseAdobeTables(elements: any[]): ExtractedTable[] {
@@ -162,42 +190,37 @@ function parseAdobeTables(elements: any[]): ExtractedTable[] {
       colFromBounds: false,
     };
 
-    // 全要素に座標があれば x 座標から列を再導出する (Adobe の列マージを補正)
-    const withB = items.filter((it) => it.bounds);
-    const canUseBounds = withB.length === items.length && items.length > 0;
+    // 行ごとに処理する。全要素に座標があれば x 区間の重なりでセルをまとめ、
+    // 行内の左からの順序で列番号を振る (Adobe の列マージ・中央揃えの両方に対応)。
+    const allHaveBounds = items.length > 0 && items.every((it) => it.bounds);
+    const rowNos = Array.from(new Set(items.map((it) => it.row))).sort((a, b) => a - b);
 
-    let colOf: (it: Raw) => number;
-    if (canUseBounds) {
-      const tableW = Math.max(...withB.map((i) => i.bounds![2])) - Math.min(...withB.map((i) => i.bounds![0]));
-      // 許容差は表幅の 1.5% (最低 4pt)。列間の微小なズレを同一列として束ねる
-      const tol = Math.max(4, tableW * 0.015);
-      const starts = clusterColumnStarts(withB.map((i) => i.bounds![0]), tol);
+    if (allHaveBounds) {
       t.colFromBounds = true;
-      colOf = (it) => {
-        const x = it.bounds![0];
-        let idx = 0;
-        for (let i = 0; i < starts.length; i++) {
-          if (x >= starts[i] - tol) idx = i;
-          else break;
-        }
-        return idx + 1;
-      };
-    } else {
-      colOf = (it) => it.td;
-    }
-
-    for (const it of items) {
-      const col = colOf(it);
-      // 同一セル (行・列が一致) に複数要素が来た場合はテキストを連結
-      const found = t.cells.find((c) => c.row === it.row && c.col === col);
-      if (found) {
-        if (it.text) found.text = found.text ? `${found.text} ${it.text}` : it.text;
-        if (!found.bounds && it.bounds) found.bounds = it.bounds;
-      } else {
-        t.cells.push({ row: it.row, col, text: it.text, bounds: it.bounds, isHeader: it.isHeader });
+      for (const rowNo of rowNos) {
+        const rowItems = items
+          .filter((it) => it.row === rowNo)
+          .map((it) => ({ text: it.text, bounds: it.bounds as number[], isHeader: it.isHeader }));
+        const grouped = groupRowIntoCells(rowItems);
+        grouped.forEach((c, i) => {
+          t.cells.push({ row: rowNo, col: i + 1, text: c.text, bounds: c.bounds, isHeader: c.isHeader });
+        });
+        t.rows = Math.max(t.rows, rowNo);
+        t.cols = Math.max(t.cols, grouped.length);
       }
-      t.rows = Math.max(t.rows, it.row);
-      t.cols = Math.max(t.cols, col);
+    } else {
+      // 座標が無い場合は Adobe の TD 索引をそのまま使う
+      for (const it of items) {
+        const found = t.cells.find((c) => c.row === it.row && c.col === it.td);
+        if (found) {
+          if (it.text) found.text = found.text ? `${found.text} ${it.text}` : it.text;
+          if (!found.bounds && it.bounds) found.bounds = it.bounds;
+        } else {
+          t.cells.push({ row: it.row, col: it.td, text: it.text, bounds: it.bounds, isHeader: it.isHeader });
+        }
+        t.rows = Math.max(t.rows, it.row);
+        t.cols = Math.max(t.cols, it.td);
+      }
     }
 
     // 1行目が単一セルのみで、2行目が複数セルある場合は「表の見出し」と判断して
