@@ -19,6 +19,10 @@ import {
   ExportPDFParams,
   ExportPDFTargetFormat,
   ExportPDFResult,
+  ExtractPDFJob,
+  ExtractPDFParams,
+  ExtractPDFResult,
+  ExtractElementType,
 } from "@adobe/pdfservices-node-sdk";
 import { PassThrough } from "stream";
 
@@ -80,6 +84,133 @@ async function convertPdfToWordBuffer(pdfBuffer: Buffer): Promise<Buffer> {
   const streamAsset = await pdfServices.getContent({ asset: jobResponse.result.asset });
   return streamToBuffer(streamAsset.readStream);
 }
+
+// ── PDF テーブル構造抽出 (技術検証) ───────────────────────────────────
+// Adobe Extract API から structuredData.json を取得し、Path から表構造を復元する。
+// Path 例: //Document/Table[1]/TR[2]/TD[3]/P  → 1番目の表・2行目・3列目
+// Bounds は PDF ポイント単位で [left, bottom, right, top]
+
+type ExtractedCell = {
+  row: number;      // 1-based
+  col: number;      // 1-based
+  text: string;
+  bounds: number[] | null;
+  isHeader: boolean; // TH かどうか
+};
+type ExtractedTable = {
+  index: number;    // Table[n] の n
+  page: number;     // 0-based (Adobe の Page に準拠)
+  rows: number;
+  cols: number;
+  bounds: number[] | null; // 表全体の外形 (セルから算出)
+  cells: ExtractedCell[];
+};
+
+function parseAdobeTables(elements: any[]): ExtractedTable[] {
+  // Table[n] ごとにセルを集約
+  const tableMap = new Map<number, ExtractedTable>();
+
+  for (const el of elements ?? []) {
+    const path: string = el?.Path ?? "";
+    // TR/TD(または TH) を含む要素のみ対象
+    const m = path.match(/\/Table(?:\[(\d+)\])?\/TR(?:\[(\d+)\])?\/(TD|TH)(?:\[(\d+)\])?/);
+    if (!m) continue;
+    const tIdx = m[1] ? Number(m[1]) : 1;
+    const row = m[2] ? Number(m[2]) : 1;
+    const isHeader = m[3] === "TH";
+    const col = m[4] ? Number(m[4]) : 1;
+
+    let t = tableMap.get(tIdx);
+    if (!t) {
+      t = { index: tIdx, page: el?.Page ?? 0, rows: 0, cols: 0, bounds: null, cells: [] };
+      tableMap.set(tIdx, t);
+    }
+    const text = String(el?.Text ?? "").trim();
+    const bounds = Array.isArray(el?.Bounds) ? el.Bounds : null;
+
+    // 同一セルが複数要素(P が複数)に分割される場合はテキストを連結
+    const found = t.cells.find((c) => c.row === row && c.col === col);
+    if (found) {
+      if (text) found.text = found.text ? `${found.text} ${text}` : text;
+      if (!found.bounds && bounds) found.bounds = bounds;
+    } else {
+      t.cells.push({ row, col, text, bounds, isHeader });
+    }
+    t.rows = Math.max(t.rows, row);
+    t.cols = Math.max(t.cols, col);
+  }
+
+  // 表全体の外形をセル群から算出
+  for (const t of tableMap.values()) {
+    const withB = t.cells.filter((c) => c.bounds && c.bounds.length === 4);
+    if (withB.length > 0) {
+      const l = Math.min(...withB.map((c) => c.bounds![0]));
+      const b = Math.min(...withB.map((c) => c.bounds![1]));
+      const r = Math.max(...withB.map((c) => c.bounds![2]));
+      const tp = Math.max(...withB.map((c) => c.bounds![3]));
+      t.bounds = [l, b, r, tp];
+    }
+    t.cells.sort((a, b2) => a.row - b2.row || a.col - b2.col);
+  }
+
+  return Array.from(tableMap.values()).sort((a, b) => a.page - b.page || a.index - b.index);
+}
+
+async function extractPdfTables(pdfBuffer: Buffer): Promise<{ tables: ExtractedTable[]; elementCount: number }> {
+  const credentials = new ServicePrincipalCredentials({
+    clientId: process.env.ADOBE_CLIENT_ID!,
+    clientSecret: process.env.ADOBE_CLIENT_SECRET!,
+  });
+  const pdfServices = new PDFServices({ credentials });
+
+  const passThrough = new PassThrough();
+  passThrough.end(pdfBuffer);
+  const inputAsset = await pdfServices.upload({ readStream: passThrough, mimeType: MimeType.PDF });
+
+  const params = new ExtractPDFParams({
+    elementsToExtract: [ExtractElementType.TEXT, ExtractElementType.TABLES],
+  });
+  const job = new ExtractPDFJob({ inputAsset, params });
+
+  const pollingURL = await pdfServices.submit({ job });
+  const jobResponse = await pdfServices.getJobResult({ pollingURL, resultType: ExtractPDFResult });
+  if (!jobResponse.result) throw new Error("Adobe Extract returned empty result");
+
+  // contentJSON があればそれを使う (無ければ content アセットから取得)
+  let json: any = (jobResponse.result as any).contentJSON;
+  if (!json) {
+    const contentAsset = (jobResponse.result as any).content;
+    if (!contentAsset) throw new Error("Adobe Extract: JSON が取得できませんでした");
+    const streamAsset = await pdfServices.getContent({ asset: contentAsset });
+    const buf = await streamToBuffer(streamAsset.readStream);
+    json = JSON.parse(buf.toString("utf8"));
+  }
+
+  const elements: any[] = json?.elements ?? [];
+  return { tables: parseAdobeTables(elements), elementCount: elements.length };
+}
+
+app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
+  if (!process.env.ADOBE_CLIENT_ID || !process.env.ADOBE_CLIENT_SECRET) {
+    return res.status(503).json({ error: "Adobe PDF Services API credentials not configured" });
+  }
+  const f = req.file as Express.Multer.File | undefined;
+  if (!f) return res.status(400).json({ error: "No file provided" });
+  try {
+    const { tables, elementCount } = await extractPdfTables(f.buffer);
+    return res.json({
+      fileName: Buffer.from(f.originalname, "latin1").toString("utf8"),
+      tableCount: tables.length,
+      elementCount,
+      tables,
+    });
+  } catch (error) {
+    console.error("PDF table extract error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "テーブル抽出に失敗しました",
+    });
+  }
+});
 
 type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros" | "meikancho";
 
