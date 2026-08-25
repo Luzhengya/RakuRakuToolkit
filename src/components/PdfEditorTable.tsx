@@ -216,11 +216,43 @@ function clusterCenters(vals: number[], gap = 3): number[] {
   return out;
 }
 
+// ページの本文幅 (左右のマージン)。
+// この文書の表はどれも本文幅いっぱいに引かれていて、章見出しの下の太い罫線と
+// 左右端が揃っている。表ごとの薄い罫線を検出できなくても、ページ全体の
+// 罫線から本文幅を取れば表の幅は分かる。
+// 濃い罫線から多数決で決めるので、薄い罫線を取り逃しても影響を受けない。
+function detectPageContentSpan(rules: PageRules, W: number): { left: number; right: number } | null {
+  const minLen = W * 0.3;
+  const long = rules.h.filter(s => s.x1 - s.x0 + 1 >= minLen);
+  // 太い罫線は複数の走査行にまたがるので、本数は y をまとめてから数える。
+  // 多数決に意味を持たせるため、独立した罫線が2本以上あることを要求する。
+  if (clusterCenters(long.map(s => s.y)).length < 2) return null;
+  // 数px のズレは同じマージンとみなすため 4px 単位に丸めて多数決を取る
+  const mode = (vals: number[]) => {
+    const counts = new Map<number, number>();
+    for (const v of vals) {
+      const k = Math.round(v / 4);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    let bestK = 0;
+    let bestN = 0;
+    for (const [k, n] of counts) if (n > bestN) { bestN = n; bestK = k; }
+    // 丸めた値ではなく、その束に属する実測値の中央値を返す
+    const inBin = vals.filter(v => Math.round(v / 4) === bestK).sort((a, b) => a - b);
+    return inBin[Math.floor(inBin.length / 2)];
+  };
+  const left = mode(long.map(s => s.x0));
+  const right = mode(long.map(s => s.x1));
+  return right - left >= 40 ? { left, right } : null;
+}
+
 // 表の外形と内側の罫線を求める。
-// 罫線の収集は collectPageRules に任せる (長さと太さのフィルタが共通になり、
-// 薄い塗り潰しを罫線と誤認しない)。
+// 罫線の収集は collectPageRules に任せる (閾値とフィルタが画面側/保存側で共通になる)。
+// 横罫線が1本も無い領域は「罫線のない表」= 表ではないと判断して null を返す。
+// (表紙のようにラベルと値が並んでいるだけの箇所を Adobe が表として返してくるため)
 function detectTableGeom(
   rules: PageRules,
+  span: { left: number; right: number } | null,
   r: { left: number; top: number; width: number; height: number },
 ): TableGeom | null {
   const pad = 6;
@@ -228,22 +260,27 @@ function detectTableGeom(
   const y1 = r.top + r.height + pad;
   if (y1 - y0 < 4 || r.width < 20) return null;
 
-  // この帯に入る横罫線。Adobe の幅は信用できないので長さの下限だけで絞り、
-  // 実際の左右端は見つかった罫線の範囲から決める (空列があっても幅が足りる)。
+  // この帯に入る横罫線。Adobe の幅は信用できないので長さの下限だけで絞る
   const minRun = Math.max(40, r.width * 0.5);
   const hs = rules.h.filter(s => s.y >= y0 && s.y <= y1 && s.x1 - s.x0 + 1 >= minRun);
+  // 罫線が引かれていないなら表として扱わない (表紙を弾く)
   if (!hs.length) return null;
 
+  // 幅はページの本文幅を優先する。表ごとの薄い罫線は検出できないことがあるが、
+  // 本文幅は濃い罫線から多数決で決まるので信頼できる。
+  const detLeft = Math.min(...hs.map(s => s.x0));
+  const detRight = Math.max(...hs.map(s => s.x1));
+  const left = span ? Math.min(span.left, detLeft) : detLeft;
+  const right = span ? Math.max(span.right, detRight) : detRight;
+  if (right - left < 20) return null;
+
+  // 上下端。横罫線が1本しか無い場合は Adobe の範囲で補う
   const yAll = clusterCenters(hs.map(s => s.y));
   const top = yAll[0];
-  const bottom = yAll[yAll.length - 1];
-  // 上下の枠線が必要。見出しの下線1本だけを表と誤認しないよう高さも要求する
+  const bottom = yAll.length >= 2 ? yAll[yAll.length - 1] : r.top + r.height;
+  // 見出しの下線1本だけを表と誤認しないよう高さを要求する
   // (「支店・支社」のような見出しが表として返ってくるケースを弾く)
-  if (yAll.length < 2 || bottom - top < 8) return null;
-
-  const left = Math.min(...hs.map(s => s.x0));
-  const right = Math.max(...hs.map(s => s.x1));
-  if (right - left < 20) return null;
+  if (bottom - top < 8) return null;
 
   // 表の高さの 60% 以上を占める縦罫線を列の境界とみなす
   const minVLen = Math.max(10, (bottom - top) * 0.6);
@@ -299,24 +336,38 @@ function EditableTable({
   if (!tb.bounds) return null;
   const adobeRect = boundsToCanvasRect(tb.bounds, scale, canvasH);
 
-  // 罫線が検出できていればそれをグリッドの正解として使う。
-  // 検出した縦罫線が Adobe の列数に足りている場合だけ採用する
-  // (足りない場合は検出漏れなので文字位置からの推定にフォールバックする)。
-  const useDet = !!geom && geom.xs.length >= tb.cols - 1;
+  // 罫線が検出できていない領域は表として扱わない (表紙などを弾く)
+  if (!geom) return null;
 
-  let colPx: number[];  // 列境界 (canvas px)
-  let rowPx: number[];  // 行境界 (canvas px)
-  if (useDet && geom) {
-    colPx = [geom.left, ...geom.xs, geom.right];
-    rowPx = [geom.top, ...geom.ys, geom.bottom];
-  } else {
-    const ce = deriveColumnEdges(tb);
-    const re = deriveRowEdges(tb);
-    if (!ce || !re) return null;
-    // PDFポイント → canvas px
-    colPx = ce.map(v => v * scale);
-    rowPx = re.map(v => canvasH - v * scale);
-  }
+  // 外形は必ず検出結果を使う。Adobe の幅は文字の範囲しか含まないので信用しない。
+  // 内側の境界は、検出した罫線が足りていればそれを、足りなければ
+  // 文字位置からの推定を使う。
+  const useDetCols = geom.xs.length >= tb.cols - 1;
+  const useDetRows = geom.ys.length >= tb.rows - 1;
+
+  // 推定した内側の境界を外形の中に収める。
+  // 位置は元のまま使い、外形との隙間は空の列/行で埋める
+  // (T7 のように右側に空列がある表で、文字を引き伸ばさず幅だけ合わせるため)。
+  const fitInside = (inner: number[], lo: number, hi: number): number[] => {
+    const kept = inner.filter(v => v > lo + 3 && v < hi - 3).sort((a, b) => a - b);
+    return [lo, ...kept, hi];
+  };
+
+  const colPx = useDetCols
+    ? [geom.left, ...geom.xs, geom.right]
+    : fitInside(
+        (deriveColumnEdges(tb) ?? []).map(v => v * scale),
+        geom.left,
+        geom.right,
+      );
+  const rowPx = useDetRows
+    ? [geom.top, ...geom.ys, geom.bottom]
+    : fitInside(
+        (deriveRowEdges(tb) ?? []).map(v => canvasH - v * scale),
+        geom.top,
+        geom.bottom,
+      );
+
   const nCols = colPx.length - 1;
   const nRows = rowPx.length - 1;
   if (nCols < 1 || nRows < 1) return null;
@@ -450,16 +501,16 @@ function EditableTable({
           whiteSpace: 'nowrap',
           padding: '0 3px',
           borderRadius: 2,
-          color: useDet ? '#15803d' : '#b45309',
-          background: useDet ? 'rgba(220,252,231,0.95)' : 'rgba(254,243,199,0.95)',
+          color: useDetCols ? '#15803d' : '#b45309',
+          background: useDetCols ? 'rgba(220,252,231,0.95)' : 'rgba(254,243,199,0.95)',
         }}
         title={
-          useDet
-            ? 'ページ画像から罫線を検出し、その位置をグリッドに使っています'
-            : '罫線が検出できず、文字位置からの推定を使っています'
+          useDetCols
+            ? '外形も列の境界も、ページ画像から検出した罫線を使っています'
+            : '外形は罫線から確定しています。列の境界だけ縦罫線が検出できず、文字位置からの推定です'
         }
       >
-        T{tb.index} {useDet ? `罫線 ${nCols}列×${nRows}行` : `推定 ${nCols}列×${nRows}行`}
+        T{tb.index} {nCols}列×{nRows}行 (枠=罫線 / 列={useDetCols ? '罫線' : '推定'})
       </span>
       <table
         style={{
@@ -1342,10 +1393,12 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
         if (cancelled) return;
         // 罫線の収集はページ単位で1回だけ
         const rules = collectPageRules(gray, currentPage.canvasW, currentPage.canvasH);
+        // 本文幅もページ単位で1回だけ求める
+        const span = detectPageContentSpan(rules, currentPage.canvasW);
         const out: Record<string, TableGeom> = {};
         for (const tb of editableTables) {
           const r = boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH);
-          const g = detectTableGeom(rules, r);
+          const g = detectTableGeom(rules, span, r);
           if (g) out[`${tb.page}-${tb.index}`] = g;
         }
         if (!cancelled) setTableGeoms(out);
@@ -1362,14 +1415,17 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   // (HTMLテーブル側で編集するため、そのままだと二重に表示される)
   const tableRects =
     tableEditMode && currentPage
-      ? editableTables.map(tb => {
-          const g = tableGeoms[`${tb.page}-${tb.index}`];
-          const r = boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH);
-          // 罫線が取れていれば実際の表の範囲で隠す
-          return g
-            ? { left: g.left, top: g.top, width: g.right - g.left, height: g.bottom - g.top }
-            : r;
-        })
+      ? // 罫線が取れた表だけを隠す。表として描かない領域 (表紙など) の文字は
+        // 従来どおり編集できるよう残す
+        editableTables
+          .map(tb => tableGeoms[`${tb.page}-${tb.index}`])
+          .filter((g): g is TableGeom => !!g)
+          .map(g => ({
+            left: g.left,
+            top: g.top,
+            width: g.right - g.left,
+            height: g.bottom - g.top,
+          }))
       : [];
   const hiddenByTable = (it: TextItem) =>
     tableRects.some(r => {
@@ -1721,20 +1777,29 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                               {/* 罫線検出の結果。推定にフォールバックした表を見分けられるようにする */}
                               {tableEditMode && tb.page === currentPageIdx && (() => {
                                 const g = tableGeoms[`${tb.page}-${tb.index}`];
-                                const used = g && g.xs.length >= tb.cols - 1;
-                                return used ? (
+                                if (!g) {
+                                  return (
+                                    <span
+                                      className="px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-600"
+                                      title="この領域には罫線がないため、表としては扱いません (表紙など)"
+                                    >
+                                      罫線なし → 表として扱わない
+                                    </span>
+                                  );
+                                }
+                                return g.xs.length >= tb.cols - 1 ? (
                                   <span
                                     className="px-1.5 py-0.5 rounded bg-green-100 text-green-700"
-                                    title="ページ画像から罫線を検出し、その位置をグリッドに使いました"
+                                    title="外形も列の境界も検出した罫線を使いました"
                                   >
                                     罫線検出 {g.xs.length + 1}列 × {g.ys.length + 1}行
                                   </span>
                                 ) : (
                                   <span
                                     className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700"
-                                    title="罫線が検出できず、文字位置からの推定を使っています"
+                                    title="外形は罫線から確定。列の境界だけ文字位置からの推定"
                                   >
-                                    罫線なし (推定)
+                                    枠=罫線 / 列=推定
                                   </span>
                                 );
                               })()}
