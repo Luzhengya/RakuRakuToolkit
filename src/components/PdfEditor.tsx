@@ -30,6 +30,11 @@ const PAGE_WIDTH = 880;
 
 // ── Types ─────────────────────────────────────────────────────────────
 
+// 文字揃え。フォントサイズ・書体は元のまま維持し、テキストが元の領域より
+// 長くなった場合にどちら向きへ伸ばすかを利用者が選べるようにする。
+// left: 左端固定で右へ / right: 右端固定で左へ / center: 中央から両方向へ
+type TextAlign = 'left' | 'center' | 'right';
+
 interface TextItem {
   id: string;
   str: string;
@@ -129,6 +134,7 @@ async function buildModifiedPdf(
   file: File,
   pages: PageData[],
   edits: Record<string, string>,
+  aligns: Record<string, TextAlign>,
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(await file.arrayBuffer());
   const pdfPages = pdfDoc.getPages();
@@ -154,15 +160,29 @@ async function buildModifiedPdf(
     ctx.drawImage(bgImg, 0, 0);
 
     // Apply each edit: erase original, draw new text
+    // フォントサイズ・書体は変更せず、揃え方向によって伸びる向きを変える。
+    // 消去範囲も描画範囲と一致させるため、罫線や隣接セルを不要に塗り潰さない。
     for (const item of changed) {
       const newText = edits[item.id];
+      const align = aligns[item.id] ?? 'left';
 
-      // Measure new text width to ensure the erase region is wide enough
       ctx.font = `${item.fontSize}px sans-serif`;
       const measuredW = ctx.measureText(newText).width;
-      const eraseW = Math.max(item.w, measuredW);
+      // 実際に文字が占める幅 (元の枠より広ければそれに従う)
+      const drawW = Math.max(item.w, measuredW);
 
-      // Sample background color from just outside the left edge of the text box
+      // 揃えに応じて描画開始位置と消去開始位置を決める
+      // left : 左端 item.x 固定 → 右へ伸びる
+      // right: 右端 item.x + item.w 固定 → 左へ伸びる
+      // center: 元の枠の中心を基準に左右へ伸びる
+      let drawX: number;
+      if (align === 'right') drawX = item.x + item.w - drawW;
+      else if (align === 'center') drawX = item.x + (item.w - drawW) / 2;
+      else drawX = item.x;
+      // ページ外にはみ出さないようクランプ
+      drawX = Math.max(0, Math.min(drawX, canvas.width - drawW));
+
+      // Sample background color from just outside the original box
       // (avoids sampling on top of the text glyphs themselves)
       const sampleX = Math.max(0, item.x - 4);
       const sampleY = Math.min(canvas.height - 1, Math.round(item.y + item.h / 2));
@@ -170,12 +190,13 @@ async function buildModifiedPdf(
       const bgColor = `rgb(${pixel[0]},${pixel[1]},${pixel[2]})`;
 
       ctx.fillStyle = bgColor;
-      ctx.fillRect(item.x - 2, item.y - 2, eraseW + 4, item.h + 4);
+      ctx.fillRect(drawX - 2, item.y - 2, drawW + 4, item.h + 4);
 
-      // Draw replacement text
+      // Draw replacement text (フォントサイズ・書体は元のまま)
       ctx.fillStyle = '#000000';
       ctx.textBaseline = 'top';
-      ctx.fillText(newText, item.x, item.y + item.fontSize * 0.05);
+      ctx.textAlign = 'left';
+      ctx.fillText(newText, drawX, item.y + item.fontSize * 0.05);
     }
 
     // Export canvas as PNG → embed in pdf-lib
@@ -210,6 +231,8 @@ interface EditableTextItemProps {
   isModified: boolean;
   onFocus: () => void;
   onBlur: () => void;
+  align: TextAlign;
+  onAlignChange: (a: TextAlign) => void;
 }
 
 function EditableTextItem({
@@ -220,6 +243,8 @@ function EditableTextItem({
   isModified,
   onFocus,
   onBlur,
+  align,
+  onAlignChange,
 }: EditableTextItemProps) {
   const divRef = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
@@ -232,6 +257,54 @@ function EditableTextItem({
   }, [value]);
 
   return (
+    <>
+    {/* 揃え切替ツールバー (フォーカス中のみ表示)。文字サイズ・書体は変えず、
+        テキストが元の領域より長い場合に伸びる方向を選べる */}
+    {isFocused && (
+      <div
+        style={{
+          position: 'absolute',
+          left: item.x,
+          top: Math.max(0, item.y - 26),
+          display: 'flex',
+          gap: 2,
+          zIndex: 30,
+          background: '#ffffff',
+          border: '1px solid #6366f1',
+          borderRadius: 4,
+          padding: '2px 3px',
+          boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+        }}
+        // ツールバー操作でエディタの blur が発生しないようにする
+        onMouseDown={e => e.preventDefault()}
+      >
+        {([
+          ['left', '⇤', '左揃え (右へ伸ばす)'],
+          ['center', '↔', '中央揃え (左右へ伸ばす)'],
+          ['right', '⇥', '右揃え (左へ伸ばす)'],
+        ] as [TextAlign, string, string][]).map(([a, icon, tip]) => (
+          <button
+            key={a}
+            type="button"
+            title={tip}
+            onClick={() => onAlignChange(a)}
+            style={{
+              width: 20,
+              height: 18,
+              fontSize: 11,
+              lineHeight: '16px',
+              cursor: 'pointer',
+              borderRadius: 3,
+              border: '1px solid ' + (align === a ? '#6366f1' : 'transparent'),
+              background: align === a ? '#eef2ff' : 'transparent',
+              color: align === a ? '#4338ca' : '#6b7280',
+            }}
+          >
+            {icon}
+          </button>
+        ))}
+      </div>
+    )}
     <div
       ref={divRef}
       contentEditable
@@ -300,8 +373,11 @@ function EditableTextItem({
         pointerEvents: 'all',
         caretColor: '#6366f1',
         transition: 'background-color 0.1s, border-color 0.1s',
+        // 出力側と同じ揃えでプレビューする (フォントサイズ・書体は変えない)
+        textAlign: align,
       }}
     />
+    </>
   );
 }
 
@@ -317,6 +393,8 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [currentPageIdx, setCurrentPageIdx] = useState(0);
   const [editedTexts, setEditedTexts] = useState<Record<string, string>>({});
+  // テキストごとの揃え設定 (既定は左揃え = 元の位置から右へ伸ばす)
+  const [textAligns, setTextAligns] = useState<Record<string, TextAlign>>({});
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -416,7 +494,7 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
     setSaveError(null);
     setSaveSuccess(false);
     try {
-      const bytes = await buildModifiedPdf(file, pages, editedTexts);
+      const bytes = await buildModifiedPdf(file, pages, editedTexts, textAligns);
       const blob = new Blob([bytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -709,6 +787,10 @@ export default function PdfEditor({ onBack }: { onBack: () => void }) {
                           }
                           onFocus={() => setFocusedItemId(item.id)}
                           onBlur={() => setFocusedItemId(null)}
+                          align={textAligns[item.id] ?? 'left'}
+                          onAlignChange={a =>
+                            setTextAligns(prev => ({ ...prev, [item.id]: a }))
+                          }
                         />
                       ))}
                     </div>
