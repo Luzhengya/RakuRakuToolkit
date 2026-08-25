@@ -3,6 +3,7 @@ import {
   useRef,
   useCallback,
   useEffect,
+  useMemo,
   type ChangeEvent,
   type DragEvent,
 } from 'react';
@@ -152,60 +153,280 @@ interface PageData {
   items: TextItem[];
 }
 
+// ── 罫線検出 ────────────────────────────────────────────────────────────
+// Adobe の bounds は「文字がある範囲」しか含まないため、右端に空の列がある表では
+// 幅が足りず、列の境界も文字位置からの推定に頼ることになる。
+// レンダリング済みのページ画像から実際に描かれている罫線を読めば、
+// 表の左右端と列/行の境界を正確に得られる (フェーズ3の色サンプリングにも同じ画像を使う)。
+
+interface TableGeom {
+  left: number;    // 表の左端 (canvas px)
+  right: number;   // 表の右端
+  top: number;     // 表の上端
+  bottom: number;  // 表の下端
+  xs: number[];    // 内側の縦罫線 (外枠は含まない)
+  ys: number[];    // 内側の横罫線 (外枠は含まない)
+}
+
+// ページ画像を「暗いピクセル = 罫線または文字」の 0/1 マップに変換する
+async function loadPageBitmap(dataUrl: string, w: number, h: number): Promise<Uint8Array> {
+  const img = new Image();
+  await new Promise<void>((res, rej) => {
+    img.onload = () => res();
+    img.onerror = () => rej(new Error('page image load failed'));
+    img.src = dataUrl;
+  });
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext('2d')!;
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const dark = new Uint8Array(w * h);
+  for (let i = 0, p = 0; p < dark.length; i += 4, p++) {
+    // JPEG のノイズで薄い罫線が消えないよう閾値は緩めにする
+    dark[p] = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 < 200 ? 1 : 0;
+  }
+  return dark;
+}
+
+// 隣接するピクセル座標をひとつの罫線としてまとめ、中心を返す
+// (罫線は 1px ではなく JPEG のにじみで数 px になる)
+function clusterCenters(vals: number[], gap = 3): number[] {
+  if (!vals.length) return [];
+  const s = [...vals].sort((a, b) => a - b);
+  const out: number[] = [];
+  let start = s[0];
+  let prev = s[0];
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] - prev > gap) {
+      out.push((start + prev) / 2);
+      start = s[i];
+    }
+    prev = s[i];
+  }
+  out.push((start + prev) / 2);
+  return out;
+}
+
+function detectTableGeom(
+  dark: Uint8Array,
+  W: number,
+  H: number,
+  r: { left: number; top: number; width: number; height: number },
+): TableGeom | null {
+  const pad = 6;
+  const y0 = Math.max(0, Math.round(r.top) - pad);
+  const y1 = Math.min(H - 1, Math.round(r.top + r.height) + pad);
+  if (y1 - y0 < 4 || r.width < 20) return null;
+
+  // 横罫線: 行ごとに最長の連続する暗ピクセルを探す。
+  // Adobe の幅は信用できないので、横方向はページ全幅を探索して実際の左右端を求める。
+  const minRun = Math.max(40, r.width * 0.5);
+  const hLines: { y: number; x0: number; x1: number }[] = [];
+  for (let y = y0; y <= y1; y++) {
+    let best = 0;
+    let bestStart = 0;
+    let cur = 0;
+    let curStart = 0;
+    const row = y * W;
+    for (let x = 0; x < W; x++) {
+      if (dark[row + x]) {
+        if (cur === 0) curStart = x;
+        cur++;
+        if (cur > best) {
+          best = cur;
+          bestStart = curStart;
+        }
+      } else {
+        cur = 0;
+      }
+    }
+    if (best >= minRun) hLines.push({ y, x0: bestStart, x1: bestStart + best - 1 });
+  }
+  if (!hLines.length) return null;
+
+  // 太い線は複数の走査行にまたがるので、まとめてから本数を数える
+  const yAll = clusterCenters(hLines.map(l => l.y));
+  const top = yAll[0];
+  const bottom = yAll[yAll.length - 1];
+  // 上下の枠線が必要。見出しの下線1本だけを表と誤認しないよう高さも要求する
+  // (「支店・支社」のような見出しが表として返ってくるケースを弾く)
+  if (yAll.length < 2 || bottom - top < 8) return null;
+
+  const left = Math.min(...hLines.map(l => l.x0));
+  const right = Math.max(...hLines.map(l => l.x1));
+  if (right - left < 20) return null;
+
+  // 縦罫線: 表の左右端の範囲内で、縦に長く続く列を探す
+  const bandH = y1 - y0 + 1;
+  const minVRun = Math.max(10, bandH * 0.6);
+  const vRaw: number[] = [];
+  for (let x = left; x <= right; x++) {
+    let best = 0;
+    let cur = 0;
+    for (let y = y0; y <= y1; y++) {
+      if (dark[y * W + x]) {
+        cur++;
+        if (cur > best) best = cur;
+      } else {
+        cur = 0;
+      }
+    }
+    if (best >= minVRun) vRaw.push(x);
+  }
+
+  // 外枠は left/right/top/bottom で持つので、xs/ys は内側の罫線だけにする
+  const margin = 3;
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    xs: clusterCenters(vRaw).filter(x => x > left + margin && x < right - margin),
+    ys: yAll.filter(y => y > top + margin && y < bottom - margin),
+  };
+}
+
+// ── フォントサイズ ──────────────────────────────────────────────────────
+// pdf.js が報告する文字の高さは字形のボックスなので、そのまま CSS の font-size に
+// すると実際の描画より大きく見える。元の文字が占めていた「幅」に合うサイズを
+// 逆算する方が、見た目も列に収まるかの判断も正確になる。
+let measureCtx: CanvasRenderingContext2D | null = null;
+function fitFontSize(text: string, targetW: number, fallback: number): number {
+  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+  if (!measureCtx || !text.trim() || targetW <= 0) return fallback;
+  measureCtx.font = '100px sans-serif';
+  const w = measureCtx.measureText(text).width;
+  if (w <= 0) return fallback;
+  const fs = (100 * targetW) / w;
+  // 計測が外れた時に極端な値を採用しない
+  return fs >= 4 && fs <= 40 ? fs : fallback;
+}
+
 // 表領域に重ねる編集可能な HTML テーブル。
 // 表全体の幅は元のまま固定し、セル編集で列幅を再配分する (溢れさせない)。
 // 列境界はドラッグで調整でき、隣の列が同じ分だけ縮む。
 function EditableTable({
-  tb, scale, canvasH, items, edit, onCellChange, onColWidths,
+  tb, scale, canvasH, items, geom, edit, onCellChange, onColWidths,
 }: {
   key?: string; // @types/react 未導入のため JSX の key を明示的に許可する
   tb: ExtractedTable;
   scale: number;
   canvasH: number;
   items: TextItem[];
+  geom?: TableGeom;
   edit?: { cells: Record<string, string>; colWidths: number[] | null };
   onCellChange: (row: number, col: number, text: string) => void;
   onColWidths: (widths: number[]) => void;
 }) {
   if (!tb.bounds) return null;
-  const rect = boundsToCanvasRect(tb.bounds, scale, canvasH);
-  const colEdges = deriveColumnEdges(tb);
-  const rowEdges = deriveRowEdges(tb);
-  if (!colEdges || !rowEdges) return null;
+  const adobeRect = boundsToCanvasRect(tb.bounds, scale, canvasH);
+
+  // 罫線が検出できていればそれをグリッドの正解として使う。
+  // 検出した縦罫線が Adobe の列数に足りている場合だけ採用する
+  // (足りない場合は検出漏れなので文字位置からの推定にフォールバックする)。
+  const useDet = !!geom && geom.xs.length >= tb.cols - 1;
+
+  let colPx: number[];  // 列境界 (canvas px)
+  let rowPx: number[];  // 行境界 (canvas px)
+  if (useDet && geom) {
+    colPx = [geom.left, ...geom.xs, geom.right];
+    rowPx = [geom.top, ...geom.ys, geom.bottom];
+  } else {
+    const ce = deriveColumnEdges(tb);
+    const re = deriveRowEdges(tb);
+    if (!ce || !re) return null;
+    // PDFポイント → canvas px
+    colPx = ce.map(v => v * scale);
+    rowPx = re.map(v => canvasH - v * scale);
+  }
+  const nCols = colPx.length - 1;
+  const nRows = rowPx.length - 1;
+  if (nCols < 1 || nRows < 1) return null;
+
+  const rect = {
+    left: colPx[0],
+    top: rowPx[0],
+    width: colPx[nCols] - colPx[0],
+    height: rowPx[nRows] - rowPx[0],
+  };
 
   // 列幅 (canvas px)。編集済みならそれを使う
-  const baseWidths = colEdges.slice(1).map((e, i) => Math.max(1, (e - colEdges[i]) * scale));
+  const baseWidths = colPx.slice(1).map((e, i) => Math.max(1, e - colPx[i]));
   const widths =
     edit?.colWidths && edit.colWidths.length === baseWidths.length ? edit.colWidths : baseWidths;
   const totalW = widths.reduce((a, b) => a + b, 0) || 1;
 
-  // 行の高さ (canvas px)。最低値として使い、文字が折り返せば伸びる
-  const rowHeights = rowEdges.slice(1).map((e, i) => Math.max(4, (rowEdges[i] - e) * scale));
+  // 行の高さ。最低値として使い、文字が折り返せば伸びる
+  const rowHeights = rowPx.slice(1).map((e, i) => Math.max(4, e - rowPx[i]));
+
+  // Adobe のセルを、罫線から決めたグリッドに座標で割り当てる。
+  // (Adobe の row/col は空列を数えないためグリッドと一致しない)
+  const idxOf = (edges: number[], v: number) => {
+    for (let i = 0; i < edges.length - 1; i++) if (v >= edges[i] && v < edges[i + 1]) return i;
+    return v >= edges[edges.length - 1] ? edges.length - 2 : -1;
+  };
+  const placed: Record<string, ExtractedCell> = {};
+  for (const c of tb.cells) {
+    let ri: number;
+    let ci: number;
+    if (c.bounds) {
+      const cr = boundsToCanvasRect(c.bounds, scale, canvasH);
+      ci = idxOf(colPx, cr.left + cr.width / 2);
+      ri = idxOf(rowPx, cr.top + cr.height / 2);
+    } else {
+      ci = c.col - 1;
+      ri = c.row - 1;
+    }
+    if (ri < 0 || ci < 0 || ri >= nRows || ci >= nCols) continue;
+    const k = `${ri + 1}-${ci + 1}`;
+    // 同じマスに複数要素が来たらテキストを連結する
+    placed[k] = placed[k]
+      ? { ...placed[k], text: `${placed[k].text} ${c.text}`.trim() }
+      : c;
+  }
 
   // 表内テキストのフォントサイズ中央値 (セル単位で取れなかった時のフォールバック)
-  const allFonts = items
-    .filter(it => it.x >= rect.left - 2 && it.x <= rect.left + rect.width + 2 &&
-                  it.y >= rect.top - 2 && it.y <= rect.top + rect.height + 2)
-    .map(it => it.fontSize)
-    .sort((a, b) => a - b);
-  const fallbackFont = allFonts.length ? allFonts[Math.floor(allFonts.length / 2)] : 10;
+  const inTable = items.filter(
+    it =>
+      it.x + it.w / 2 >= rect.left && it.x + it.w / 2 <= rect.left + rect.width &&
+      it.y + it.h / 2 >= rect.top && it.y + it.h / 2 <= rect.top + rect.height,
+  );
+  const fonts = inTable.map(it => it.fontSize).sort((a, b) => a - b);
+  const fallbackFont = fonts.length ? fonts[Math.floor(fonts.length / 2)] : 10;
 
-  // セルの元のフォントサイズを pdf.js のテキストから取得する
+  // セルのフォントサイズ。pdf.js のテキストの「幅」から逆算するので
+  // 元の見た目とほぼ一致する。同じセルに複数行ある場合は最も長い行で合わせる。
   const cellFont = (c: ExtractedCell): number => {
-    if (c.bounds) {
-      const r = boundsToCanvasRect(c.bounds, scale, canvasH);
-      const hits = items.filter(
-        it =>
-          it.x + it.w / 2 >= r.left && it.x + it.w / 2 <= r.left + r.width &&
-          it.y + it.h / 2 >= r.top && it.y + it.h / 2 <= r.top + r.height,
-      );
-      if (hits.length) return hits[0].fontSize;
+    if (!c.bounds) return fallbackFont;
+    const r = boundsToCanvasRect(c.bounds, scale, canvasH);
+    const hits = items.filter(
+      it =>
+        it.x + it.w / 2 >= r.left - 1 && it.x + it.w / 2 <= r.left + r.width + 1 &&
+        it.y + it.h / 2 >= r.top - 1 && it.y + it.h / 2 <= r.top + r.height + 1,
+    );
+    if (!hits.length) return fallbackFont;
+    // 同じ行 (y が近い) をまとめる
+    const lines = new Map<number, TextItem[]>();
+    for (const it of hits) {
+      const key = Math.round(it.y / 4);
+      const arr = lines.get(key);
+      if (arr) arr.push(it);
+      else lines.set(key, [it]);
     }
-    return fallbackFont;
+    let best: TextItem[] = [];
+    for (const arr of lines.values()) {
+      const len = arr.reduce((n, it) => n + it.str.length, 0);
+      if (len > best.reduce((n, it) => n + it.str.length, 0)) best = arr;
+    }
+    const sorted = [...best].sort((a, b) => a.x - b.x);
+    const text = sorted.map(it => it.str).join('');
+    const w = Math.max(...sorted.map(it => it.x + it.w)) - Math.min(...sorted.map(it => it.x));
+    return fitFontSize(text, w, hits[0].fontSize);
   };
 
-  const cellAt = (row: number, col: number) =>
-    tb.cells.find(c => c.row === row && c.col === col);
+  const cellAt = (row: number, col: number) => placed[`${row}-${col}`];
 
   // 列境界のドラッグ: 掴んだ境界の左右2列だけを増減させ、合計幅は不変
   const startDrag = (e: any, edgeIdx: number) => {
@@ -255,9 +476,9 @@ function EditableTable({
           ))}
         </colgroup>
         <tbody>
-          {Array.from({ length: tb.rows }, (_, ri) => (
+          {Array.from({ length: nRows }, (_, ri) => (
             <tr key={ri} style={{ height: rowHeights[ri] }}>
-              {Array.from({ length: tb.cols }, (_, ci) => {
+              {Array.from({ length: nCols }, (_, ci) => {
                 const c = cellAt(ri + 1, ci + 1);
                 const key = `${ri + 1}-${ci + 1}`;
                 const text = edit?.cells[key] ?? c?.text ?? '';
@@ -296,22 +517,6 @@ function EditableTable({
                     >
                       {text}
                     </div>
-                    {/* 右端の列境界ドラッグハンドル */}
-                    {ri === 0 && ci < tb.cols - 1 && (
-                      <div
-                        onPointerDown={(ev: any) => startDrag(ev, ci)}
-                        title="ドラッグで列幅を調整 (表全体の幅は変わりません)"
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          right: -3,
-                          width: 6,
-                          height: rect.height,
-                          cursor: 'col-resize',
-                          zIndex: 5,
-                        }}
-                      />
-                    )}
                   </td>
                 );
               })}
@@ -319,7 +524,39 @@ function EditableTable({
           ))}
         </tbody>
       </table>
+
+      {/* 列境界のドラッグハンドル。表とは別のレイヤに出して掴みやすくする */}
+      {widths.slice(0, -1).map((_, i) => (
+        <ColResizeHandle
+          key={i}
+          left={widths.slice(0, i + 1).reduce((a, b) => a + b, 0)}
+          onDown={(ev: any) => startDrag(ev, i)}
+        />
+      ))}
     </div>
+  );
+}
+
+// 列境界のつまみ。常に薄く見えていて、ホバーで濃くなる
+function ColResizeHandle({ left, onDown }: { key?: number; left: number; onDown: (e: any) => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onPointerDown={onDown}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="ドラッグで列幅を調整 (表全体の幅は変わりません)"
+      style={{
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: left - 4,
+        width: 8,
+        cursor: 'col-resize',
+        zIndex: 10,
+        background: hover ? 'rgba(99,102,241,0.45)' : 'rgba(99,102,241,0.12)',
+      }}
+    />
   );
 }
 
@@ -394,6 +631,179 @@ async function renderAndExtract(
   };
 }
 
+// ── 保存時に「マス」を特定する ───────────────────────────────────────────
+// 書き換えた文字が枠を越えるのと、消去範囲の色が罫線を拾って灰色の箱になるのを
+// 防ぐため、レンダリング画像から文字を囲む罫線を探してマスの矩形を求める。
+
+interface PageRules {
+  v: { x: number; y0: number; y1: number }[];
+  h: { y: number; x0: number; x1: number }[];
+}
+
+// ページ画像から罫線の線分を集める。
+// 長さの下限だけでは、太字や塗り潰しの塊を罫線と誤認する
+// (幅40px の文字ブロックは横罫線に見えてしまう)。
+// 罫線は細い (1〜3px) のに対し文字は十数 px あるので、太さでも弾く。
+const MAX_RULE_THICK = 4;
+
+function collectPageRules(dark: Uint8Array, W: number, H: number): PageRules {
+  const MIN_V = 18; // 縦罫線の最小長 (px)。本文の文字より十分長い
+  const MIN_H = 40; // 横罫線の最小長
+
+  // (x, y) を含む連続した暗ピクセルの縦方向の長さ
+  const thickY = (x: number, y: number) => {
+    let n = 1;
+    for (let k = y - 1; k >= 0 && dark[k * W + x]; k--) n++;
+    for (let k = y + 1; k < H && dark[k * W + x]; k++) n++;
+    return n;
+  };
+  // (x, y) を含む連続した暗ピクセルの横方向の長さ
+  const thickX = (x: number, y: number) => {
+    const row = y * W;
+    let n = 1;
+    for (let k = x - 1; k >= 0 && dark[row + k]; k--) n++;
+    for (let k = x + 1; k < W && dark[row + k]; k++) n++;
+    return n;
+  };
+
+  // 線分に沿って何点か測り、太さの中央値を返す。
+  // 1点だけ見ると罫線の交点に当たって「太い」と誤判定してしまう。
+  const medianThickness = (
+    start: number,
+    len: number,
+    at: (pos: number) => number,
+  ): number => {
+    const vals: number[] = [];
+    for (let i = 1; i <= 5; i++) vals.push(at(start + Math.floor((len * i) / 6)));
+    vals.sort((a, b) => a - b);
+    return vals[2];
+  };
+
+  const v: PageRules['v'] = [];
+  const h: PageRules['h'] = [];
+  for (let x = 0; x < W; x++) {
+    let run = 0;
+    for (let y = 0; y <= H; y++) {
+      if (y < H && dark[y * W + x] === 1) {
+        run++;
+      } else {
+        if (run >= MIN_V) {
+          const y0 = y - run;
+          // 横に太い塊 (塗り潰しなど) は縦罫線ではない
+          if (medianThickness(y0, run, pos => thickX(x, pos)) <= MAX_RULE_THICK) {
+            v.push({ x, y0, y1: y - 1 });
+          }
+        }
+        run = 0;
+      }
+    }
+  }
+  for (let y = 0; y < H; y++) {
+    const row = y * W;
+    let run = 0;
+    for (let x = 0; x <= W; x++) {
+      if (x < W && dark[row + x] === 1) {
+        run++;
+      } else {
+        if (run >= MIN_H) {
+          const x0 = x - run;
+          // 縦に太い塊 (文字ブロックなど) は横罫線ではない
+          if (medianThickness(x0, run, pos => thickY(pos, y)) <= MAX_RULE_THICK) {
+            h.push({ y, x0, x1: x - 1 });
+          }
+        }
+        run = 0;
+      }
+    }
+  }
+  return { v, h };
+}
+
+// item を囲むマスを罫線から求める。左右の罫線が見つからなければ null
+// (表の外のテキストなので従来どおりの処理に任せる)。
+function findCellBox(
+  rules: PageRules,
+  item: TextItem,
+): { left: number; right: number; top: number; bottom: number } | null {
+  const cx = item.x + item.w / 2;
+  const cy = item.y + item.h / 2;
+  const tol = 1;
+  let left = -Infinity;
+  let right = Infinity;
+  let top = -Infinity;
+  let bottom = Infinity;
+  for (const s of rules.v) {
+    if (s.y0 - tol > cy || s.y1 + tol < cy) continue;
+    if (s.x <= cx && s.x > left) left = s.x;
+    if (s.x >= cx && s.x < right) right = s.x;
+  }
+  for (const s of rules.h) {
+    if (s.x0 - tol > cx || s.x1 + tol < cx) continue;
+    if (s.y <= cy && s.y > top) top = s.y;
+    if (s.y >= cy && s.y < bottom) bottom = s.y;
+  }
+  if (left === -Infinity || right === Infinity || right - left < 8) return null;
+  // 上下が取れない/潰れている場合は元の文字の高さで代用する
+  const t = top > -Infinity ? top : item.y - 2;
+  const b = bottom < Infinity ? bottom : item.y + item.h + 2;
+  if (b - t < 4) return { left, right, top: item.y - 2, bottom: item.y + item.h + 2 };
+  return { left, right, top: t, bottom: b };
+}
+
+// 矩形の内側から複数点を拾い、最も多い色を背景とみなす。
+// 1点だけ見ていると罫線や文字を拾って塗り潰しが灰色の箱になる。
+function sampleBgColor(
+  ctx: CanvasRenderingContext2D,
+  box: { left: number; right: number; top: number; bottom: number },
+): string {
+  const W = ctx.canvas.width;
+  const H = ctx.canvas.height;
+  const xs: number[] = [];
+  for (let i = 1; i <= 6; i++) xs.push(box.left + ((box.right - box.left) * i) / 7);
+  // 文字は上下方向の中央にあるので、罫線の内側ぎりぎりを狙う
+  const ys = [box.top + 2, box.top + 3, box.bottom - 2, box.bottom - 3];
+  const counts = new Map<string, number>();
+  for (const x of xs) {
+    for (const y of ys) {
+      const px = Math.max(0, Math.min(W - 1, Math.round(x)));
+      const py = Math.max(0, Math.min(H - 1, Math.round(y)));
+      const d = ctx.getImageData(px, py, 1, 1).data;
+      const key = `${d[0]},${d[1]},${d[2]}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  let bestKey = '255,255,255';
+  let bestN = 0;
+  for (const [k, n] of counts) {
+    // 同数なら明るい方を選ぶ (罫線や文字より背景を優先する)
+    const lum = k.split(',').reduce((a, b) => a + Number(b), 0);
+    const bestLum = bestKey.split(',').reduce((a, b) => a + Number(b), 0);
+    if (n > bestN || (n === bestN && lum > bestLum)) {
+      bestN = n;
+      bestKey = k;
+    }
+  }
+  return `rgb(${bestKey})`;
+}
+
+// 指定幅に収まるよう改行する (フォントサイズは変えない)
+function wrapToWidth(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+  if (maxW <= 0 || !text) return [text];
+  const lines: string[] = [];
+  let cur = '';
+  for (const ch of Array.from(text)) {
+    const next = cur + ch;
+    if (cur && ctx.measureText(next).width > maxW) {
+      lines.push(cur);
+      cur = ch;
+    } else {
+      cur = next;
+    }
+  }
+  lines.push(cur);
+  return lines;
+}
+
 /**
  * For each modified page: redraw the page with edits applied via Canvas 2D API
  * (handles CJK correctly since browser handles glyph rendering), then embed
@@ -428,44 +838,81 @@ async function buildModifiedPdf(
     });
     ctx.drawImage(bgImg, 0, 0);
 
+    // 罫線を集めておく。書き換えた文字がどのマスに入っているかを判定して、
+    // 消去範囲をマス内に限り、はみ出す文字はマス幅で折り返す。
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const dark = new Uint8Array(canvas.width * canvas.height);
+    for (let i = 0, p = 0; p < dark.length; i += 4, p++) {
+      dark[p] = (px[i] * 299 + px[i + 1] * 587 + px[i + 2] * 114) / 1000 < 200 ? 1 : 0;
+    }
+    const rules = collectPageRules(dark, canvas.width, canvas.height);
+
     // Apply each edit: erase original, draw new text
-    // フォントサイズ・書体は変更せず、揃え方向によって伸びる向きを変える。
-    // 消去範囲も描画範囲と一致させるため、罫線や隣接セルを不要に塗り潰さない。
+    // フォントサイズ・書体は変更しない。
     for (const item of changed) {
       const newText = edits[item.id];
       const align = aligns[item.id] ?? 'left';
-
       ctx.font = `${item.fontSize}px sans-serif`;
-      const measuredW = ctx.measureText(newText).width;
-      // 実際に文字が占める幅 (元の枠より広ければそれに従う)
-      const drawW = Math.max(item.w, measuredW);
-
-      // 揃えに応じて描画開始位置と消去開始位置を決める
-      // left : 左端 item.x 固定 → 右へ伸びる
-      // right: 右端 item.x + item.w 固定 → 左へ伸びる
-      // center: 元の枠の中心を基準に左右へ伸びる
-      let drawX: number;
-      if (align === 'right') drawX = item.x + item.w - drawW;
-      else if (align === 'center') drawX = item.x + (item.w - drawW) / 2;
-      else drawX = item.x;
-      // ページ外にはみ出さないようクランプ
-      drawX = Math.max(0, Math.min(drawX, canvas.width - drawW));
-
-      // Sample background color from just outside the original box
-      // (avoids sampling on top of the text glyphs themselves)
-      const sampleX = Math.max(0, item.x - 4);
-      const sampleY = Math.min(canvas.height - 1, Math.round(item.y + item.h / 2));
-      const pixel = ctx.getImageData(sampleX, sampleY, 1, 1).data;
-      const bgColor = `rgb(${pixel[0]},${pixel[1]},${pixel[2]})`;
-
-      ctx.fillStyle = bgColor;
-      ctx.fillRect(drawX - 2, item.y - 2, drawW + 4, item.h + 4);
-
-      // Draw replacement text (フォントサイズ・書体は元のまま)
-      ctx.fillStyle = '#000000';
       ctx.textBaseline = 'top';
       ctx.textAlign = 'left';
-      ctx.fillText(newText, drawX, item.y + item.fontSize * 0.05);
+
+      const cell = findCellBox(rules, item);
+
+      if (cell) {
+        // マスが分かった場合: 罫線を残したままマスの内側だけを塗り、
+        // マス幅に収まるよう折り返す (外枠を越えない)
+        const pad = 2;
+        const innerL = cell.left + 1 + pad;
+        const innerR = cell.right - 1 - pad;
+        const maxW = innerR - innerL;
+
+        ctx.fillStyle = sampleBgColor(ctx, cell);
+        ctx.fillRect(
+          cell.left + 1,
+          cell.top + 1,
+          Math.max(0, cell.right - cell.left - 1),
+          Math.max(0, cell.bottom - cell.top - 1),
+        );
+
+        const lines = wrapToWidth(ctx, newText, maxW);
+        const lh = item.fontSize * 1.15;
+        // 1行なら元の位置、複数行ならマス内で縦中央に置く
+        const blockH = lines.length * lh;
+        const startY =
+          lines.length === 1
+            ? item.y + item.fontSize * 0.05
+            : Math.max(cell.top + 1 + pad, (cell.top + cell.bottom) / 2 - blockH / 2);
+
+        ctx.fillStyle = '#000000';
+        lines.forEach((ln, i) => {
+          const w = ctx.measureText(ln).width;
+          let x: number;
+          if (align === 'right') x = innerR - w;
+          else if (align === 'center') x = innerL + (maxW - w) / 2;
+          else x = innerL;
+          ctx.fillText(ln, Math.max(innerL, x), startY + i * lh);
+        });
+      } else {
+        // 表の外のテキスト: 従来どおり、揃え方向に応じて伸ばす
+        const measuredW = ctx.measureText(newText).width;
+        const drawW = Math.max(item.w, measuredW);
+        let drawX: number;
+        if (align === 'right') drawX = item.x + item.w - drawW;
+        else if (align === 'center') drawX = item.x + (item.w - drawW) / 2;
+        else drawX = item.x;
+        drawX = Math.max(0, Math.min(drawX, canvas.width - drawW));
+
+        ctx.fillStyle = sampleBgColor(ctx, {
+          left: drawX - 2,
+          right: drawX + drawW + 2,
+          top: item.y - 2,
+          bottom: item.y + item.h + 2,
+        });
+        ctx.fillRect(drawX - 2, item.y - 2, drawW + 4, item.h + 4);
+
+        ctx.fillStyle = '#000000';
+        ctx.fillText(newText, drawX, item.y + item.fontSize * 0.05);
+      }
     }
 
     // Export canvas as PNG → embed in pdf-lib
@@ -854,13 +1301,70 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
 
   const currentPage = pages[currentPageIdx];
 
+  // このページで編集対象にする表。
+  // Adobe は入れ子や重複した表を返すことがあるので、他の表にほぼ含まれる
+  // ものは捨てる (重ねて表示すると二重になる)。
+  const editableTables = useMemo(() => {
+    if (!extractResult || !currentPage) return [];
+    const list = extractResult.tables.filter(tb => tb.page === currentPageIdx && tb.bounds);
+    const area = (b: number[]) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+    return list.filter(tb => {
+      const a = tb.bounds!;
+      return !list.some(o => {
+        if (o === tb || !o.bounds) return false;
+        const b = o.bounds;
+        const ov =
+          Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])) *
+          Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+        const mine = area(a);
+        // 自分の 80% 以上が相手に覆われ、かつ相手の方が大きいなら捨てる
+        return mine > 0 && ov / mine > 0.8 && area(b) > mine;
+      });
+    });
+  }, [extractResult, currentPageIdx, currentPage]);
+
+  // ページ画像から罫線を検出して、表ごとのグリッドを求める。
+  // Adobe の bounds では空列が抜けて幅が足りないため、これが無いと
+  // 覆いかぶせるテーブルの大きさが元と合わない。
+  const [tableGeoms, setTableGeoms] = useState<Record<string, TableGeom>>({});
+  useEffect(() => {
+    if (!tableEditMode || !currentPage || editableTables.length === 0) {
+      setTableGeoms({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const dark = await loadPageBitmap(currentPage.dataUrl, currentPage.canvasW, currentPage.canvasH);
+        if (cancelled) return;
+        const out: Record<string, TableGeom> = {};
+        for (const tb of editableTables) {
+          const r = boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH);
+          const g = detectTableGeom(dark, currentPage.canvasW, currentPage.canvasH, r);
+          if (g) out[`${tb.page}-${tb.index}`] = g;
+        }
+        if (!cancelled) setTableGeoms(out);
+      } catch (err) {
+        console.error('ruling detection failed', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tableEditMode, currentPage, editableTables]);
+
   // テーブル編集モード中は、表の中に入る pdf.js の文字レイヤを隠す。
   // (HTMLテーブル側で編集するため、そのままだと二重に表示される)
   const tableRects =
-    tableEditMode && extractResult && currentPage
-      ? extractResult.tables
-          .filter(tb => tb.page === currentPageIdx && tb.bounds)
-          .map(tb => boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH))
+    tableEditMode && currentPage
+      ? editableTables.map(tb => {
+          const g = tableGeoms[`${tb.page}-${tb.index}`];
+          const r = boundsToCanvasRect(tb.bounds!, currentPage.scale, currentPage.canvasH);
+          // 罫線が取れていれば実際の表の範囲で隠す
+          return g
+            ? { left: g.left, top: g.top, width: g.right - g.left, height: g.bottom - g.top }
+            : r;
+        })
       : [];
   const hiddenByTable = (it: TextItem) =>
     tableRects.some(r => {
@@ -1209,6 +1713,26 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                                   列を座標補正
                                 </span>
                               )}
+                              {/* 罫線検出の結果。推定にフォールバックした表を見分けられるようにする */}
+                              {tableEditMode && tb.page === currentPageIdx && (() => {
+                                const g = tableGeoms[`${tb.page}-${tb.index}`];
+                                const used = g && g.xs.length >= tb.cols - 1;
+                                return used ? (
+                                  <span
+                                    className="px-1.5 py-0.5 rounded bg-green-100 text-green-700"
+                                    title="ページ画像から罫線を検出し、その位置をグリッドに使いました"
+                                  >
+                                    罫線検出 {g.xs.length + 1}列 × {g.ys.length + 1}行
+                                  </span>
+                                ) : (
+                                  <span
+                                    className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700"
+                                    title="罫線が検出できず、文字位置からの推定を使っています"
+                                  >
+                                    罫線なし (推定)
+                                  </span>
+                                );
+                              })()}
                               {tb.bounds && (
                                 <span className="text-neutral-400">
                                   外形 [{tb.bounds.map((v) => Math.round(v)).join(', ')}]
@@ -1331,22 +1855,21 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
 
                     {/* 編集可能な HTML テーブルのオーバーレイ (フェーズ2)。
                         表領域は元の文字レイヤの代わりにこちらで編集する。 */}
-                    {tableEditMode && extractResult && (
+                    {tableEditMode && (
                       <div style={{ position: 'absolute', inset: 0 }}>
-                        {extractResult.tables
-                          .filter(tb => tb.page === currentPageIdx && tb.bounds)
-                          .map(tb => (
-                            <EditableTable
-                              key={`et-${tb.index}`}
-                              tb={tb}
-                              scale={currentPage.scale}
-                              canvasH={currentPage.canvasH}
-                              items={currentPage.items}
-                              edit={tableEdits[tableKey(tb)]}
-                              onCellChange={(r, c, t) => setTableCell(tb, r, c, t)}
-                              onColWidths={w => setTableColWidths(tb, w)}
-                            />
-                          ))}
+                        {editableTables.map(tb => (
+                          <EditableTable
+                            key={`et-${tb.index}`}
+                            tb={tb}
+                            scale={currentPage.scale}
+                            canvasH={currentPage.canvasH}
+                            items={currentPage.items}
+                            geom={tableGeoms[tableKey(tb)]}
+                            edit={tableEdits[tableKey(tb)]}
+                            onCellChange={(r, c, t) => setTableCell(tb, r, c, t)}
+                            onColWidths={w => setTableColWidths(tb, w)}
+                          />
+                        ))}
                       </div>
                     )}
 
