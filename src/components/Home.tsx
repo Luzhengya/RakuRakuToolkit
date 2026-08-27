@@ -70,7 +70,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
     {
       id: 'pdf-edit-table',
       title: 'PDF编辑 (表格対応)',
-      description: 'テーブル構造を解析して、セル編集で列幅が自動調整される方式を検証中の実験版。',
+      description: '表を自動認識し、セル単位で編集できます。文字を書き換えても表の幅は変わりません。',
       category: '文档类',
       icon: <FilePen className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('pdf-edit-table'),
