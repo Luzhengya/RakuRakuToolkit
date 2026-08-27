@@ -36,7 +36,7 @@ const PAGE_WIDTH = 880;
 // left: 左端固定で右へ / right: 右端固定で左へ / center: 中央から両方向へ
 type TextAlign = 'left' | 'center' | 'right';
 
-// ── テーブル抽出 (技術検証) のレスポンス型 ──
+// ── テーブル抽出のレスポンス型 ──
 interface ExtractedCell {
   row: number;
   col: number;
@@ -274,12 +274,14 @@ function detectTableGeom(
   const right = span ? Math.max(span.right, detRight) : detRight;
   if (right - left < 20) return null;
 
-  // 上下端。横罫線が1本しか無い場合は Adobe の範囲で補う
+  // 上下端は必ず検出した罫線から決める。
+  // 横罫線が1本しか無いものは表ではない (見出しの下線を表と誤認しないため)。
+  // 「支店・支社」のような見出しを Adobe が表として返してくるので、ここで弾く。
+  // 幅の不足は本文幅で補えるが、「表かどうか」の判断は罫線の本数で決める。
   const yAll = clusterCenters(hs.map(s => s.y));
+  if (yAll.length < 2) return null;
   const top = yAll[0];
-  const bottom = yAll.length >= 2 ? yAll[yAll.length - 1] : r.top + r.height;
-  // 見出しの下線1本だけを表と誤認しないよう高さを要求する
-  // (「支店・支社」のような見出しが表として返ってくるケースを弾く)
+  const bottom = yAll[yAll.length - 1];
   if (bottom - top < 8) return null;
 
   // 表の高さの 60% 以上を占める縦罫線を列の境界とみなす
@@ -512,6 +514,8 @@ function EditableTable({
         width: rect.width,
         background: '#fff',
         outline: '1px solid rgba(99,102,241,0.5)',
+        // 親の容器は透過設定なので、ここで受け取り直す
+        pointerEvents: 'auto',
       }}
     >
       {/* 罫線検出の結果をテーブルの真上に出す。
@@ -1403,17 +1407,14 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // ── テーブル構造抽出 (技術検証) ──
-  // Adobe Extract API が PDF の表を行列として認識できるかを確認する。
-  // 認識精度がこの方式(HTMLテーブルとして再配置)の実現可否を左右するため、
-  // まずここだけを切り出して検証する。
+  // ── テーブル構造抽出 ──
+  // Adobe Extract API で表の行・列とセルの文字を取得する。
+  // 罫線の位置はページ画像から検出するので、ここで使うのは主にセルの文字。
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractTablesResponse | null>(null);
-  // 座標マッピングの検証用オーバーレイ表示 ('none' | 'table' | 'cell')
-  const [overlayMode, setOverlayMode] = useState<'none' | 'table' | 'cell'>('table');
-  // テーブル編集モード: 表領域に編集可能な HTML テーブルを重ねる
-  const [tableEditMode, setTableEditMode] = useState(false);
+  // テーブル編集: 表領域に編集可能な HTML テーブルを重ねる
+  const [tableEditMode, setTableEditMode] = useState(true);
   // 表ごとの編集内容。キーは `${page}-${tableIndex}`
   // colWidths は canvas px。null なら元の列幅を使う
   const [tableEdits, setTableEdits] = useState<
@@ -1434,14 +1435,13 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
       return { ...prev, [k]: { ...cur, colWidths: widths } };
     });
 
-  const runTableExtract = async () => {
-    if (!file) return;
+  const runTableExtract = useCallback(async (target: File) => {
     setExtracting(true);
     setExtractError(null);
     setExtractResult(null);
     try {
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', target);
       const res = await fetch('/api/pdf-extract-tables', { method: 'POST', body: fd });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
@@ -1453,7 +1453,13 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
     } finally {
       setExtracting(false);
     }
-  };
+  }, []);
+
+  // 読み込んだら自動で表を解析する。
+  // 手動で押させる必要はない (この画面の目的が表の編集なので必ず使う)。
+  useEffect(() => {
+    if (file) runTableExtract(file);
+  }, [file, runTableExtract]);
 
   // Count genuinely modified text items
   const totalEdits = Object.entries(editedTexts).filter(([id, v]) => {
@@ -1632,8 +1638,7 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
   // 覆いかぶせるテーブルの大きさが元と合わない。
   const [tableGeoms, setTableGeoms] = useState<Record<string, TableGeom>>({});
   useEffect(() => {
-    // 編集モードに関係なく走らせる。座標オーバーレイ側でも
-    // 「罫線がないので表として扱わない」領域を区別して描きたいため。
+    // 編集モードに関係なく走らせる。モードを切り替えた時に検出を待たされないため。
     if (!currentPage || editableTables.length === 0) {
       setTableGeoms({});
       return;
@@ -1710,7 +1715,7 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
           <div>
             <h2 className="text-2xl font-bold text-neutral-900">PDF編集 (テーブル対応)</h2>
             <p className="text-neutral-500 mt-1">
-              PDFをアップロードし、テーブル構造を解析します(技術検証)。テキスト編集は従来通り可能です
+              PDFをアップロードすると表を自動で認識します。セルを編集しても表の幅は変わりません
             </p>
           </div>
           {file && (
@@ -1904,187 +1909,83 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                 </span>
               </div>
 
-              {/* ── テーブル構造抽出 (技術検証) ── */}
+              {/* ── テーブル編集 ── */}
               <div className="border border-indigo-200 bg-indigo-50/40 rounded-xl p-4 space-y-3">
-                <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div>
-                    <h3 className="text-sm font-bold text-neutral-800">テーブル構造の解析 (技術検証)</h3>
-                    <p className="text-xs text-neutral-500 mt-0.5">
-                      Adobe Extract API で表を行・列として認識できるか確認します。
-                      認識できれば「セル編集で列幅が自動的に広がる」方式が実現可能です。
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={runTableExtract}
-                    disabled={extracting}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500 disabled:bg-neutral-300 disabled:cursor-not-allowed shrink-0"
-                  >
-                    {extracting ? <Loader2 size={14} className="animate-spin" /> : null}
-                    {extracting ? '解析中...' : 'テーブル構造を解析'}
-                  </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <h3 className="text-sm font-bold text-neutral-800">テーブル編集</h3>
+                  {extracting && (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500">
+                      <Loader2 size={13} className="animate-spin" />
+                      表を解析中...
+                    </span>
+                  )}
+                  {!extracting && extractResult && (
+                    <span className="text-xs text-neutral-500">
+                      検出テーブル数: <b className="tabular-nums">{extractResult.tableCount}</b>
+                    </span>
+                  )}
+                  {!extracting && extractResult && (
+                    <button
+                      type="button"
+                      onClick={() => setTableEditMode(v => !v)}
+                      className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                        tableEditMode
+                          ? 'border-indigo-500 bg-indigo-600 text-white font-medium'
+                          : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50'
+                      }`}
+                    >
+                      {tableEditMode ? 'テーブル編集: ON' : 'テーブル編集: OFF'}
+                    </button>
+                  )}
+                  {tableEditMode && Object.keys(tableEdits).length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setTableEdits({})}
+                      className="px-2.5 py-1 rounded-lg text-xs border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-50"
+                    >
+                      編集をリセット
+                    </button>
+                  )}
+                  {!extracting && !extractResult && !extractError && (
+                    <button
+                      type="button"
+                      onClick={() => file && runTableExtract(file)}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-500"
+                    >
+                      表を解析
+                    </button>
+                  )}
                 </div>
 
                 {extractError && (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 text-red-600 text-sm flex items-start gap-2">
                     <AlertCircle size={15} className="mt-0.5 shrink-0" />
-                    <span>{extractError}</span>
+                    <span className="flex-1">{extractError}</span>
+                    <button
+                      type="button"
+                      onClick={() => file && runTableExtract(file)}
+                      className="px-2 py-0.5 rounded border border-red-300 bg-white text-xs text-red-700 hover:bg-red-50 shrink-0"
+                    >
+                      再試行
+                    </button>
                   </div>
                 )}
 
-                {extractResult && (
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center gap-4 text-sm">
-                      <span>検出テーブル数: <b className="tabular-nums">{extractResult.tableCount}</b></span>
-                      <span className="text-neutral-500">要素総数: <b className="tabular-nums">{extractResult.elementCount}</b></span>
-                      {/* 座標マッピング検証用の表示切替 */}
-                      <span className="flex items-center gap-1 ml-auto">
-                        <span className="text-xs text-neutral-500 mr-1">座標オーバーレイ:</span>
-                        {([
-                          ['none', '非表示'],
-                          ['table', '表の外枠'],
-                          ['cell', 'セル境界'],
-                        ] as ['none' | 'table' | 'cell', string][]).map(([mode, label]) => (
-                          <button
-                            key={mode}
-                            type="button"
-                            onClick={() => setOverlayMode(mode)}
-                            className={`px-2 py-0.5 rounded text-xs border transition-colors ${
-                              overlayMode === mode
-                                ? 'border-indigo-500 bg-indigo-100 text-indigo-700 font-medium'
-                                : 'border-neutral-200 bg-white text-neutral-500 hover:bg-neutral-50'
-                            }`}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </span>
-                    </div>
-                    <p className="text-xs text-neutral-500">
-                      下のページ画像に枠が重なります (青=表の外枠 / 緑=セル境界)。
-                      <b>グレーの破線</b>は Adobe が表として返したものの、罫線が無いため
-                      表として扱わない領域です (表紙など)。
-                      {extractResult.tables.filter(t => t.page === currentPageIdx).length === 0 && (
-                        <span className="text-amber-600"> ※このページには検出された表がありません</span>
-                      )}
-                    </p>
+                {extractResult && extractResult.tables.length === 0 && (
+                  <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                    テーブルとして認識されませんでした。このPDFでは文字単位の編集をご利用ください。
+                  </p>
+                )}
 
-                    {/* テーブル編集モード */}
-                    <div className="flex flex-wrap items-center gap-3 border-t border-neutral-200 pt-3">
-                      <button
-                        type="button"
-                        onClick={() => setTableEditMode(v => !v)}
-                        className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
-                          tableEditMode
-                            ? 'border-indigo-500 bg-indigo-600 text-white font-medium'
-                            : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50'
-                        }`}
-                      >
-                        {tableEditMode ? 'テーブル編集モード: ON' : 'テーブル編集モード: OFF'}
-                      </button>
-                      {tableEditMode && Object.keys(tableEdits).length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setTableEdits({})}
-                          className="px-2.5 py-1 rounded-lg text-xs border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-50"
-                        >
-                          編集をリセット
-                        </button>
-                      )}
-                      <p className="text-xs text-neutral-500 flex-1 min-w-[240px]">
-                        表領域に編集可能なテーブルを重ねます。セルをクリックして書き換えると、
-                        <b>表全体の幅は変わらず</b>文字が折り返されるため元の領域を超えません。
-                        列幅を変えたい場合は<b>列の境界をドラッグ</b>してください (隣の列が同じ分縮みます)。
-                      </p>
-                    </div>
-
-                    {extractResult.tables.length === 0 ? (
-                      <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
-                        テーブルとして認識されませんでした。このPDFでは表構造ベースの編集は使えません。
-                      </p>
-                    ) : (
-                      extractResult.tables.map((tb) => {
-                        // 行列マトリクスに並べ直してプレビュー
-                        const grid: string[][] = Array.from({ length: tb.rows }, () => Array(tb.cols).fill(''));
-                        for (const c of tb.cells) {
-                          if (c.row >= 1 && c.row <= tb.rows && c.col >= 1 && c.col <= tb.cols) {
-                            grid[c.row - 1][c.col - 1] = c.text;
-                          }
-                        }
-                        return (
-                          <div key={`${tb.page}-${tb.index}`} className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
-                            <div className="px-3 py-2 bg-neutral-50 border-b border-neutral-200 text-xs text-neutral-600 flex flex-wrap gap-3 items-center">
-                              <span>Table[{tb.index}]</span>
-                              <span>ページ {tb.page + 1}</span>
-                              <span><b>{tb.rows}</b> 行 × <b>{tb.cols}</b> 列</span>
-                              {tb.caption && (
-                                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
-                                  見出し: {tb.caption}
-                                </span>
-                              )}
-                              {tb.colFromBounds && (
-                                <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700" title="Adobeの列マージを座標から補正しました">
-                                  列を座標補正
-                                </span>
-                              )}
-                              {/* 罫線検出の結果。推定にフォールバックした表を見分けられるようにする */}
-                              {tableEditMode && tb.page === currentPageIdx && (() => {
-                                const g = tableGeoms[`${tb.page}-${tb.index}`];
-                                if (!g) {
-                                  return (
-                                    <span
-                                      className="px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-600"
-                                      title="この領域には罫線がないため、表としては扱いません (表紙など)"
-                                    >
-                                      罫線なし → 表として扱わない
-                                    </span>
-                                  );
-                                }
-                                return g.xs.length >= tb.cols - 1 ? (
-                                  <span
-                                    className="px-1.5 py-0.5 rounded bg-green-100 text-green-700"
-                                    title="外形も列の境界も検出した罫線を使いました"
-                                  >
-                                    罫線検出 {g.xs.length + 1}列 × {g.ys.length + 1}行
-                                  </span>
-                                ) : (
-                                  <span
-                                    className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700"
-                                    title="外形は罫線から確定。列の境界だけ文字位置からの推定"
-                                  >
-                                    枠=罫線 / 列=推定
-                                  </span>
-                                );
-                              })()}
-                              {tb.bounds && (
-                                <span className="text-neutral-400">
-                                  外形 [{tb.bounds.map((v) => Math.round(v)).join(', ')}]
-                                </span>
-                              )}
-                            </div>
-                            <div className="overflow-x-auto">
-                              <table className="w-full border-collapse text-xs">
-                                <tbody>
-                                  {grid.map((r, ri) => (
-                                    <tr key={ri}>
-                                      {r.map((cell, ci) => (
-                                        <td
-                                          key={ci}
-                                          className="border border-neutral-200 px-2 py-1 text-neutral-700 align-top max-w-[220px]"
-                                        >
-                                          {cell || <span className="text-neutral-300">-</span>}
-                                        </td>
-                                      ))}
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        );
-                      })
+                {extractResult && extractResult.tables.length > 0 && tableEditMode && (
+                  <p className="text-xs text-neutral-500">
+                    セルをクリックして書き換えると、<b>表全体の幅は変わらず</b>文字が折り返されるため
+                    元の領域を超えません。列幅を変えたい場合は<b>列の境界をドラッグ</b>してください
+                    (隣の列が同じ分縮みます)。
+                    {editableTables.length === 0 && (
+                      <span className="text-amber-600"> ※このページには表がありません</span>
                     )}
-                  </div>
+                  </p>
                 )}
               </div>
 
@@ -2107,88 +2008,13 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                       draggable={false}
                     />
 
-                    {/* テーブル座標のオーバーレイ (座標マッピングの検証用)。
-                        Adobe が返した座標を canvas 座標に変換して枠を重ねる。
-                        枠が実際の表とズレる場合は座標変換の見直しが必要。 */}
-                    {overlayMode !== 'none' && extractResult && (
-                      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-                        {extractResult.tables
-                          .filter(tb => tb.page === currentPageIdx)
-                          .map(tb => {
-                            const rects: any[] = [];
-                            // 罫線が無く表として扱わない領域はグレーの破線で描く。
-                            // 青枠のままだと「表と認識している」ように見えて、
-                            // 編集レイヤ側の判定と矛盾して見えてしまう。
-                            const isTable = !!tableGeoms[`${tb.page}-${tb.index}`];
-                            if (tb.bounds) {
-                              const r = boundsToCanvasRect(tb.bounds, currentPage.scale, currentPage.canvasH);
-                              rects.push(
-                                <div
-                                  key={`t-${tb.index}`}
-                                  style={{
-                                    position: 'absolute',
-                                    left: r.left,
-                                    top: r.top,
-                                    width: r.width,
-                                    height: r.height,
-                                    border: isTable
-                                      ? '2px solid rgba(99,102,241,0.9)'
-                                      : '2px dashed rgba(120,113,108,0.75)',
-                                    background: isTable
-                                      ? 'rgba(99,102,241,0.07)'
-                                      : 'rgba(120,113,108,0.05)',
-                                    borderRadius: 2,
-                                  }}
-                                >
-                                  <span
-                                    style={{
-                                      position: 'absolute',
-                                      top: -16,
-                                      left: 0,
-                                      fontSize: 10,
-                                      fontWeight: 700,
-                                      color: isTable ? '#4338ca' : '#57534e',
-                                      background: 'rgba(255,255,255,0.9)',
-                                      padding: '0 3px',
-                                      borderRadius: 2,
-                                      whiteSpace: 'nowrap',
-                                    }}
-                                  >
-                                    T{tb.index} ({tb.rows}×{tb.cols})
-                                    {!isTable && ' 罫線なし → 表として扱わない'}
-                                  </span>
-                                </div>,
-                              );
-                            }
-                            if (overlayMode === 'cell') {
-                              for (const c of tb.cells) {
-                                if (!c.bounds) continue;
-                                const cr = boundsToCanvasRect(c.bounds, currentPage.scale, currentPage.canvasH);
-                                rects.push(
-                                  <div
-                                    key={`c-${tb.index}-${c.row}-${c.col}`}
-                                    style={{
-                                      position: 'absolute',
-                                      left: cr.left,
-                                      top: cr.top,
-                                      width: cr.width,
-                                      height: cr.height,
-                                      border: '1px solid rgba(16,185,129,0.85)',
-                                      background: 'rgba(16,185,129,0.08)',
-                                    }}
-                                  />,
-                                );
-                              }
-                            }
-                            return rects;
-                          })}
-                      </div>
-                    )}
-
                     {/* 編集可能な HTML テーブルのオーバーレイ (フェーズ2)。
                         表領域は元の文字レイヤの代わりにこちらで編集する。 */}
                     {tableEditMode && (
-                      <div style={{ position: 'absolute', inset: 0 }}>
+                      // 容器はクリックを透過させ、テーブル本体だけが受け取る。
+                      // ページ全幅を覆う容器がクリックを拾うと、下のレイヤの
+                      // 編集ができなくなる
+                      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
                         {editableTables.map(tb => (
                           <EditableTable
                             key={`et-${tb.index}`}
@@ -2206,8 +2032,10 @@ export default function PdfEditorTable({ onBack }: { onBack: () => void }) {
                     )}
 
                     {/* Editable text overlay。
-                        テーブル編集モード中は表の中の文字レイヤを隠す (二重表示になるため) */}
-                    <div style={{ position: 'absolute', inset: 0 }}>
+                        テーブル編集モード中は表の中の文字レイヤを隠す (二重表示になるため)。
+                        容器は inset:0 でページ全体を覆うので、クリックを透過させないと
+                        下に重なるテーブルのセルを編集できなくなる */}
+                    <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
                       {currentPage.items.filter(it => !hiddenByTable(it)).map(item => (
                         <EditableTextItem
                           key={item.id}
