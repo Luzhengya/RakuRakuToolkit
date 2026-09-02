@@ -636,7 +636,7 @@ async function retrievePageWithRetry(pageId: string, maxRetries = 4): Promise<Pr
         await sleep(1000 * (attempt + 1));
         continue;
       }
-      console.error(`Failed to retrieve Notion page ${pageId}:`, error);
+      console.error("Failed to retrieve Notion page %s:", pageId, error);
       return null;
     }
   }
@@ -1899,7 +1899,7 @@ app.post("/api/upload", upload.array("files", 10), async (req, res) => {
         results.push({ ...base, type: "unknown", error: "対応していないファイル形式です" });
       }
     } catch (error) {
-      console.error(`Upload error for ${originalName}:`, error);
+      console.error("Upload error for %s:", originalName, error);
       results.push({
         ...base,
         type: "unknown",
@@ -1935,7 +1935,7 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
         const docxBuffer = await convertPdfToWordBuffer(file.buffer);
         folder?.file(originalName.replace(/\.pdf$/i, ".docx"), docxBuffer);
       } catch (e) {
-        console.error(`Adobe conversion error for ${originalName}:`, e);
+        console.error("Adobe conversion error for %s:", originalName, e);
         failedFiles.push(originalName);
       }
     }
@@ -2059,7 +2059,7 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
       try {
         await workbook.xlsx.load(fileBuffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
       } catch (e) {
-        console.error(`Excel load error for ${originalName}:`, e);
+        console.error("Excel load error for %s:", originalName, e);
         failed.push(
           `${originalName}: ファイルを読み込めませんでした（${
             e instanceof Error ? e.message : String(e)
