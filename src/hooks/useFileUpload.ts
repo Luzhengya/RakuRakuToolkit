@@ -71,11 +71,21 @@ export function useFileUpload({ accept, maxFiles = 10, skipUpload = false }: Use
 
     try {
       const response = await fetch('/api/upload', { method: 'POST', body: formData });
-      if (!response.ok) throw new Error('Failed to upload files');
-      const data = await response.json();
+      if (!response.ok) {
+        // サーバーが返した理由をそのまま見せる。
+        // 以前は汎用メッセージに置き換えていたため、原因が分からなかった。
+        const body = await response.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error || `上传失败 (HTTP ${response.status})`);
+      }
+      const data = (await response.json()) as { files: UploadedFile[] };
       setUploadedFiles(data.files);
+      // ファイル単位のエラーもまとめて表示する
+      const rejected = data.files.filter(f => f.error);
+      if (rejected.length) {
+        setError(rejected.map(f => `${f.originalName}: ${f.error}`).join('\n'));
+      }
     } catch (err) {
-      setError('文件上传失败，请重试');
+      setError(err instanceof Error ? err.message : '文件上传失败，请重试');
       console.error(err);
     } finally {
       setLoading(false);

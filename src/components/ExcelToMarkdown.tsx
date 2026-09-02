@@ -28,13 +28,16 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
     setLoading,
     setError,
     setSuccess,
-  } = useFileUpload({ accept: ['.xlsx', '.xls'], maxFiles: 10 });
+  } = useFileUpload({ accept: ['.xlsx'], maxFiles: 10 });
 
   // For multiple files, only offer sheet names common to ALL files (intersection).
   // This avoids ambiguity when files share some sheet names but not others.
+  // 読み込めなかったファイルは除外する。sheetNames が空のまま交差を取ると
+  // 全体が空になり、読めた分のシートも選べなくなる。
   const sheetNames = useMemo(() => {
-    if (uploadedFiles.length === 0) return [];
-    const perFile = uploadedFiles.map(f => new Set(f.sheetNames ?? []));
+    const ok = uploadedFiles.filter(f => f.type === 'excel' && f.sheetNames);
+    if (ok.length === 0) return [];
+    const perFile = ok.map(f => new Set(f.sheetNames ?? []));
     const [first, ...rest] = perFile;
     return Array.from(first).filter(name => rest.every(s => s.has(name)));
   }, [uploadedFiles]);
@@ -152,7 +155,7 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
               ref={fileInputRef}
               onChange={e => handleFiles(e.target.files)}
               className="hidden"
-              accept=".xlsx,.xls"
+              accept=".xlsx"
               multiple
             />
             <div className="flex flex-col items-center gap-4">
@@ -163,7 +166,7 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
                 <p className="font-semibold text-neutral-700">
                   {isDragging ? '松开鼠标以上传文件' : files.length > 0 ? `已选择 ${files.length} 个文件` : '点击或拖拽上传 Excel 文件'}
                 </p>
-                <p className="text-xs text-neutral-400 mt-1">支持 .xlsx 和 .xls 格式，最多 10 个，单文件最大 50MB</p>
+                <p className="text-xs text-neutral-400 mt-1">支持 .xlsx 格式，最多 10 个，单文件最大 50MB（旧版 .xls 请先另存为 .xlsx）</p>
               </div>
             </div>
           </div>
@@ -261,7 +264,7 @@ export default function ExcelToMarkdown({ onBack }: { onBack: () => void }) {
               className="p-4 bg-red-50 border border-red-100 rounded-lg flex items-center gap-3 text-red-600"
             >
               <AlertCircle size={20} />
-              <p className="text-sm font-medium">{error}</p>
+              <p className="text-sm font-medium whitespace-pre-line">{error}</p>
             </motion.div>
           )}
 

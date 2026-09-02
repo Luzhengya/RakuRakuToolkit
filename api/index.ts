@@ -43,6 +43,22 @@ const upload = multer({
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
+interface UploadedFileResult {
+  filename: string;
+  originalName: string;
+  type: "excel" | "pdf" | "unknown";
+  sheetNames?: string[];
+  error?: string;
+}
+
+// ExcelJS は .xlsx (OOXML) しか読めない。旧形式の .xls (BIFF) を
+// workbook.xlsx.load() に渡すと必ず例外になるので、手前で弾いて理由を返す。
+function legacyXlsError(name: string): string | null {
+  return /\.xls$/i.test(name)
+    ? "旧形式の .xls は読み込めません。Excel で「.xlsx」として保存し直してください"
+    : null;
+}
+
 function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -620,7 +636,7 @@ async function retrievePageWithRetry(pageId: string, maxRetries = 4): Promise<Pr
         await sleep(1000 * (attempt + 1));
         continue;
       }
-      console.error(`Failed to retrieve Notion page ${pageId}:`, error);
+      console.error("Failed to retrieve Notion page %s:", pageId, error);
       return null;
     }
   }
@@ -1860,28 +1876,40 @@ app.post("/api/upload", upload.array("files", 10), async (req, res) => {
     return res.status(400).json({ error: "No files uploaded" });
   }
 
-  try {
-    const results = await Promise.all(
-      files.map(async (file) => {
-        const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
-
-        if (originalName.endsWith(".xlsx") || originalName.endsWith(".xls")) {
-          const workbook = new ExcelJS.Workbook();
-          await workbook.xlsx.load(file.buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
-          const sheetNames = workbook.worksheets.map((ws) => ws.name);
-          // Use originalName as the "filename" key since we don't save to disk
-          return { filename: originalName, originalName, type: "excel" as const, sheetNames };
-        } else if (originalName.endsWith(".pdf")) {
-          return { filename: originalName, originalName, type: "pdf" as const };
-        }
-        return { filename: originalName, originalName, type: "unknown" as const, error: "Unsupported file type" };
-      })
-    );
-    res.json({ files: results });
-  } catch (error) {
-    console.error("Upload error:", error);
-    res.status(500).json({ error: "Failed to read uploaded files" });
+  // ファイルごとに独立して処理する。
+  // 以前は Promise.all の中で例外が出ると全体が 500 になり、
+  // どのファイルがなぜ失敗したのか分からなかった。
+  const results: UploadedFileResult[] = [];
+  for (const file of files) {
+    const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
+    const base = { filename: originalName, originalName };
+    try {
+      const xlsError = legacyXlsError(originalName);
+      if (xlsError) {
+        results.push({ ...base, type: "unknown", error: xlsError });
+      } else if (originalName.toLowerCase().endsWith(".xlsx")) {
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(file.buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+        const sheetNames = workbook.worksheets.map((ws) => ws.name);
+        // Use originalName as the "filename" key since we don't save to disk
+        results.push({ ...base, type: "excel", sheetNames });
+      } else if (originalName.toLowerCase().endsWith(".pdf")) {
+        results.push({ ...base, type: "pdf" });
+      } else {
+        results.push({ ...base, type: "unknown", error: "対応していないファイル形式です" });
+      }
+    } catch (error) {
+      console.error("Upload error for %s:", originalName, error);
+      results.push({
+        ...base,
+        type: "unknown",
+        error: `ファイルを読み込めませんでした（壊れている可能性があります）: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    }
   }
+  res.json({ files: results });
 });
 
 // PDF → Word: client re-sends actual file bytes here
@@ -1907,7 +1935,7 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
         const docxBuffer = await convertPdfToWordBuffer(file.buffer);
         folder?.file(originalName.replace(/\.pdf$/i, ".docx"), docxBuffer);
       } catch (e) {
-        console.error(`Adobe conversion error for ${originalName}:`, e);
+        console.error("Adobe conversion error for %s:", originalName, e);
         failedFiles.push(originalName);
       }
     }
@@ -2014,12 +2042,31 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
     // Per-file markdown payloads, keyed by display filename (.md)
     const fileMarkdowns: { name: string; markdown: string }[] = [];
 
+    // 読み込めなかったファイル。1件でも読めれば残りは変換して返す
+    const failed: string[] = [];
+
     for (const file of multerFiles) {
       const originalName = Buffer.from(file.originalname, "latin1").toString("utf8");
       const fileBuffer = file.buffer;
 
+      const xlsError = legacyXlsError(originalName);
+      if (xlsError) {
+        failed.push(`${originalName}: ${xlsError}`);
+        continue;
+      }
+
       const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.load(fileBuffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+      try {
+        await workbook.xlsx.load(fileBuffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+      } catch (e) {
+        console.error("Excel load error for %s:", originalName, e);
+        failed.push(
+          `${originalName}: ファイルを読み込めませんでした（${
+            e instanceof Error ? e.message : String(e)
+          }）`,
+        );
+        continue;
+      }
 
       let markdown = "";
       let sheetsToConvert: ExcelJS.Worksheet[];
@@ -2149,6 +2196,20 @@ app.post("/api/convert", upload.array("files", 10), async (req, res) => {
 
       const mdName = originalName.replace(/\.(xlsx|xls)$/i, ".md");
       fileMarkdowns.push({ name: mdName, markdown });
+    }
+
+    // 1件も読めなかった場合は理由を返す (以前は汎用メッセージだった)
+    if (fileMarkdowns.length === 0) {
+      return res.status(400).json({
+        error: failed.length ? failed.join("\n") : "変換できるファイルがありませんでした",
+      });
+    }
+
+    // 一部だけ失敗した場合は、成功した分を返しつつ出力に理由を残す
+    if (failed.length) {
+      fileMarkdowns[0].markdown =
+        `> ⚠️ 読み込めなかったファイル\n${failed.map((f) => `> - ${f}`).join("\n")}\n\n` +
+        fileMarkdowns[0].markdown;
     }
 
     // Single file → return the .md directly (no zip wrapping).
