@@ -960,6 +960,321 @@ async function resolveLeafCases(databaseId: string): Promise<{ item: ProgressIte
     .filter((x): x is { item: ProgressItem; areaId: TestCenterArea } => !!x.areaId);
 }
 
+// ── 案件進捗アラート ──────────────────────────────────────────────────
+// 進捗管理表の TC設計書完了予定日 / TC実施完了予定日 / 実際完了日 / 状態 から
+// 「計画どおり進んでいるか」を判定する。
+//
+// 設計方針:
+// - TC実施完了予定日 が無い案件は計画そのものが無い → 最優先で報せる
+//   (計画書テンプレートの日程欄がこの日付から作られるため、空だと空欄の計画書が出る)
+// - TC設計書完了予定日 が無いのは正常。設計書不要の案件があるため、
+//   この日付の有無が「設計書フェーズを持つか」のスイッチになる
+// - 完了判定は状態の「完了」グループを使う。名前のハードコードはしない
+//   (STATUS_PALETTE が実データと乖離していた前例があるため)
+
+type AlertLevel = "overdue" | "today" | "soon" | "missing" | "inconsistent";
+
+interface CaseAlert {
+  caseId: string;
+  areaId: string;
+  projectName: string;
+  system: string;
+  assignee: string;
+  status: string;
+  level: AlertLevel;
+  /** 対象の里程標。missing/inconsistent では null */
+  milestone: "design" | "execution" | null;
+  plannedDate: string;
+  /** overdue なら超過日数、soon/today なら残り営業日 */
+  days: number | null;
+  message: string;
+  /** 過去の里程標が遅延して完了していた場合の補足 (例: 設計書 +3日) */
+  note: string | null;
+}
+
+interface AlertsResult {
+  planMissing: CaseAlert[];
+  design: CaseAlert[];
+  execution: CaseAlert[];
+  inconsistent: CaseAlert[];
+  /** 判定対象になった案件数 (完了・停止中・改善タスクを除いた数) */
+  watched: number;
+}
+
+const ALERT_SOON_BUSINESS_DAYS = 3;
+
+// "2026-09-15" / "2026/9/15" / "2026.9.15" → Date (ローカル 0時)。解析不能なら null
+function parsePlanDate(raw: string): Date | null {
+  const s = (raw ?? "").trim().slice(0, 10).replace(/[./]/g, "-");
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// from から to までの営業日数 (土日を除く)。to が過去なら負。
+// 祝日は考慮しない (データソースが無く、ハードコードすると必ず古くなるため)。
+function businessDaysBetween(from: Date, to: Date): number {
+  const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const b = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  const sign = b >= a ? 1 : -1;
+  const start = sign > 0 ? a : b;
+  const end = sign > 0 ? b : a;
+  let n = 0;
+  const cur = new Date(start);
+  while (cur < end) {
+    cur.setDate(cur.getDate() + 1);
+    const w = cur.getDay();
+    if (w !== 0 && w !== 6) n++;
+  }
+  return n * sign;
+}
+
+// 暦日の差 (超過日数の表示用。営業日ではなく実日数で見せる方が直感に合う)
+function calendarDaysBetween(from: Date, to: Date): number {
+  const a = Date.UTC(from.getFullYear(), from.getMonth(), from.getDate());
+  const b = Date.UTC(to.getFullYear(), to.getMonth(), to.getDate());
+  return Math.round((b - a) / 86400000);
+}
+
+function toNum(raw: string): number | null {
+  const n = Number((raw ?? "").replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) && (raw ?? "").trim() !== "" ? n : null;
+}
+
+// 残り見積工数が残り営業日を超えていれば、今のペースでは間に合わない。
+// 工数が未入力の案件では判定しない (空欄を 0 と見なすと誤判定するため)。
+function effortOverrun(
+  estimate: string,
+  actual: string,
+  remainingBusinessDays: number,
+): boolean {
+  const est = toNum(estimate);
+  if (est == null || est <= 0) return false;
+  const act = toNum(actual) ?? 0;
+  const remainingEffort = est - act;
+  if (remainingEffort <= 0) return false;
+  return remainingEffort > remainingBusinessDays;
+}
+
+/**
+ * 案件1件を判定する。純関数 (today を渡すのでテスト可能)。
+ * isComplete: 状態が「完了」グループかを返す関数
+ */
+function judgeCase(
+  item: ProgressItem,
+  areaId: string,
+  isComplete: (status: string) => boolean,
+  today: Date,
+): CaseAlert[] {
+  const out: CaseAlert[] = [];
+  const base = {
+    caseId: item.id,
+    areaId,
+    projectName: item.projectName,
+    system: item.system,
+    assignee: item.assignee,
+    status: item.status,
+  };
+
+  const planDesign = parsePlanDate(item.tcDesignCompleteDate);
+  const planExec = parsePlanDate(item.tcExecutionCompleteDate);
+  const actualDesign = parsePlanDate(item.actualDesignCompleteDate);
+  const actualExec = parsePlanDate(item.actualExecutionCompleteDate);
+  const hasDesignPhase = !!planDesign;
+  const statusComplete = isComplete(item.status);
+
+  // ── データ矛盾 (要確認) ──
+  // A: 実施完了日があるのに状態が完了グループでない
+  if (actualExec && !statusComplete) {
+    out.push({
+      ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+      message: `実施完了日が入っていますが状態が「${item.status}」です。状態を確認してください`,
+    });
+  }
+  // B: 状態は完了なのに実施完了日が空
+  if (statusComplete && !actualExec) {
+    out.push({
+      ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+      message: "状態は完了ですが実際実施完了日が未入力です。完了日を入力してください",
+    });
+  }
+  // C: 設計書完了日があるのに状態が未開始
+  if (actualDesign && item.status.trim() === "未開始") {
+    out.push({
+      ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+      message: "設計書完了日が入っていますが状態が「未開始」です。状態を確認してください",
+    });
+  }
+  // D: 設計書フェーズがあるのに、設計書完了日を飛ばして実施完了日が入っている
+  if (hasDesignPhase && !actualDesign && actualExec) {
+    out.push({
+      ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+      message: "実際設計書完了日が未入力のまま実施完了日が入っています。設計書完了日を確認してください",
+    });
+  }
+  // E: 設計書フェーズがあり実装実施中なのに設計書完了日が空 (入力漏れの可能性)
+  if (hasDesignPhase && !actualDesign && item.status.trim() === "実装実施中") {
+    out.push({
+      ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+      message: "実装実施中ですが実際設計書完了日が未入力です。入力漏れがないか確認してください",
+    });
+  }
+
+  // ── 計画未登録 ──
+  // 実施完了予定日が無いと遅延判定ができず、計画書の日程欄も空欄になる
+  if (!planExec) {
+    out.push({
+      ...base, level: "missing", milestone: null, plannedDate: "", days: null, note: null,
+      message: "実施完了予定日が記入されていませんので、計画を登録してください",
+    });
+    return out; // 期限判定はできない
+  }
+
+  // 過去の里程標が遅れて終わっていた場合の補足
+  const designNote =
+    planDesign && actualDesign && actualDesign > planDesign
+      ? `設計書 +${calendarDaysBetween(planDesign, actualDesign)}日`
+      : null;
+
+  // ── 里程標ごとの期限判定 ──
+  const judgeMilestone = (
+    milestone: "design" | "execution",
+    plan: Date,
+    planRaw: string,
+    estimate: string,
+    actual: string,
+  ): CaseAlert | null => {
+    const remaining = businessDaysBetween(today, plan);
+    const label = milestone === "design" ? "設計書" : "実施";
+    if (remaining < 0) {
+      const over = calendarDaysBetween(plan, today); // 予定日から今日までの実日数
+      return {
+        ...base, level: "overdue", milestone, plannedDate: planRaw, days: over, note: designNote,
+        message: `${label}の予定日を ${over}日 超過しています`,
+      };
+    }
+    if (remaining === 0) {
+      return {
+        ...base, level: "today", milestone, plannedDate: planRaw, days: 0, note: designNote,
+        message: `${label}の予定日は今日です`,
+      };
+    }
+    if (remaining <= ALERT_SOON_BUSINESS_DAYS) {
+      return {
+        ...base, level: "soon", milestone, plannedDate: planRaw, days: remaining, note: designNote,
+        message: `${label}の予定日まで残り ${remaining}営業日です`,
+      };
+    }
+    if (effortOverrun(estimate, actual, remaining)) {
+      return {
+        ...base, level: "soon", milestone, plannedDate: planRaw, days: remaining, note: designNote,
+        message: `残り ${remaining}営業日に対して見積工数が残っています。今のペースでは間に合いません`,
+      };
+    }
+    return null;
+  };
+
+  // 設計書: 予定日があり、まだ完了していない案件だけ
+  if (hasDesignPhase && planDesign && !actualDesign) {
+    const a = judgeMilestone("design", planDesign, item.tcDesignCompleteDate, item.designEstimate, item.designActual);
+    if (a) out.push(a);
+  }
+  // 実施: まだ完了していない案件だけ。設計書の状況とは独立に判定する
+  if (!actualExec) {
+    const a = judgeMilestone("execution", planExec, item.tcExecutionCompleteDate, item.executionEstimate, item.execActual);
+    if (a) out.push(a);
+  }
+
+  return out;
+}
+
+// 状態(status プロパティ)の「完了」グループに属する選択肢名を集める。
+// Notion のグループ名は UI の表示言語に関係なく To-do / In progress / Complete。
+// 名前をハードコードしないので、新しい状態を完了グループに入れれば自動で効く。
+async function loadCompletedStatusNames(databaseId: string): Promise<Set<string>> {
+  const done = new Set<string>();
+  if (!notion) return done;
+  const database = await notion.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) return done;
+  const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+  const prop = ds?.properties?.["状態"];
+  if (!prop || prop.type !== "status") return done;
+  const options: any[] = prop.status?.options ?? [];
+  const groups: any[] = prop.status?.groups ?? [];
+  const nameById = new Map<string, string>(options.map((o) => [o.id, o.name]));
+  const completeGroup =
+    groups.find((g) => String(g?.name ?? "").toLowerCase() === "complete") ??
+    // 表示名で入ってくる場合の保険。見つからなければ最後のグループを完了とみなす
+    groups.find((g) => ["完了", "已完成", "完成"].includes(String(g?.name ?? ""))) ??
+    groups[groups.length - 1];
+  for (const id of completeGroup?.option_ids ?? []) {
+    const name = nameById.get(id);
+    if (name) done.add(name);
+  }
+  return done;
+}
+
+// 案件進捗アラート: 全エリアの子案件を対象に「計画どおりか」を判定する。
+// 月次セレクタには従わない (先月から遅れている案件こそ見せたいため)。
+app.get("/api/test-center/alerts", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_PROGRESS_DATABASE_ID",
+    });
+  }
+
+  try {
+    const [leaves, doneStatuses] = await Promise.all([
+      resolveLeafCases(databaseId),
+      loadCompletedStatusNames(databaseId),
+    ]);
+    const isComplete = (status: string) => doneStatuses.has((status ?? "").trim());
+
+    const result: AlertsResult = {
+      planMissing: [], design: [], execution: [], inconsistent: [], watched: 0,
+    };
+    const today = new Date();
+
+    for (const { item, areaId } of leaves) {
+      // 改善タスクは対象外。エリアの許可リストで親は弾かれるが、
+      // 正常なエリアの下に改善の子案件がぶら下がっている場合の保険。
+      if (item.system.includes("改善")) continue;
+      // 停止中は対象外 (再開時に見落とさないよう、件数だけ画面側に出す)
+      if (item.status.trim() === "停止中") continue;
+      // 正常に終わった案件は対象外
+      if (isComplete(item.status) && parsePlanDate(item.actualExecutionCompleteDate)) continue;
+
+      result.watched++;
+      for (const a of judgeCase(item, areaId, isComplete, today)) {
+        if (a.level === "missing") result.planMissing.push(a);
+        else if (a.level === "inconsistent") result.inconsistent.push(a);
+        else if (a.milestone === "design") result.design.push(a);
+        else result.execution.push(a);
+      }
+    }
+
+    // 遅延が長いものを先頭に。次に今日が期限、そのあと残り営業日の少ない順
+    const rank = (a: CaseAlert) => (a.level === "overdue" ? 0 : a.level === "today" ? 1 : 2);
+    const sortAlerts = (list: CaseAlert[]) =>
+      list.sort((x, y) =>
+        rank(x) - rank(y) ||
+        (x.level === "overdue" ? (y.days ?? 0) - (x.days ?? 0) : (x.days ?? 0) - (y.days ?? 0)));
+    sortAlerts(result.design);
+    sortAlerts(result.execution);
+
+    return res.json(result);
+  } catch (error) {
+    console.error("Test center alerts error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Failed to build progress alerts",
+    });
+  }
+});
+
 app.get("/api/test-center/overview", async (_req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
