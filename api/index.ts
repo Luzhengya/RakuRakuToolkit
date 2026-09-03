@@ -2890,6 +2890,78 @@ app.get("/api/testcase/list", async (req, res) => {
   }
 });
 
+// 詳細ダイアログから編集できる項目。
+// ケース番号は重複判定のキー、システム/月次はどのテーブルの行かを決める値、
+// バージョンと作成/更新の各項目はアップロード時に管理されるので対象外。
+const TESTCASE_EDITABLE_FIELDS = new Set([
+  "CMDB番号", "大分類", "中分類", "小分類", "機能名", "要件名",
+  "テスト内容", "前提条件", "ステップ", "予期結果",
+  "ポイント", "優先級", "カテゴリ", "状態", "テスト結果", "関連NO", "備考",
+]);
+
+// テストケース1件を更新する
+app.post("/api/testcase/:id/update", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  const fields = req.body?.fields;
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  if (!fields || typeof fields !== "object") {
+    return res.status(400).json({ error: "fields は必須です" });
+  }
+
+  const properties: Record<string, any> = {};
+  const rejected: string[] = [];
+  for (const [name, raw] of Object.entries(fields as Record<string, unknown>)) {
+    if (!TESTCASE_EDITABLE_FIELDS.has(name)) {
+      rejected.push(name);
+      continue;
+    }
+    const f = TESTCASE_NOTION_FIELDS.find((x) => x.name === name);
+    if (!f) {
+      rejected.push(name);
+      continue;
+    }
+    // 編集値は赤字にしない (赤字はアップロード時の差分表示用)
+    properties[name] = buildTcPropertyValue(f, String(raw ?? "").trim(), false);
+  }
+  if (rejected.length) {
+    return res.status(400).json({ error: `編集できない項目です: ${rejected.join("、")}` });
+  }
+  if (Object.keys(properties).length === 0) {
+    return res.status(400).json({ error: "更新する項目がありません" });
+  }
+
+  try {
+    await notion.pages.update({ page_id: pageId, properties } as any);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Testcase update error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "更新に失敗しました",
+    });
+  }
+});
+
+// テストケース1件を削除する (Notion のアーカイブ)
+app.delete("/api/testcase/:id", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    await notion.pages.update({ page_id: pageId, archived: true } as any);
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Testcase delete error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "削除に失敗しました",
+    });
+  }
+});
+
 // 弾窓のシステム候補 (進捗管理表の System を重複排除)
 app.get("/api/testcase-format/systems", async (_req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
