@@ -1090,19 +1090,37 @@ function judgeCase(
   const hasDesignPhase = !!planDesign;
   const statusComplete = isComplete(item.status);
 
+  // 状態が完了グループなら案件は閉じている。実施完了日の有無は問わない。
+  // 「テスト実施不要」のように、実施していないので日付が入らないまま
+  // 正しく閉じる状態があるため、日付を条件にすると終了案件を延々と催促してしまう。
+  if (statusComplete) {
+    // 実施した形跡 (実際開始日 or Test総件数) があるのに完了日が無い場合だけ、
+    // ガントチャートと統計がずれるのでデータ不備として報せる。
+    // 形跡が無ければテスト実施不要などなので黙る。
+    const ranTest = !!parsePlanDate(item.actualStartDate) || (toNum(item.testTotalCount) ?? 0) > 0;
+    if (!actualExec && ranTest) {
+      out.push({
+        ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+        message: "状態は完了ですが実際実施完了日が未入力です。完了日を入力してください",
+      });
+    }
+    // 閉じた案件でも、設計書フェーズがあるのに完了日が抜けているとガントの
+    // 実績バーが欠けるので報せる (D と同じ判定)
+    if (hasDesignPhase && !actualDesign && actualExec) {
+      out.push({
+        ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
+        message: "実際設計書完了日が未入力のまま実施完了日が入っています。設計書完了日を確認してください",
+      });
+    }
+    return out;
+  }
+
   // ── データ矛盾 (要確認) ──
   // A: 実施完了日があるのに状態が完了グループでない
   if (actualExec && !statusComplete) {
     out.push({
       ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
       message: `実施完了日が入っていますが状態が「${item.status}」です。状態を確認してください`,
-    });
-  }
-  // B: 状態は完了なのに実施完了日が空
-  if (statusComplete && !actualExec) {
-    out.push({
-      ...base, level: "inconsistent", milestone: null, plannedDate: "", days: null, note: null,
-      message: "状態は完了ですが実際実施完了日が未入力です。完了日を入力してください",
     });
   }
   // C: 設計書完了日があるのに状態が未開始
@@ -1250,12 +1268,12 @@ app.get("/api/test-center/alerts", async (_req, res) => {
       // 改善タスクは対象外。エリアの許可リストで親は弾かれるが、
       // 正常なエリアの下に改善の子案件がぶら下がっている場合の保険。
       if (item.system.includes("改善")) continue;
-      // 停止中は対象外 (再開時に見落とさないよう、件数だけ画面側に出す)
+      // 停止中は対象外
       if (item.status.trim() === "停止中") continue;
-      // 正常に終わった案件は対象外
-      if (isComplete(item.status) && parsePlanDate(item.actualExecutionCompleteDate)) continue;
 
-      result.watched++;
+      // 完了した案件は監視対象に数えない。ただし judgeCase は通す
+      // (完了扱いなのに実施完了日が無いケースだけ拾うため)
+      if (!isComplete(item.status)) result.watched++;
       for (const a of judgeCase(item, areaId, isComplete, today)) {
         if (a.level === "missing") result.planMissing.push(a);
         else if (a.level === "inconsistent") result.inconsistent.push(a);
