@@ -24,6 +24,7 @@ export interface AlertsResult {
   execution: CaseAlert[];
   inconsistent: CaseAlert[];
   watched: number;
+  completedStatuses: string[];
 }
 
 // 折りたたみ状態は案件一覧のグラフ設定と同じく localStorage に残す
@@ -189,19 +190,36 @@ export default function ProgressAlerts({ onSelectArea }: { onSelectArea: (areaId
 
   if (!data) return null;
 
+  // 完了グループを読めていないと、完了済み案件を除外できず「要確認」が
+  // 誤検知だらけになる。原因がアラートの山に埋もれないよう先頭に出す。
+  const statusGroupFailed = data.completedStatuses.length === 0;
+  const statusWarning = statusGroupFailed ? (
+    <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-amber-800 text-sm flex items-start gap-2">
+      <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+      <span>
+        状態の「完了」グループを取得できませんでした。完了した案件を除外できないため、
+        「要確認」に誤検知が出ます。進捗管理表の「状態」がステータス型か確認してください。
+      </span>
+    </div>
+  ) : null;
+
   // 何も無い時も一行だけ残す。消えてしまうと「問題なし」と「壊れている」の区別がつかない
   if (total === 0) {
     return (
-      <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 flex items-center gap-2 text-sm text-emerald-800">
-        <CheckCircle2 size={16} />
-        期限リスクのある案件はありません
-        <span className="text-emerald-600 text-xs">（監視中 {data.watched}件）</span>
+      <div className="space-y-2">
+        {statusWarning}
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 flex items-center gap-2 text-sm text-emerald-800">
+          <CheckCircle2 size={16} />
+          期限リスクのある案件はありません
+          <span className="text-emerald-600 text-xs">（監視中 {data.watched}件）</span>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-2">
+      {statusWarning}
       <AlertBlock
         id="missing"
         title="予定未登録"

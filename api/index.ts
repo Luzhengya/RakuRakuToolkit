@@ -999,6 +999,12 @@ interface AlertsResult {
   inconsistent: CaseAlert[];
   /** 判定対象になった案件数 (完了・停止中・改善タスクを除いた数) */
   watched: number;
+  /**
+   * 状態の「完了」グループから読めた選択肢名。
+   * 空の場合、完了した案件を除外できず矛盾チェックが誤検知の山になる。
+   * 原因の切り分けができるよう画面まで返す。
+   */
+  completedStatuses: string[];
 }
 
 const ALERT_SOON_BUSINESS_DAYS = 3;
@@ -1236,6 +1242,7 @@ app.get("/api/test-center/alerts", async (_req, res) => {
 
     const result: AlertsResult = {
       planMissing: [], design: [], execution: [], inconsistent: [], watched: 0,
+      completedStatuses: Array.from(doneStatuses),
     };
     const today = new Date();
 
