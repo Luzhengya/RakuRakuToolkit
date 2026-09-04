@@ -2969,6 +2969,15 @@ function readTcPlain(page: any, f: TcField): string {
   return propertyToPlainText(p);
 }
 
+// アップロードで変更された項目は赤字で書き込まれる (buildTcPropertyValue)。
+// readTcPlain は plain_text しか見ないため色が画面まで届いていなかった。
+// 値全体が1つのセグメントに入るので、項目単位の真偽値で足りる。
+function isTcFieldChanged(page: any, f: TcField): boolean {
+  if (f.kind !== "rich_text") return false;
+  const segs = page?.properties?.[f.name]?.rich_text;
+  return Array.isArray(segs) && segs.some((s: any) => s?.annotations?.color === "red");
+}
+
 // TESTCASE_NOTION_FIELDS から Notion のプロパティ定義を組み立てる
 function buildTestcaseSchema(): Record<string, any> {
   const properties: Record<string, any> = {};
@@ -3196,16 +3205,24 @@ app.get("/api/testcase/list", async (req, res) => {
     if (!dataSourceId) return res.json({ items: [], total: 0, exists: false, dbTitle });
 
     const index = await loadTestcaseIndex(dataSourceId);
+    // 変更された項目 (赤字) は行に混ぜず、ページID をキーにした別マップで返す。
+    // 行は値がすべて文字列という前提で扱われているため、配列を混ぜると型が崩れる。
+    const changed: Record<string, string[]> = {};
     const items = Array.from(index.values()).map((page: any) => {
       const row: Record<string, string> = { id: page.id };
-      for (const f of TESTCASE_NOTION_FIELDS) row[f.name] = readTcPlain(page, f);
+      const red: string[] = [];
+      for (const f of TESTCASE_NOTION_FIELDS) {
+        row[f.name] = readTcPlain(page, f);
+        if (isTcFieldChanged(page, f)) red.push(f.name);
+      }
+      if (red.length) changed[page.id] = red;
       return row;
     });
     // ケース番号の数値順で安定ソート
     items.sort((a, b) =>
       (a["ケース番号"] || "").localeCompare(b["ケース番号"] || "", undefined, { numeric: true })
     );
-    return res.json({ items, total: items.length, exists: true, dbTitle });
+    return res.json({ items, total: items.length, exists: true, dbTitle, changed });
   } catch (error) {
     console.error("Testcase list error:", error);
     return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
