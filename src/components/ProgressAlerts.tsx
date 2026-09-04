@@ -29,7 +29,9 @@ export interface AlertsResult {
 
 // 折りたたみ状態は案件一覧のグラフ設定と同じく localStorage に残す
 const COLLAPSE_KEY = 'testcenter:alerts:collapsed:v1';
-const ROWS_BEFORE_EXPAND = 3;
+// 3行ぶんの高さで固定してスクロールさせる。
+// 4行目が少しだけ覗く高さにして、下に続きがあることを分かるようにする。
+const LIST_MAX_HEIGHT = '7.4rem';
 
 const LEVEL_STYLE: Record<AlertLevel, { badge: string; text: string }> = {
   overdue:      { badge: 'bg-red-100 text-red-700 border-red-200',           text: '遅延' },
@@ -39,14 +41,14 @@ const LEVEL_STYLE: Record<AlertLevel, { badge: string; text: string }> = {
   inconsistent: { badge: 'bg-neutral-200 text-neutral-700 border-neutral-300', text: '要確認' },
 };
 
-function AlertRow({ a, onSelectArea }: { key?: string; a: CaseAlert; onSelectArea: (areaId: string) => void }) {
+function AlertRow({ a, onSelectCase }: { key?: string; a: CaseAlert; onSelectCase: (areaId: string, caseId: string) => void }) {
   const style = LEVEL_STYLE[a.level];
   return (
     <button
       type="button"
-      onClick={() => onSelectArea(a.areaId)}
+      onClick={() => onSelectCase(a.areaId, a.caseId)}
       className="w-full text-left px-3 py-2 flex items-center gap-3 hover:bg-neutral-50 transition-colors"
-      title="この案件のエリアを開く"
+      title="この案件の詳細を開いて日付を修正する"
     >
       <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-bold ${style.badge}`}>
         {style.text}
@@ -68,7 +70,7 @@ function AlertRow({ a, onSelectArea }: { key?: string; a: CaseAlert; onSelectAre
 }
 
 function AlertBlock({
-  id, title, hint, icon, items, collapsed, onToggle, onSelectArea,
+  id, title, hint, icon, items, collapsed, onToggle, onSelectCase,
 }: {
   key?: string;
   id: string;
@@ -78,12 +80,9 @@ function AlertBlock({
   items: CaseAlert[];
   collapsed: boolean;
   onToggle: (id: string) => void;
-  onSelectArea: (areaId: string) => void;
+  onSelectCase: (areaId: string, caseId: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   if (items.length === 0) return null;
-  const shown = expanded ? items : items.slice(0, ROWS_BEFORE_EXPAND);
-  const rest = items.length - shown.length;
   return (
     <div className="border border-neutral-200 rounded-xl bg-white overflow-hidden">
       <button
@@ -100,37 +99,20 @@ function AlertBlock({
         <span className="text-[11px] text-neutral-400 truncate">{hint}</span>
       </button>
       {!collapsed && (
-        <>
-          <div className="divide-y divide-neutral-100">
-            {shown.map((a) => (
-              <AlertRow key={`${a.caseId}-${a.level}-${a.milestone ?? 'x'}-${a.message}`} a={a} onSelectArea={onSelectArea} />
-            ))}
-          </div>
-          {rest > 0 && (
-            <button
-              type="button"
-              onClick={() => setExpanded(true)}
-              className="w-full px-3 py-1.5 text-[11px] text-neutral-500 hover:bg-neutral-50 border-t border-neutral-100"
-            >
-              他 {rest}件を表示
-            </button>
-          )}
-          {expanded && items.length > ROWS_BEFORE_EXPAND && (
-            <button
-              type="button"
-              onClick={() => setExpanded(false)}
-              className="w-full px-3 py-1.5 text-[11px] text-neutral-500 hover:bg-neutral-50 border-t border-neutral-100"
-            >
-              折りたたむ
-            </button>
-          )}
-        </>
+        <div
+          className="divide-y divide-neutral-100 overflow-y-auto"
+          style={{ maxHeight: LIST_MAX_HEIGHT }}
+        >
+          {items.map((a) => (
+            <AlertRow key={`${a.caseId}-${a.level}-${a.milestone ?? 'x'}-${a.message}`} a={a} onSelectCase={onSelectCase} />
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-export default function ProgressAlerts({ onSelectArea }: { onSelectArea: (areaId: string) => void }) {
+export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId: string, caseId: string) => void }) {
   const [data, setData] = useState<AlertsResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -228,7 +210,7 @@ export default function ProgressAlerts({ onSelectArea }: { onSelectArea: (areaId
         items={data.planMissing}
         collapsed={!!collapsed.missing}
         onToggle={toggle}
-        onSelectArea={onSelectArea}
+        onSelectCase={onSelectCase}
       />
       <AlertBlock
         id="design"
@@ -238,7 +220,7 @@ export default function ProgressAlerts({ onSelectArea }: { onSelectArea: (areaId
         items={data.design}
         collapsed={!!collapsed.design}
         onToggle={toggle}
-        onSelectArea={onSelectArea}
+        onSelectCase={onSelectCase}
       />
       <AlertBlock
         id="execution"
@@ -248,7 +230,7 @@ export default function ProgressAlerts({ onSelectArea }: { onSelectArea: (areaId
         items={data.execution}
         collapsed={!!collapsed.execution}
         onToggle={toggle}
-        onSelectArea={onSelectArea}
+        onSelectCase={onSelectCase}
       />
       <AlertBlock
         id="inconsistent"
@@ -258,7 +240,7 @@ export default function ProgressAlerts({ onSelectArea }: { onSelectArea: (areaId
         items={data.inconsistent}
         collapsed={!!collapsed.inconsistent}
         onToggle={toggle}
-        onSelectArea={onSelectArea}
+        onSelectCase={onSelectCase}
       />
       <p className="text-[11px] text-neutral-400 px-1">
         月次セレクタとは連動しません（過去月から遅れている案件も表示します）。監視中 {data.watched}件

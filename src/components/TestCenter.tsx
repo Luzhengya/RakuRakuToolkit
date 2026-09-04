@@ -28,6 +28,7 @@ import BugList from './BugList';
 import ProgressAlerts from './ProgressAlerts';
 import CaseStats from './CaseStats';
 import CaseBugList from './CaseBugList';
+import CaseSchedule from './CaseSchedule';
 import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
 import {
   BarChart,
@@ -1632,6 +1633,15 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     await fetchAreaFromNotion(areaId);
   };
 
+  // アラートの行から、その案件の詳細画面まで一気に開く。
+  // loadAreaData が内部で editingResultItemId を null に戻すので、
+  // エリアの読み込みが終わってから案件を指定する必要がある。
+  const jumpToCase = async (areaId: string, caseId: string) => {
+    if (!AREAS.some((a) => a.id === areaId)) return;
+    await loadAreaData(areaId as AreaId);
+    setEditingResultItemId(caseId);
+  };
+
   const reloadAreaData = async () => {
     if (!selectedAreaId) return;
     setResultDraftMap({});
@@ -2423,6 +2433,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   <p className="text-base font-semibold text-neutral-900 mt-1">{editingResultItem.projectName || '-'}</p>
                 </section>
 
+                {/* アラートから飛んできた時に、その場で日付を直せるようにする */}
+                <CaseSchedule caseId={editingResultItem.id} />
+
                 <CaseBugList caseId={editingResultItem.id} lang={lang} />
               </div>
             ) : (
@@ -2670,11 +2683,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           )}
 
           {/* 案件進捗アラート。月次セレクタには従わない (過去月の遅延を隠さないため) */}
-          <ProgressAlerts
-            onSelectArea={(areaId) => {
-              if (AREAS.some((a) => a.id === areaId)) loadAreaData(areaId as AreaId);
-            }}
-          />
+          <ProgressAlerts onSelectCase={jumpToCase} />
 
           {/* 3 つのダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

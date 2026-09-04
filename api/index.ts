@@ -445,6 +445,38 @@ function findDateProperty(properties: Record<string, any>, keywords: string[]): 
   return undefined;
 }
 
+// findDateProperty と同じ探索をして「プロパティ名」を返す。
+// 書き戻すには名前が要るが、findDateProperty は値しか返さないため。
+function findDatePropertyName(properties: Record<string, any>, keywords: string[]): string | null {
+  for (const kw of keywords) {
+    if (properties[kw] !== undefined) return kw;
+  }
+  for (const name of Object.keys(properties)) {
+    const norm = stripSpaces(name);
+    if (keywords.some((kw) => norm === stripSpaces(kw))) return name;
+  }
+  for (const [name, prop] of Object.entries(properties)) {
+    if (
+      (prop?.type === "date" || prop?.type === "formula") &&
+      keywords.some((kw) => stripSpaces(name).includes(stripSpaces(kw).replace(/日$/, "")))
+    ) {
+      return name;
+    }
+  }
+  return null;
+}
+
+// 案件詳細で編集する予定・実績日。キーは画面側と共有する識別子。
+// aliases は進捗管理表で名前がぶれている項目に対応するため (parseProgressItem と同じ)。
+const CASE_SCHEDULE_FIELDS: { key: string; label: string; aliases: string[] }[] = [
+  { key: "tcStartDate", label: "TC開始予定日", aliases: ["TC開始予定日"] },
+  { key: "tcDesignCompleteDate", label: "TC設計書完了予定日", aliases: ["TC設計書完了予定日"] },
+  { key: "tcExecutionCompleteDate", label: "TC実施完了予定日", aliases: ["TC実施完了予定日"] },
+  { key: "actualStartDate", label: "実際開始日", aliases: ["実際開始日", "実績開始日", "実際TC開始日", "TC実際開始日"] },
+  { key: "actualDesignCompleteDate", label: "実際設計書完了日", aliases: ["実際設計書完了日", "実績設計書完了日", "実際TC設計書完了日", "TC実際設計書完了日"] },
+  { key: "actualExecutionCompleteDate", label: "実際実施完了日", aliases: ["実際実施完了日", "実績実施完了日", "実際TC実施完了日", "TC実際実施完了日"] },
+];
+
 function parseProgressItem(page: any): ProgressItem {
   const properties = page?.properties ?? {};
   const childProjectIds = extractChildProjectIds(properties);
@@ -585,6 +617,13 @@ function buildUpdatableProperty(property: any, rawValue: string, fieldName: stri
     case "status": {
       const name = rawValue.trim();
       return { status: name ? { name } : null };
+    }
+    case "date": {
+      const iso = toIsoDate(rawValue);
+      if (rawValue.trim() && !iso) {
+        throw new Error(`Notion property "${fieldName}" の日付形式が不正です: ${rawValue}`);
+      }
+      return { date: iso ? { start: iso } : null };
     }
     default:
       throw new Error(`Notion property "${fieldName}" type "${property.type}" is not writable by this tool`);
@@ -2010,6 +2049,111 @@ app.get("/api/test-center/notion-image", async (req, res) => {
   } catch (error) {
     console.error("Notion image proxy error:", error);
     return res.status(502).json({ error: "Failed to fetch image" });
+  }
+});
+
+// ── 案件の予定・実績日 ────────────────────────────────────────────────
+// アラートから飛んできて、その場で日付を直せるようにするための読み書き。
+// 進捗管理表では日付が formula になっている場合があり (findDateProperty が
+// formula も探しているのはそのため)、formula は Notion 側で書き込めない。
+// 保存が黙って失敗しないよう、項目ごとに editable を返して画面で理由を出す。
+
+interface CaseScheduleField {
+  key: string;
+  label: string;
+  /** 実際の Notion プロパティ名。見つからなければ null */
+  property: string | null;
+  value: string;
+  editable: boolean;
+  /** editable=false の理由 */
+  reason: string | null;
+}
+
+function readCaseSchedule(properties: Record<string, any>): CaseScheduleField[] {
+  return CASE_SCHEDULE_FIELDS.map(({ key, label, aliases }) => {
+    const property = findDatePropertyName(properties, aliases);
+    if (!property) {
+      return { key, label, property: null, value: "", editable: false, reason: "項目が見つかりません" };
+    }
+    const p = properties[property];
+    const value = propertyToPlainText(p);
+    if (p?.type === "formula") {
+      return { key, label, property, value, editable: false, reason: "数式項目のため編集できません" };
+    }
+    if (p?.type !== "date") {
+      return { key, label, property, value, editable: false, reason: `日付型ではありません (${p?.type})` };
+    }
+    return { key, label, property, value, editable: true, reason: null };
+  });
+}
+
+app.get("/api/test-center/case-schedule/:id", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const properties = (page as any)?.properties ?? {};
+    return res.json({ fields: readCaseSchedule(properties) });
+  } catch (error) {
+    console.error("Case schedule fetch error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "取得に失敗しました",
+    });
+  }
+});
+
+app.post("/api/test-center/case-schedule/:id", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  const updates = req.body?.fields;
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  if (!updates || typeof updates !== "object") {
+    return res.status(400).json({ error: "fields は必須です" });
+  }
+
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const properties = (page as any)?.properties ?? {};
+    const schedule = readCaseSchedule(properties);
+
+    const nextProperties: Record<string, any> = {};
+    const rejected: string[] = [];
+    for (const [key, raw] of Object.entries(updates as Record<string, unknown>)) {
+      const field = schedule.find((f) => f.key === key);
+      if (!field) {
+        rejected.push(`${key}: 未知の項目です`);
+        continue;
+      }
+      if (!field.editable || !field.property) {
+        rejected.push(`${field.label}: ${field.reason ?? "編集できません"}`);
+        continue;
+      }
+      nextProperties[field.property] = buildUpdatableProperty(
+        properties[field.property],
+        String(raw ?? ""),
+        field.label,
+      );
+    }
+    if (rejected.length) {
+      return res.status(400).json({ error: rejected.join("\n") });
+    }
+    if (Object.keys(nextProperties).length === 0) {
+      return res.status(400).json({ error: "更新する項目がありません" });
+    }
+
+    await notion.pages.update({ page_id: pageId, properties: nextProperties } as any);
+    const updated = await notion.pages.retrieve({ page_id: pageId });
+    return res.json({ ok: true, fields: readCaseSchedule((updated as any)?.properties ?? {}) });
+  } catch (error) {
+    console.error("Case schedule update error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "更新に失敗しました",
+    });
   }
 });
 
