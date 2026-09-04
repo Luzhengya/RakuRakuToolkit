@@ -9,6 +9,8 @@ type ListResponse = {
   total: number;
   exists: boolean;
   dbTitle: string;
+  /** ページID → アップロードで変更された項目名。Notion 側の赤字に対応する */
+  changed?: Record<string, string[]>;
 };
 
 // 明細テーブルに出す列 (残りは詳細ダイアログで表示)
@@ -74,6 +76,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detail, setDetail] = useState<TcRow | null>(null);
+  // ページID → アップロードで変更された項目名 (Notion 側の赤字に対応)
+  const [changedMap, setChangedMap] = useState<Record<string, string[]>>({});
 
   // 詳細ダイアログの編集
   const [editing, setEditing] = useState(false);
@@ -123,6 +127,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
         setRows(d.items ?? []);
         setDbTitle(d.dbTitle ?? '');
         setExists(!!d.exists);
+        setChangedMap(d.changed ?? {});
       })
       .catch((e) => {
         setError(e instanceof Error ? e.message : '取得に失敗しました');
@@ -243,6 +248,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       setDeletingId(null);
     }
   };
+
+  // アップロードで変更された項目か (Notion 側で赤字になっているもの)
+  const isChanged = (rowId: string, field: string) => !!changedMap[rowId]?.includes(field);
+  const changedCount = (rowId: string) => changedMap[rowId]?.length ?? 0;
 
   const selectCls =
     'rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none';
@@ -423,8 +432,17 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       );
                     }
                     const wide = c === 'テスト内容' || c === '機能名';
+                    // Notion 側で赤字になっている項目は画面でも赤字にする
+                    const red = isChanged(r.id, c);
                     return (
-                      <td key={c} className={td0 + (wide ? ' max-w-[280px] truncate' : '')} title={wide ? v : undefined}>
+                      <td
+                        key={c}
+                        className={
+                          td0 + (wide ? ' max-w-[280px] truncate' : '') +
+                          (red ? ' text-red-600 font-medium' : '')
+                        }
+                        title={red ? `${v}（前回アップロードで変更）` : wide ? v : undefined}
+                      >
                         {v || '-'}
                       </td>
                     );
@@ -471,6 +489,14 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 </h3>
                 {detail['機能名'] && (
                   <span className="text-sm text-neutral-400 truncate">{detail['機能名']}</span>
+                )}
+                {changedCount(detail.id) > 0 && (
+                  <span
+                    className="shrink-0 rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-[11px] font-bold text-red-600"
+                    title="前回のアップロードで値が変わった項目です"
+                  >
+                    変更 {changedCount(detail.id)}項目
+                  </span>
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -526,7 +552,14 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               <div className="lg:col-span-2 space-y-4">
                 {PRIMARY_FIELDS.map((f) => (
                   <div key={f} className="space-y-1">
-                    <p className="text-xs font-bold text-neutral-700">{f}</p>
+                    <p className="text-xs font-bold text-neutral-700 flex items-center gap-2">
+                      {f}
+                      {isChanged(detail.id, f) && (
+                        <span className="rounded bg-red-50 border border-red-200 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+                          変更あり
+                        </span>
+                      )}
+                    </p>
                     {editing && EDITABLE_FIELDS.has(f) ? (
                       <textarea
                         value={draft[f] ?? ''}
@@ -535,7 +568,11 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         className="w-full text-sm border border-neutral-300 rounded-lg p-2 focus:border-neutral-500 focus:outline-none"
                       />
                     ) : (
-                      <p className="text-sm text-neutral-800 whitespace-pre-wrap border border-neutral-200 rounded-lg p-3 bg-neutral-50 min-h-[3.5rem]">
+                      <p className={`text-sm whitespace-pre-wrap border rounded-lg p-3 min-h-[3.5rem] ${
+                        isChanged(detail.id, f)
+                          ? 'text-red-600 border-red-200 bg-red-50'
+                          : 'text-neutral-800 border-neutral-200 bg-neutral-50'
+                      }`}>
                         {detail[f] || '-'}
                       </p>
                     )}

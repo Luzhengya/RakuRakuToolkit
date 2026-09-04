@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import BugList from './BugList';
+import ProgressAlerts from './ProgressAlerts';
 import CaseStats from './CaseStats';
 import CaseBugList from './CaseBugList';
 import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
@@ -2667,6 +2668,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               {overviewError}
             </div>
           )}
+
+          {/* 案件進捗アラート。月次セレクタには従わない (過去月の遅延を隠さないため) */}
+          <ProgressAlerts
+            onSelectArea={(areaId) => {
+              if (AREAS.some((a) => a.id === areaId)) loadAreaData(areaId as AreaId);
+            }}
+          />
 
           {/* 3 つのダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
