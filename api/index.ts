@@ -3452,6 +3452,320 @@ app.get("/api/test-center/case-testcases/:caseId", async (req, res) => {
   }
 });
 
+// ── TestCase → BUG 移管 ────────────────────────────────────────────────
+// テストケースから BUG 一覧表にレコードを1件作る。
+// No はシステムごとに 1 から連番 (システムが変わればまた 1 から)。
+// システムは BUG 表では rollup (テスト案件名 relation 由来) なので Notion 側で
+// 絞り込めない。全件取得してメモリ上で分類する (BUG 総数は数十件規模)。
+
+// プロパティの型に合わせて値を組む。書き込めない型 (rollup/created_by/formula)
+// は null を返し、呼び出し側で除外する。
+function buildBugProperty(prop: any, value: string): any {
+  if (!prop || typeof prop !== "object") return null;
+  const v = (value ?? "").trim();
+  switch (prop.type) {
+    case "title":
+      return { title: v ? [{ type: "text", text: { content: v } }] : [] };
+    case "rich_text":
+      return { rich_text: v ? [{ type: "text", text: { content: v } }] : [] };
+    case "number": {
+      const n = Number(v.replace(/[^0-9.\-]/g, ""));
+      return { number: v !== "" && Number.isFinite(n) ? n : null };
+    }
+    case "select":
+      return { select: v ? { name: v } : null };
+    case "status":
+      return { status: v ? { name: v } : null };
+    case "date": {
+      const iso = toIsoDate(v);
+      return { date: iso ? { start: iso } : null };
+    }
+    case "relation":
+      return { relation: v ? [{ id: v }] : [] };
+    default:
+      return null;
+  }
+}
+
+async function getBugSchema(databaseId: string): Promise<{ dataSourceId: string; properties: Record<string, any> }> {
+  const database = await notion!.databases.retrieve({ database_id: databaseId });
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) throw new Error("No data source found in NOTION_BUG_DATABASE_ID");
+  const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+  return { dataSourceId, properties: ds?.properties ?? {} };
+}
+
+// 移管済みかどうかの突き合わせキー。
+// ケース番号は表 (システム+年度) ごとに 1 から振られるため単独では一意でない。
+// BUG 側の システム と 月次(rollup) の年で絞って初めて一意になる。
+function bugMatchKey(system: string, year: string, caseNo: string): string {
+  return `${system.trim()}|${year}|${caseNo.trim()}`;
+}
+
+// 指定システム・年度の「ケース番号 → 移管済み BUG」を作る
+async function loadTransferredBugs(
+  databaseId: string,
+  system: string,
+  year: string,
+): Promise<Map<string, { id: string; no: string }>> {
+  const map = new Map<string, { id: string; no: string }>();
+  const bugs = await queryAllBugItems(databaseId);
+  for (const b of bugs) {
+    const caseNo = (b.caseNumber ?? "").trim();
+    if (!caseNo) continue;
+    // システムは rollup なので複数値になることがある。含まれていれば対象
+    if (system && !(b.system ?? "").includes(system)) continue;
+    // 月次が取れない (relation 未設定) 場合は年で絞らない
+    const bugYear = toMonthKeyServer(b.month).slice(0, 4);
+    if (bugYear && year && bugYear !== year) continue;
+    if (!map.has(caseNo)) map.set(caseNo, { id: b.id, no: b.no });
+  }
+  return map;
+}
+
+// TestCase 一覧で「移管済み」バッジを出すための一括取得
+app.get("/api/testcase/bug-status", async (req, res) => {
+  const databaseId = process.env.NOTION_BUG_DATABASE_ID;
+  const system = String(req.query.system ?? "").trim();
+  const year = String(req.query.year ?? "").trim();
+  if (!notion || !databaseId) {
+    // BUG 表が未設定でも一覧自体は使えるようにする
+    return res.json({ transferred: {} });
+  }
+  try {
+    const map = await loadTransferredBugs(databaseId, system, year);
+    const transferred: Record<string, { id: string; no: string }> = {};
+    for (const [k, v] of map) transferred[k] = v;
+    return res.json({ transferred });
+  } catch (error) {
+    console.error("Bug status query error:", error);
+    return res.json({ transferred: {} });
+  }
+});
+
+// BUG 1件の内容 (移管済みのケースから中身を見るため)
+app.get("/api/test-center/bugs/single/:id", async (req, res) => {
+  const databaseId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    // テスト案件名は relation。タイトルを解決するために1件だけ引く
+    const relIds: string[] = ((page as any)?.properties?.["テスト案件名"]?.relation ?? [])
+      .map((r: any) => r.id)
+      .filter(Boolean);
+    const relMap = new Map<string, string>();
+    for (const rid of relIds) {
+      try {
+        const rel = await notion.pages.retrieve({ page_id: rid });
+        relMap.set(rid, propertyToPlainText((rel as any)?.properties?.["案件名"]));
+      } catch { /* 解決できなければ空のまま */ }
+    }
+    return res.json({ item: parseBugItem(page, relMap) });
+  } catch (error) {
+    console.error("Bug single query error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "取得に失敗しました",
+    });
+  }
+});
+
+// 移管ダイアログを開くための材料 (候補案件・採番・既定値)
+app.get("/api/testcase/:id/bug-context", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  const progressDbId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !bugDbId || !progressDbId) {
+    return res.status(503).json({
+      error: "Notion 未設定",
+      detail: "NOTION_API_KEY / NOTION_BUG_DATABASE_ID / NOTION_PROGRESS_DATABASE_ID を設定してください",
+    });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  const year = String(req.query.year ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const tc: Record<string, string> = {};
+    for (const f of TESTCASE_NOTION_FIELDS) tc[f.name] = readTcPlain(page, f);
+
+    const system = (tc["システム"] ?? "").trim();
+    const cmdbNo = extractCmdbNo(tc["CMDB番号"]);
+    const monthKey = year && tc["月次"]
+      ? `${year}${String(Number(tc["月次"])).padStart(2, "0")}`
+      : "";
+
+    // 候補案件: CMDB番号 が一致するもの。月次まで一致するものがあればそれに絞る
+    const allItems = await queryAllProgressItems(progressDbId);
+    const byCmdb = allItems.filter(
+      (it) => it.childProjectIds.length === 0 && cmdbNo && extractCmdbNo(it.projectName) === cmdbNo,
+    );
+    const byMonth = monthKey
+      ? byCmdb.filter((it) => toMonthKeyServer(it.month) === monthKey)
+      : [];
+    const candidates = (byMonth.length > 0 ? byMonth : byCmdb).map((it) => ({
+      id: it.id,
+      projectName: it.projectName,
+      month: it.month,
+      system: it.system,
+    }));
+
+    // 採番: 同じシステムの最大 No + 1
+    const bugs = await queryAllBugItems(bugDbId);
+    let maxNo = 0;
+    for (const b of bugs) {
+      if (system && !(b.system ?? "").includes(system)) continue;
+      const n = Number((b.no ?? "").replace(/[^0-9]/g, ""));
+      if (Number.isFinite(n) && n > maxNo) maxNo = n;
+    }
+
+    const [fieldOptions, envVersions] = await Promise.all([
+      getBugFieldOptions(bugDbId),
+      (async () => {
+        const envDbId = process.env.NOTION_ENV_VERSION_DATABASE_ID;
+        if (!envDbId) return { ...DEFAULT_ENV_VERSIONS };
+        try {
+          const map = await queryConfigTable(envDbId);
+          const out: Record<string, string> = { ...DEFAULT_ENV_VERSIONS };
+          for (const [k, row] of Object.entries(map)) {
+            if (k === "chrome" || k === "IOS" || k === "ios" || k === "Android") {
+              out[k === "ios" ? "IOS" : k] = row.value;
+            }
+          }
+          return out;
+        } catch {
+          return { ...DEFAULT_ENV_VERSIONS };
+        }
+      })(),
+    ]);
+
+    // モジュールは大分類 > 中分類 > 小分類。空はスキップ
+    const moduleText = ["大分類", "中分類", "小分類"]
+      .map((k) => (tc[k] ?? "").trim())
+      .filter(Boolean)
+      .join(" > ");
+
+    return res.json({
+      testcase: tc,
+      candidates,
+      nextNo: String(maxNo + 1),
+      defaults: {
+        bugDesc: tc["テスト内容"] ?? "",
+        judgment: "NG",
+        status: "対応待ち",
+        module: moduleText,
+        reproSteps: tc["ステップ"] ?? "",
+        expectedResult: tc["予期結果"] ?? "",
+        priority: tc["優先級"] ?? "",
+        caseNumber: tc["ケース番号"] ?? "",
+        execDate: new Date().toISOString().slice(0, 10),
+        browserVersion: envVersions.chrome ?? "",
+        appVersion: [
+          envVersions.IOS ? `iOS ${envVersions.IOS}` : "",
+          envVersions.Android ? `Android ${envVersions.Android}` : "",
+        ].filter(Boolean).join(" / "),
+      },
+      fieldOptions,
+    });
+  } catch (error) {
+    console.error("Bug context error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "取得に失敗しました",
+    });
+  }
+});
+
+// BUG を1件作り、元のテストケースのテスト結果を NG にする
+app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !bugDbId) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  const b = (req.body ?? {}) as Record<string, string>;
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  if (!String(b.caseId ?? "").trim()) {
+    // 案件が決まらないと システム/月次 の rollup が空になり、
+    // システムごとの採番体系から外れたレコードができてしまう
+    return res.status(400).json({ error: "テスト案件を選択してください" });
+  }
+  if (!String(b.actualResult ?? "").trim()) {
+    return res.status(400).json({ error: "実際結果を入力してください" });
+  }
+
+  try {
+    const { dataSourceId, properties: schema } = await getBugSchema(bugDbId);
+
+    const values: Record<string, string> = {
+      "No": b.no ?? "",
+      "テスト案件名": b.caseId ?? "",
+      "Bug説明": b.bugDesc ?? "",
+      "実際結果": b.actualResult ?? "",
+      "判定": b.judgment ?? "",
+      "ステータス": b.status ?? "",
+      "モジュール": b.module ?? "",
+      "再現ステップ": b.reproSteps ?? "",
+      "予定結果": b.expectedResult ?? "",
+      "優先度": b.priority ?? "",
+      "ケース番号": b.caseNumber ?? "",
+      "実施日": b.execDate ?? "",
+      "ブラウザ / バージョン": b.browserVersion ?? "",
+      "アプリバージョン": b.appVersion ?? "",
+    };
+
+    const props: Record<string, any> = {};
+    const skipped: string[] = [];
+    for (const [name, value] of Object.entries(values)) {
+      const built = buildBugProperty(schema[name], value);
+      if (built === null) {
+        // 表に無い項目、または rollup など書けない型。値があるのに書けない場合だけ記録
+        if (value.trim()) skipped.push(name);
+        continue;
+      }
+      props[name] = built;
+    }
+
+    const created: any = await notion.pages.create({
+      parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+      properties: props,
+    } as any);
+
+    // 元のテストケースを NG にする。BUG は作れているので、ここが失敗しても
+    // 全体は成功として扱い、結果だけ伝える
+    let resultUpdated = true;
+    let resultError: string | null = null;
+    try {
+      const tcPage = await notion.pages.retrieve({ page_id: pageId });
+      const f = TESTCASE_NOTION_FIELDS.find((x) => x.name === "テスト結果")!;
+      await notion.pages.update({
+        page_id: pageId,
+        properties: { ["テスト結果"]: buildTcPropertyValue(f, "NG", false) },
+      } as any);
+      void tcPage;
+    } catch (e) {
+      resultUpdated = false;
+      resultError = e instanceof Error ? e.message : String(e);
+    }
+
+    return res.json({
+      ok: true,
+      bugId: created?.id ?? "",
+      bugNo: values["No"],
+      skipped,
+      resultUpdated,
+      resultError,
+    });
+  } catch (error) {
+    console.error("Bug transfer error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "移管に失敗しました",
+    });
+  }
+});
+
 app.get("/api/testcase/list", async (req, res) => {
   const system = String(req.query.system ?? "").trim();
   const year = Number(String(req.query.year ?? "").trim());
