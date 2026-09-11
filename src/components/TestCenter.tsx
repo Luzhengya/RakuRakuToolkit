@@ -29,6 +29,7 @@ import ProgressAlerts from './ProgressAlerts';
 import CaseStats from './CaseStats';
 import CaseBugList from './CaseBugList';
 import CaseSchedule from './CaseSchedule';
+import CaseTestcases from './CaseTestcases';
 import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
 import {
   BarChart,
@@ -2448,6 +2449,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 <CaseSchedule caseId={editingResultItem.id} />
 
                 <CaseBugList caseId={editingResultItem.id} lang={lang} />
+
+                {/* 案件名の先頭の CMDB番号 で TestCase 表を引く */}
+                <CaseTestcases caseId={editingResultItem.id} />
               </div>
             ) : (
             <div className="space-y-4">
