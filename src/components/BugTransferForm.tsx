@@ -27,6 +27,15 @@ interface BugContext {
   fieldOptions: { judgment: string[]; status: string[]; priority: string[] };
 }
 
+// 既定値が表の選択肢に無いまま送ると、Notion が新しい選択肢を作ってしまう。
+// BUG一覧の絞り込みに語義の重なる項目が増え、既存の値で絞ると移管分が漏れる。
+// 選択肢にあるときだけ既定値を使い、無ければ未選択にして利用者に選ばせる。
+// 先頭で代用しない: 判定の先頭は「確認OK」で、BUG の既定としては真逆になる。
+function pickDefault(options: string[], preferred: string): string {
+  if (options.length === 0) return preferred;  // 選択肢を取得できない時はそのまま
+  return options.includes(preferred) ? preferred : '';
+}
+
 export default function BugTransferForm({
   caseId, year, onDone, onCancel,
 }: {
@@ -63,8 +72,8 @@ export default function BugTransferForm({
         if (!alive) return;
         setCtx(d);
         setBugDesc(d.defaults.bugDesc);
-        setJudgment(d.defaults.judgment);
-        setStatus(d.defaults.status);
+        setJudgment(pickDefault(d.fieldOptions.judgment, d.defaults.judgment));
+        setStatus(pickDefault(d.fieldOptions.status, d.defaults.status));
         // 候補が1件だけなら選ぶ手間を省く
         if (d.candidates.length === 1) setSelectedCase(d.candidates[0].id);
       })
@@ -130,7 +139,7 @@ export default function BugTransferForm({
   }
 
   const noCandidate = !ctx || ctx.candidates.length === 0;
-  const canSubmit = !!selectedCase && !!actualResult.trim() && !saving;
+  const canSubmit = !!selectedCase && !!actualResult.trim() && !!judgment && !!status && !saving;
 
   return (
     <div className="space-y-3">
@@ -228,16 +237,24 @@ export default function BugTransferForm({
 
             <div className="grid grid-cols-2 gap-3">
               <label className="block space-y-1">
-                <span className="text-[11px] font-semibold text-neutral-500">判定</span>
+                <span className="text-[11px] font-semibold text-neutral-500">
+                  判定 <span className="text-red-500">*</span>
+                </span>
                 <select value={judgment} onChange={(e) => setJudgment(e.target.value)} className={inputCls}>
+                  {/* 既定値が選択肢に無い時だけ空で始まる。先頭の選択肢に
+                      黙って寄せると、判定なら「確認OK」が入ってしまう */}
+                  {!judgment && <option value="">選択してください</option>}
                   {(ctx!.fieldOptions.judgment.length ? ctx!.fieldOptions.judgment : ['NG']).map((o) => (
                     <option key={o} value={o}>{o}</option>
                   ))}
                 </select>
               </label>
               <label className="block space-y-1">
-                <span className="text-[11px] font-semibold text-neutral-500">ステータス</span>
+                <span className="text-[11px] font-semibold text-neutral-500">
+                  ステータス <span className="text-red-500">*</span>
+                </span>
                 <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+                  {!status && <option value="">選択してください</option>}
                   {(ctx!.fieldOptions.status.length ? ctx!.fieldOptions.status : ['対応待ち']).map((o) => (
                     <option key={o} value={o}>{o}</option>
                   ))}
