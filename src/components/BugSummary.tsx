@@ -21,8 +21,36 @@ interface BugItem {
   appVersion: string;
 }
 
-// 長文は改行を保ちたい項目
-const LONG = new Set(['再現ステップ', '予定結果', '実際結果', 'Bug説明', '備考']);
+// 左に大きく出す項目 (長文)。ケース情報の配置と揃える
+const PRIMARY: [string, keyof BugItem][] = [
+  ['Bug説明', 'bugDesc'],
+  ['再現ステップ', 'reproSteps'],
+  ['予定結果', 'expectedResult'],
+  ['実際結果', 'actualResult'],
+  ['備考', 'remarks'],
+];
+// 右上に強調して出す項目
+const HIGHLIGHT: [string, keyof BugItem][] = [
+  ['判定', 'judgment'],
+  ['ステータス', 'status'],
+];
+// 右に一覧で出す項目
+const SECONDARY: [string, keyof BugItem][] = [
+  ['No', 'no'],
+  ['テスト案件名', 'testCaseName'],
+  ['システム', 'system'],
+  ['ケース番号', 'caseNumber'],
+  ['モジュール', 'module'],
+  ['優先度', 'priority'],
+  ['実施日', 'execDate'],
+  ['ブラウザ / バージョン', 'browserVersion'],
+  ['アプリバージョン', 'appVersion'],
+];
+
+const JUDGMENT_COLOR: Record<string, string> = {
+  NG: 'bg-red-50 text-red-700 border-red-200',
+  '確認OK': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+};
 
 export default function BugSummary({ bugId }: { bugId: string }) {
   const [item, setItem] = useState<BugItem | null>(null);
@@ -65,35 +93,45 @@ export default function BugSummary({ bugId }: { bugId: string }) {
   }
   if (!item) return null;
 
-  const rows: [string, string][] = [
-    ['No', item.no],
-    ['判定', item.judgment],
-    ['ステータス', item.status],
-    ['テスト案件名', item.testCaseName],
-    ['システム', item.system],
-    ['ケース番号', item.caseNumber],
-    ['モジュール', item.module],
-    ['優先度', item.priority],
-    ['実施日', item.execDate],
-    ['Bug説明', item.bugDesc],
-    ['再現ステップ', item.reproSteps],
-    ['予定結果', item.expectedResult],
-    ['実際結果', item.actualResult],
-    ['ブラウザ / バージョン', item.browserVersion],
-    ['アプリバージョン', item.appVersion],
-    ['備考', item.remarks],
-  ];
-
+  // ケース情報と同じ配置。長文を左に大きく、付随情報を右にまとめる
   return (
-    <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
-      {rows.map(([k, v]) => (
-        <div key={k} className="px-3 py-2 flex items-start gap-3">
-          <span className="text-neutral-400 w-28 shrink-0">{k}</span>
-          <span className={`flex-1 min-w-0 ${LONG.has(k) ? 'whitespace-pre-wrap text-neutral-800' : 'text-neutral-700'}`}>
-            {v || '-'}
-          </span>
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <div className="lg:col-span-2 space-y-4">
+        {PRIMARY.map(([label, key]) => (
+          <div key={label} className="space-y-1">
+            <p className="text-xs font-bold text-neutral-700">{label}</p>
+            <p className="text-sm text-neutral-800 whitespace-pre-wrap border border-neutral-200 rounded-lg p-3 bg-neutral-50 min-h-[3rem]">
+              {item[key] || '-'}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          {HIGHLIGHT.map(([label, key]) => (
+            <div key={label} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
+              <p className="text-[11px] font-semibold text-neutral-400">{label}</p>
+              {label === '判定' && item[key] ? (
+                <span className={`inline-block rounded-full border px-3 py-1 text-sm font-bold ${JUDGMENT_COLOR[item[key]] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
+                  {item[key]}
+                </span>
+              ) : (
+                <p className="text-sm font-bold text-neutral-900 break-words">{item[key] || '-'}</p>
+              )}
+            </div>
+          ))}
         </div>
-      ))}
+
+        <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
+          {SECONDARY.map(([label, key]) => (
+            <div key={label} className="px-3 py-2 flex items-start gap-3">
+              <span className="text-neutral-400 w-24 shrink-0">{label}</span>
+              <span className="text-neutral-700 flex-1 min-w-0 break-words">{item[key] || '-'}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
