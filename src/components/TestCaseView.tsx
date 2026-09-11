@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Download, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import { AlertCircle, Bug, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import BugTransferForm from './BugTransferForm';
+import BugSummary from './BugSummary';
 
 // Notion の「{システム}{年度}」テーブル 1 行 (属性名をキーにした素の文字列)
 type TcRow = Record<string, string> & { id: string };
@@ -87,6 +89,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   // 削除中の行 id
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  // ケース番号 → 移管済み BUG。BUG 表を引いて判定するので、BUG を削除すれば自動的に戻る
+  const [transferred, setTransferred] = useState<Record<string, { id: string; no: string }>>({});
+  // ダイアログの表示モード: 詳細 / BUG移管フォーム / 移管済み BUG の内容
+  const [dialogMode, setDialogMode] = useState<'detail' | 'transfer' | 'bug'>('detail');
 
   // 絞り込み。月次はヘッダ側 (年度の右) に移動し、既定は全年
   const [fMonth, setFMonth] = useState('');
@@ -129,6 +135,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
         setDbTitle(d.dbTitle ?? '');
         setExists(!!d.exists);
         setChangedMap(d.changed ?? {});
+        reloadTransferred();
       })
       .catch((e) => {
         setError(e instanceof Error ? e.message : '取得に失敗しました');
@@ -178,11 +185,21 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     setFKeyword(''); setFResult(''); setFVersion(''); setFMajor(''); setFMiddle(''); setFMinor('');
   };
 
-  const openDetail = (r: TcRow) => {
+  const openDetail = (r: TcRow, mode: 'detail' | 'transfer' | 'bug' = 'detail') => {
     setDetail(r);
     setEditing(false);
     setDraft({});
     setDialogError(null);
+    setDialogMode(mode);
+  };
+
+  // 移管済み状況を取り直す。BUG 表を引いて判定しているので、
+  // Notion 側で BUG を消せば移管ボタンが戻る
+  const reloadTransferred = () => {
+    fetch(`/api/testcase/bug-status?system=${encodeURIComponent(system)}&year=${year}`)
+      .then((r) => (r.ok ? r.json() : { transferred: {} }))
+      .then((d: any) => setTransferred(d?.transferred ?? {}))
+      .catch(() => { /* 一覧自体は使えるので握りつぶす */ });
   };
 
   const startEdit = () => {
@@ -504,6 +521,28 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       >
                         詳細
                       </button>
+                      {/* 移管済みかは BUG 表の ケース番号 を引いて判定する。
+                          BUG を削除すれば自動的に移管ボタンへ戻る */}
+                      {transferred[(r['ケース番号'] || '').trim()] ? (
+                        <button
+                          type="button"
+                          onClick={() => openDetail(r, 'bug')}
+                          title="移管済みの BUG を表示"
+                          className="px-2 py-1 rounded border border-red-200 bg-red-50 text-xs text-red-600 hover:bg-red-100 whitespace-nowrap"
+                        >
+                          移管済み No.{transferred[(r['ケース番号'] || '').trim()].no || '-'}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => openDetail(r, 'transfer')}
+                          title="このケースから BUG を作成"
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 whitespace-nowrap"
+                        >
+                          <Bug size={12} />
+                          BUG移管
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => removeRow(r)}
@@ -695,17 +734,61 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                   })}
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => removeRow(detail)}
-                  disabled={deletingId === detail.id}
-                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
-                >
-                  {deletingId === detail.id
-                    ? <Loader2 size={14} className="animate-spin" />
-                    : <Trash2 size={14} />}
-                  このケースを削除
-                </button>
+                {/* BUG移管フォーム / 移管済み BUG の内容 / 削除ボタン をモードで切り替える。
+                    左側の重点項目 (テスト内容・ステップ・予期結果) はそのまま見えるので、
+                    移管の材料を確認しながら実際結果を書ける */}
+                {dialogMode === 'transfer' ? (
+                  <div className="border border-red-200 rounded-lg p-3 bg-red-50/30">
+                    <BugTransferForm
+                      caseId={detail.id}
+                      year={year}
+                      onDone={(bugId, bugNo) => {
+                        // 画面側も更新して、閉じずに結果が見えるようにする
+                        const caseNo = (detail['ケース番号'] || '').trim();
+                        setTransferred((prev) => ({ ...prev, [caseNo]: { id: bugId, no: bugNo } }));
+                        const updated = { ...detail, 'テスト結果': 'NG' } as TcRow;
+                        setRows((prev) => prev.map((x) => (x.id === detail.id ? updated : x)));
+                        setDetail(updated);
+                        setDialogMode('bug');
+                      }}
+                    />
+                  </div>
+                ) : dialogMode === 'bug' ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="text-sm font-bold text-neutral-800">移管済み BUG</h4>
+                      <button
+                        type="button"
+                        onClick={() => setDialogMode('detail')}
+                        className="text-[11px] text-neutral-500 hover:text-neutral-800"
+                      >
+                        ケース情報に戻る
+                      </button>
+                    </div>
+                    <BugSummary bugId={transferred[(detail['ケース番号'] || '').trim()]?.id ?? ''} />
+                    <a
+                      href={`https://www.notion.so/${(transferred[(detail['ケース番号'] || '').trim()]?.id ?? '').replace(/-/g, '')}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-800"
+                    >
+                      <ExternalLink size={12} />
+                      Notion で開く（画像の添付や編集はこちら）
+                    </a>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => removeRow(detail)}
+                    disabled={deletingId === detail.id}
+                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  >
+                    {deletingId === detail.id
+                      ? <Loader2 size={14} className="animate-spin" />
+                      : <Trash2 size={14} />}
+                    このケースを削除
+                  </button>
+                )}
               </div>
             </div>
           </div>
