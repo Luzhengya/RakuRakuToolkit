@@ -577,8 +577,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={() => stepDetail(-1)}
-            disabled={detailIndex <= 0}
-            title="前のケース"
+            disabled={editing || detailIndex <= 0}
+            title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '前のケース'}
             className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronLeft size={20} />
@@ -610,13 +610,16 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     {detailIndex + 1} / {filtered.length}
                   </span>
                 )}
-                {/* 一覧に戻らずに移管できるよう、ここにも置く */}
-                {!editing && dialogMode === 'detail' && (
+                {/* 一覧に戻らずに移管できるよう、ここにも置く。
+                    編集中は無効にする (隠さないのは、押せない理由を示すため) */}
+                {dialogMode === 'detail' && (
                   transferred[(detail['ケース番号'] || '').trim()] ? (
                     <button
                       type="button"
                       onClick={() => setDialogMode('bug')}
-                      className="px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 whitespace-nowrap"
+                      disabled={editing}
+                      title={editing ? '編集中は操作できません。保存またはキャンセルしてください' : '移管済みの BUG を表示'}
+                      className="px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                     >
                       移管済み No.{transferred[(detail['ケース番号'] || '').trim()].no || '-'}
                     </button>
@@ -624,7 +627,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     <button
                       type="button"
                       onClick={() => setDialogMode('transfer')}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 whitespace-nowrap"
+                      disabled={editing}
+                      title={editing ? '編集中は移管できません。保存またはキャンセルしてください' : 'このケースから BUG を作成'}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                     >
                       <Bug size={14} />
                       BUG移管
@@ -840,8 +845,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={() => stepDetail(1)}
-            disabled={detailIndex < 0 || detailIndex >= filtered.length - 1}
-            title="次のケース"
+            disabled={editing || detailIndex < 0 || detailIndex >= filtered.length - 1}
+            title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '次のケース'}
             className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
             <ChevronRight size={20} />
