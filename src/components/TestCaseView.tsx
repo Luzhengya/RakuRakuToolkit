@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import { AlertCircle, Download, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
 
 // Notion の「{システム}{年度}」テーブル 1 行 (属性名をキーにした素の文字列)
 type TcRow = Record<string, string> & { id: string };
@@ -86,6 +86,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [dialogError, setDialogError] = useState<string | null>(null);
   // 削除中の行 id
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   // 絞り込み。月次はヘッダ側 (年度の右) に移動し、既定は全年
   const [fMonth, setFMonth] = useState('');
@@ -229,6 +230,38 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     }
   };
 
+  // 絞り込み結果をそのまま Excel にする。
+  // 画面で見えているものが出るよう、条件ではなく行データを送る。
+  const exportExcel = async () => {
+    if (filtered.length === 0) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/testcase/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows: filtered, title: dbTitle || `${system}${year}` }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error((b as { error?: string }).error || '出力に失敗しました');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `【試験仕様書TestCenter】${dbTitle || `${system}${year}`}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '出力に失敗しました');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const removeRow = async (r: TcRow) => {
     const label = r['ケース番号'] || r.id;
     if (!window.confirm(`ケース「${label}」を削除します。元に戻せません。よろしいですか？`)) return;
@@ -306,6 +339,21 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             更新
+          </button>
+          <button
+            type="button"
+            onClick={exportExcel}
+            disabled={exporting || filtered.length === 0}
+            title="絞り込んだ結果を Testcase Format と同じ書式で出力します"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+          >
+            {exporting
+              ? <Loader2 size={14} className="animate-spin" />
+              : <Download size={14} />}
+            Excel出力
+            {filtered.length > 0 && (
+              <span className="text-[11px] text-neutral-400 tabular-nums">{filtered.length}件</span>
+            )}
           </button>
         </div>
       </div>

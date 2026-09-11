@@ -2932,6 +2932,57 @@ type TestCaseGroupStat = {
   unReasons: { no: string; remark: string }[];
 };
 
+// ── Testcase Excel の書式 ──────────────────────────────────────────────
+// CSV 由来 (Testcase Format) と Notion 由来 (TestCase 画面のエクスポート) で
+// 同じ見た目になるよう、書式はここに集約する。
+
+const TESTCASE_CELL_BORDER: Partial<ExcelJS.Borders> = {
+  top: { style: "thin" }, left: { style: "thin" },
+  bottom: { style: "thin" }, right: { style: "thin" },
+};
+
+const TESTCASE_FILL: Record<string, string> = {
+  OK: "FFD3D3D3",
+  "テスト不可": "FFFFFF00",
+  NG: "FFFF0000",
+};
+
+// ヘッダ行 (深藍 + 白字 + 罫線)
+function writeTestcaseHeader(ws: ExcelJS.Worksheet): void {
+  ws.addRow(TESTCASE_HEADERS);
+  ws.getRow(1).eachCell((cell) => {
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003366" } };
+    cell.font = { color: { argb: "FFFFFFFF" } };
+    cell.border = TESTCASE_CELL_BORDER;
+  });
+}
+
+// データ行を1行追加し、テスト結果に応じた塗りと罫線を付ける
+function writeTestcaseRow(ws: ExcelJS.Worksheet, out: string[]): void {
+  const added = ws.addRow(out);
+  const fillColor = TESTCASE_FILL[out[RESULT_COL]];
+  added.eachCell({ includeEmpty: true }, (cell) => {
+    cell.border = TESTCASE_CELL_BORDER;
+    if (fillColor) {
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
+    }
+  });
+}
+
+// 列幅: ケース番号(A列)は固定10。他列は自動調整 (過大化を防ぐため上限 80)
+// 統計ブロックを足したあとの幅も見たいので、行を全て書いてから呼ぶこと
+function autoFitTestcaseColumns(ws: ExcelJS.Worksheet): void {
+  ws.columns.forEach((col, i) => {
+    if (i === 0) { col.width = 10; return; }
+    let maxLen = 0;
+    col.eachCell?.({ includeEmpty: true }, (cell) => {
+      const len = cell.value == null ? 0 : String(cell.value).length;
+      if (len > maxLen) maxLen = len;
+    });
+    col.width = Math.min((maxLen + 2) * 1.2, 80);
+  });
+}
+
 // 1つの CSV → { xlsx バッファ, グループ統計, 出力ファイル名 }
 async function buildTestCaseXlsx(originalName: string, csvText: string) {
   const rows = parseCsv(csvText);
@@ -2942,25 +2993,7 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet("Sheet");
 
-  // ケース内容部分 (ヘッダ + データ行) の罫線
-  const cellBorder: Partial<ExcelJS.Borders> = {
-    top: { style: "thin" }, left: { style: "thin" },
-    bottom: { style: "thin" }, right: { style: "thin" },
-  };
-
-  // ヘッダ (深藍 + 白字 + 罫線)
-  ws.addRow(TESTCASE_HEADERS);
-  ws.getRow(1).eachCell((cell) => {
-    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003366" } };
-    cell.font = { color: { argb: "FFFFFFFF" } };
-    cell.border = cellBorder;
-  });
-
-  const FILL = {
-    OK: "FFD3D3D3",
-    "テスト不可": "FFFFFF00",
-    NG: "FFFF0000",
-  } as const;
+  writeTestcaseHeader(ws);
 
   // グループ統計 (相关需求ごと, 出現順)
   const groupMap = new Map<string, TestCaseGroupStat>();
@@ -2976,14 +3009,7 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
     out[KEYWORD_COL] = point;
     out[REMARK_COL] = remark;
 
-    const added = ws.addRow(out);
-    const fillColor = (FILL as Record<string, string>)[mapped];
-    added.eachCell({ includeEmpty: true }, (cell) => {
-      cell.border = cellBorder;
-      if (fillColor) {
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
-      }
-    });
+    writeTestcaseRow(ws, out);
 
     const key = (r[GROUP_COL] ?? "").trim();
     let g = groupMap.get(key);
@@ -3020,16 +3046,7 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
     ws.addRow([`指摘対応: ${g.shimateki}${paren(g.shimatekiCases)}`]);
   });
 
-  // 列幅: ケース番号(A列)は固定10。他列は自動調整 (過大化を防ぐため上限 80)
-  ws.columns.forEach((col, i) => {
-    if (i === 0) { col.width = 10; return; }
-    let maxLen = 0;
-    col.eachCell?.({ includeEmpty: true }, (cell) => {
-      const len = cell.value == null ? 0 : String(cell.value).length;
-      if (len > maxLen) maxLen = len;
-    });
-    col.width = Math.min((maxLen + 2) * 1.2, 80);
-  });
+  autoFitTestcaseColumns(ws);
 
   const buffer = Buffer.from(await wb.xlsx.writeBuffer());
   return {
@@ -3552,6 +3569,54 @@ app.delete("/api/testcase/:id", async (req, res) => {
     console.error("Testcase delete error:", error);
     return res.status(500).json({
       error: error instanceof Error ? error.message : "削除に失敗しました",
+    });
+  }
+});
+
+// TestCase 画面の絞り込み結果を Excel にする。
+// Testcase Format の出力と同じ書式にするため、行の組み立てだけここで行い
+// 書式は writeTestcaseHeader/Row と autoFitTestcaseColumns に任せる。
+// 統計ブロックは付けない。あれは「今回アップロードした CSV」の集計であり、
+// Notion に蓄積された行を条件で絞ったものとは母数の意味が違うため。
+app.post("/api/testcase/export", async (req, res) => {
+  const rows = req.body?.rows;
+  const title = String(req.body?.title ?? "testcase").trim() || "testcase";
+  if (!Array.isArray(rows)) {
+    return res.status(400).json({ error: "rows は必須です" });
+  }
+  if (rows.length === 0) {
+    return res.status(400).json({ error: "出力対象がありません" });
+  }
+
+  try {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Sheet");
+    writeTestcaseHeader(ws);
+
+    for (const row of rows as Record<string, string>[]) {
+      const out = new Array(TESTCASE_COL_COUNT).fill("");
+      for (const f of TESTCASE_NOTION_FIELDS) {
+        // col=null は Excel に列が無い項目 (月次/大中小分類)。
+        // 逆に Excel 10列目「対応」は Notion に項目が無いので空のまま。
+        if (f.col !== null) out[f.col] = String(row[f.name] ?? "");
+      }
+      writeTestcaseRow(ws, out);
+    }
+
+    autoFitTestcaseColumns(ws);
+
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+    const filename = `【試験仕様書TestCenter】${title}.xlsx`;
+    res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.set(
+      "Content-Disposition",
+      `attachment; filename="testcase.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    );
+    return res.send(buffer);
+  } catch (error) {
+    console.error("Testcase export error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "出力に失敗しました",
     });
   }
 });
