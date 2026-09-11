@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Download, Loader2, Search, X, Calendar, ChevronRight as ChevronSep } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertCircle, ChevronDown, Download, Loader2, Search, X, ChevronRight as ChevronSep } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
 import { buildBugListHtml, inlineChildImages } from './bugListPdf';
 
@@ -96,9 +96,9 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
   const L =
     false
       ? {
-          home: '首页', testCenter: '测试中心', title: 'BUG一览',
+          home: '首页', testCenter: 'TestCenter', title: 'BUG一览',
           keyword: '关键字', keywordPh: 'NO / 测试案件名 / BUG概要',
-          system: '系统区分', month: '月份', judgment: '判定', status: '状态',
+          system: '系统区分', year: '年份', month: '月份', judgment: '判定', status: '状态', wholeYear: '通年',
           all: '全部', clear: '清除条件', search: '检索', result: '检索结果', count: '件', exportHtml: '导出 HTML',
           sumTotal: '合计件数', sumNg: 'NG件数', sumIncomplete: '未完成', sumDone: '已完成',
           colNo: 'NO', colSystem: '系统区分', colCase: '测试案件名', colDesc: 'BUG概要',
@@ -110,9 +110,9 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           filterLabel: '筛选条件',
         }
       : {
-          home: 'ホーム', testCenter: '測試中心', title: 'BUG一覧',
+          home: 'ホーム', testCenter: 'TestCenter', title: 'BUG一覧',
           keyword: 'キーワード', keywordPh: 'NO / テスト案件名 / BUG説明',
-          system: 'システム', month: '月次', judgment: '判定', status: 'ステータス',
+          system: 'システム', year: '年度', month: '月次', judgment: '判定', status: 'ステータス', wholeYear: '通年',
           all: 'すべて', clear: '条件クリア', search: '検索', result: '検索結果', count: '件', exportHtml: 'HTML出力',
           sumTotal: '合計件数', sumNg: 'NG件数', sumIncomplete: '未完了', sumDone: '完了',
           colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'BUG説明',
@@ -130,29 +130,17 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
 
   const [keyword, setKeyword] = useState('');
   const [system, setSystem] = useState('');
-  const [month, setMonth] = useState(initialMonth);
+  // 月次は年度と月に分ける。月を選ばなければその年度の通年
+  const [year, setYear] = useState(() => (/^\d{4}/.test(initialMonth) ? initialMonth.slice(0, 4) : ''));
+  const [monthNo, setMonthNo] = useState(() =>
+    /^\d{6}$/.test(initialMonth) ? String(Number(initialMonth.slice(4, 6))) : ''
+  );
   const [judgments, setJudgments] = useState<string[]>([]);
   const [status, setStatus] = useState('');
-  const [monthPickerOpen, setMonthPickerOpen] = useState(false);
-  const [monthPickerYear, setMonthPickerYear] = useState(() => {
-    if (initialMonth && initialMonth.length >= 4) return Number(initialMonth.slice(0, 4));
-    return new Date().getFullYear();
-  });
-  const monthPickerRef = useRef<HTMLDivElement>(null);
 
   const [openId, setOpenId] = useState<string | null>(null);
   const [childHtml, setChildHtml] = useState<string>('');
   const [childLoading, setChildLoading] = useState(false);
-
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (monthPickerRef.current && !monthPickerRef.current.contains(e.target as Node)) {
-        setMonthPickerOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   useEffect(() => {
     let aborted = false;
@@ -190,13 +178,25 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
     () => Array.from(new Set<string>(allItems.map((b) => b.status).filter(Boolean))).sort(),
     [allItems]
   );
+  // 年度はデータにあるものだけ。新しい年が上
+  const yearOptions = useMemo(
+    () =>
+      Array.from(
+        new Set<string>(allItems.map((b) => toMonthKey(b.month).slice(0, 4)).filter((y) => /^\d{4}$/.test(y)))
+      ).sort().reverse(),
+    [allItems]
+  );
 
   const filtered = useMemo(() => {
     const kw = keyword.trim().toLowerCase();
     return allItems
       .filter((b) => {
         if (system && b.system !== system) return false;
-        if (month && toMonthKey(b.month) !== month) return false;
+        if (year || monthNo) {
+          const key = toMonthKey(b.month);
+          if (year && key.slice(0, 4) !== year) return false;
+          if (monthNo && Number(key.slice(4, 6)) !== Number(monthNo)) return false;
+        }
         if (judgments.length && !judgments.includes(b.judgment)) return false;
         if (status && b.status !== status) return false;
         if (kw) {
@@ -206,17 +206,23 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
         return true;
       })
       .sort((a, b) => (a.month === b.month ? noNumber(a.no) - noNumber(b.no) : b.month.localeCompare(a.month)));
-  }, [allItems, keyword, system, month, judgments, status]);
+  }, [allItems, keyword, system, year, monthNo, judgments, status]);
 
   const handleClear = () => {
     setKeyword('');
     setSystem('');
-    setMonth('');
+    setYear('');
+    setMonthNo('');
     setJudgments([]);
     setStatus('');
   };
 
-  const hasFilter = keyword || system || month || judgments.length > 0 || status;
+  const hasFilter = keyword || system || year || monthNo || judgments.length > 0 || status;
+
+  // HTML出力のヘッダに出す対象期間。年だけなら「2026年」、月まで選べば YYYYMM
+  const periodText = year
+    ? (monthNo ? `${year}${String(Number(monthNo)).padStart(2, '0')}` : `${year}年`)
+    : (monthNo ? `${Number(monthNo)}月` : '');
 
   const [exporting, setExporting] = useState(false);
 
@@ -247,7 +253,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
       // (deduped) keeps each response under Vercel's 4.5MB body limit.
       await inlineChildImages(childMap);
 
-      const html = buildBugListHtml(filtered, { keyword, system, month, judgments, status }, lang, childMap);
+      const html = buildBugListHtml(filtered, { keyword, system, month: periodText, judgments, status }, lang, childMap);
       const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -364,7 +370,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
             )}
           </div>
           <div className="px-5 py-4">
-            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-x-4 gap-y-3 items-end">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto_auto] gap-x-4 gap-y-3 items-end">
               {/* Keyword */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-neutral-500">{L.keyword}</label>
@@ -389,57 +395,25 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
                   ))}
                 </select>
               </div>
-              {/* Month picker */}
-              <div className="space-y-1.5 relative" ref={monthPickerRef}>
+              {/* 年度 (TestCase 画面と同じく年と月を分ける) */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-neutral-500">{L.year}</label>
+                <select value={year} onChange={(e) => setYear(e.target.value)} className={selectCls}>
+                  <option value="">{L.all}</option>
+                  {yearOptions.map((y) => (
+                    <option key={y} value={y}>{y}年</option>
+                  ))}
+                </select>
+              </div>
+              {/* 月次。未選択なら通年 */}
+              <div className="space-y-1.5">
                 <label className="text-xs font-medium text-neutral-500">{L.month}</label>
-                <button
-                  type="button"
-                  onClick={() => setMonthPickerOpen((v) => !v)}
-                  className="flex items-center gap-2 bg-white border border-neutral-300 rounded-lg px-3 py-2 text-sm text-neutral-700 hover:border-neutral-400 focus:border-neutral-500 focus:outline-none min-w-[120px] transition-colors"
-                >
-                  <Calendar size={14} className="text-neutral-400" />
-                  <span className="flex-1 text-left">{month ? `${month.slice(0, 4)}/${month.slice(4)}` : L.all}</span>
-                  <ChevronDown size={14} className={`text-neutral-400 transition-transform ${monthPickerOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {monthPickerOpen && (
-                  <div className="absolute top-full right-0 mt-1 z-20 bg-white border border-neutral-200 rounded-xl shadow-lg p-3 w-[260px]">
-                    <div className="flex items-center justify-between mb-2">
-                      <button type="button" onClick={() => setMonthPickerYear((y) => y - 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronLeft size={16} /></button>
-                      <span className="text-sm font-semibold text-neutral-800">{monthPickerYear}</span>
-                      <button type="button" onClick={() => setMonthPickerYear((y) => y + 1)} className="p-1 rounded hover:bg-neutral-100"><ChevronRight size={16} /></button>
-                    </div>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {Array.from({ length: 12 }, (_, i) => {
-                        const m = i + 1;
-                        const key = `${monthPickerYear}${String(m).padStart(2, '0')}`;
-                        const isActive = month === key;
-                        return (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => { setMonth(key); setMonthPickerOpen(false); }}
-                            className={`rounded-lg py-1.5 text-sm font-medium transition-colors ${
-                              isActive
-                                ? 'bg-neutral-900 text-white'
-                                : 'text-neutral-600 hover:bg-neutral-100'
-                            }`}
-                          >
-                            {m}月
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {month && (
-                      <button
-                        type="button"
-                        onClick={() => { setMonth(''); setMonthPickerOpen(false); }}
-                        className="w-full mt-2 rounded-lg border border-neutral-200 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-50 transition-colors"
-                      >
-                        {L.clear}
-                      </button>
-                    )}
-                  </div>
-                )}
+                <select value={monthNo} onChange={(e) => setMonthNo(e.target.value)} className={selectCls}>
+                  <option value="">{L.wholeYear}</option>
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={String(m)}>{m}月</option>
+                  ))}
+                </select>
               </div>
               {/* Status */}
               <div className="space-y-1.5">
