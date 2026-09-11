@@ -47,6 +47,11 @@ const STATUS_COLOR: Record<string, string> = {
   '対応完了': 'bg-emerald-50 text-emerald-700 border-emerald-200',
 };
 
+// 手を打ち終わった状態。集計ではまとめて「完了」に数える。
+// 対応不要 は「NG を挙げたが作業者と確認した結果、当初からその設計だった」
+// という結論が出た状態で、放置されている案件ではない。
+const CLOSED_STATUS = new Set(['対応完了', '対応不要']);
+
 const PRIORITY_COLOR: Record<string, string> = {
   '高': 'bg-red-50 text-red-700 border-red-200',
   '中': 'bg-amber-50 text-amber-700 border-amber-200',
@@ -109,7 +114,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
           keyword: 'キーワード', keywordPh: 'NO / テスト案件名 / BUG説明',
           system: 'システム', month: '月次', judgment: '判定', status: 'ステータス',
           all: 'すべて', clear: '条件クリア', search: '検索', result: '検索結果', count: '件', exportHtml: 'HTML出力',
-          sumTotal: '合計件数', sumNg: 'NG件数', sumIncomplete: '未完了', sumDone: '対応完了',
+          sumTotal: '合計件数', sumNg: 'NG件数', sumIncomplete: '未完了', sumDone: '完了',
           colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'BUG説明',
           colJudg: '判定', colStatus: 'ステータス', colPriority: '優先度', colDate: '実施日', colAssignee: '担当者', colMonth: '月次',
           noData: '条件に一致するデータがありません。', loading: '読み込み中...',
@@ -264,8 +269,8 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
   const summary = useMemo(() => {
     const total = filtered.length;
     const ng = filtered.filter((b) => b.judgment === 'NG').length;
-    const incomplete = filtered.filter((b) => b.status && b.status !== '対応完了').length;
-    const done = filtered.filter((b) => b.status === '対応完了').length;
+    const incomplete = filtered.filter((b) => b.status && !CLOSED_STATUS.has(b.status)).length;
+    const done = filtered.filter((b) => CLOSED_STATUS.has(b.status)).length;
     return { total, ng, incomplete, done };
   }, [filtered]);
 
