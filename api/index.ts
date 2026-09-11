@@ -1644,7 +1644,7 @@ async function queryAllAchievementItems(databaseId: string): Promise<Achievement
 
 // ── Bug list (全体バグ一覧表 data source) ───────────────────────────────
 // NOTION_BUG_DATABASE_ID の「全体バグ一覧表」を取得。システム/月次は rollup、
-// テスト案件名は relation（リレーション先のタイトルを解決）、担当者は実施者(created_by)。
+// テスト案件名は relation（リレーション先のタイトルを解決）、担当者は実施者(テキスト)。
 
 type BugItem = {
   id: string;
@@ -1708,8 +1708,8 @@ function parseBugItem(page: any, relMap: Map<string, string>): BugItem {
     judgment: propertyToPlainText(p["判定"]),
     status: propertyToPlainText(p["ステータス"]),
     execDate: propertyToPlainText(p["実施日"]),
-    // 実施者 が created_by のうちは API integration 名しか入らない。
-    // テキスト型に変えれば移管時に書いた名前が入るので、両方の型を読む
+    // 実施者 はテキスト型。以前は created_by で API integration 名しか
+    // 入らなかった。型を戻した表が残っていても読めるよう両方見る
     assignee: createdByName(p["実施者"]) || propertyToPlainText(p["実施者"]),
     month: rollupToText(p["月次"]),
     reproSteps: propertyToPlainText(p["再現ステップ"]),
@@ -3658,7 +3658,7 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
         bugDesc: tc["テスト内容"] ?? "",
         judgment: "NG",
         status: "対応待ち",
-        // 実施者。BUG 表が created_by のままなら書き込みは捨てられる
+        // 実施者にはテストケースの作成者を入れる
         assignee: tc["作成者"] ?? "",
         module: moduleText,
         reproSteps: tc["ステップ"] ?? "",
@@ -3716,8 +3716,7 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
       "優先度": b.priority ?? "",
       "ケース番号": b.caseNumber ?? "",
       "実施日": b.execDate ?? "",
-      // テストケースの作成者を入れる。BUG 表の 実施者 が created_by の間は
-      // buildBugProperty が null を返して skipped に入るだけで害は無い
+      // 実施者。テキスト型なのでテストケースの作成者がそのまま入る
       "実施者": b.assignee ?? "",
       "ブラウザ / バージョン": b.browserVersion ?? "",
       "アプリバージョン": b.appVersion ?? "",
