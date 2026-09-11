@@ -27,6 +27,14 @@ interface BugContext {
   fieldOptions: { judgment: string[]; status: string[]; priority: string[] };
 }
 
+// 既定値が表の選択肢に無いまま送ると、Notion が新しい選択肢を作ってしまう。
+// BUG一覧の絞り込みに語義の重なる項目が増え、既存の値で絞ると移管分が漏れる。
+// 選択肢にある場合だけ既定値を使い、無ければ先頭を採る。
+function pickDefault(options: string[], preferred: string): string {
+  if (options.includes(preferred)) return preferred;
+  return options[0] ?? preferred;
+}
+
 export default function BugTransferForm({
   caseId, year, onDone, onCancel,
 }: {
@@ -63,8 +71,8 @@ export default function BugTransferForm({
         if (!alive) return;
         setCtx(d);
         setBugDesc(d.defaults.bugDesc);
-        setJudgment(d.defaults.judgment);
-        setStatus(d.defaults.status);
+        setJudgment(pickDefault(d.fieldOptions.judgment, d.defaults.judgment));
+        setStatus(pickDefault(d.fieldOptions.status, d.defaults.status));
         // 候補が1件だけなら選ぶ手間を省く
         if (d.candidates.length === 1) setSelectedCase(d.candidates[0].id);
       })
