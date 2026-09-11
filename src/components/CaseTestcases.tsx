@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, ClipboardList, Loader2 } from 'lucide-react';
-
-type TcRow = Record<string, string> & { id: string };
+import TestcaseDetailDialog from './TestcaseDetailDialog';
+import { RESULT_COLOR, type TcRow } from './testcaseFields';
 
 type Response = {
   items: TcRow[];
@@ -14,16 +14,11 @@ type Response = {
 
 const COLUMNS = ['ケース番号', '機能名', 'テスト内容', 'テスト結果', '優先級'] as const;
 
-const RESULT_COLOR: Record<string, string> = {
-  OK: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  NG: 'bg-red-50 text-red-700 border-red-200',
-  'テスト不可': 'bg-amber-50 text-amber-700 border-amber-200',
-  '未実施': 'bg-neutral-100 text-neutral-600 border-neutral-200',
-};
-
 export default function CaseTestcases({ caseId }: { caseId: string }) {
   // 既定は閉じておく。1案件で数十〜百件あるため、開いたときだけ取得する
   const [open, setOpen] = useState(false);
+  // 詳細ダイアログで表示している行の位置。-1 は非表示
+  const [detailIndex, setDetailIndex] = useState(-1);
   const [data, setData] = useState<Response | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,10 +111,10 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
               <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
                 <table className="w-full border-collapse">
                   <thead className="sticky top-0 bg-white">
-                    <tr>{COLUMNS.map((c) => <th key={c} className={th0}>{c}</th>)}</tr>
+                    <tr>{COLUMNS.map((c) => <th key={c} className={th0}>{c}</th>)}<th className={th0}></th></tr>
                   </thead>
                   <tbody>
-                    {data.items.map((r) => (
+                    {data.items.map((r, i) => (
                       <tr key={r.id} className="hover:bg-neutral-50">
                         {COLUMNS.map((c) => {
                           const v = r[c] || '';
@@ -141,6 +136,15 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
                             </td>
                           );
                         })}
+                        <td className={td0}>
+                          <button
+                            type="button"
+                            onClick={() => setDetailIndex(i)}
+                            className="px-2 py-1 rounded border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100"
+                          >
+                            詳細
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -149,6 +153,17 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
             </>
           )}
         </div>
+      )}
+
+      {/* 内容を見るだけのダイアログ。編集・削除・BUG移管 は置かない
+          (それらは TestCase 画面から行う)。前後送りは残す */}
+      {detailIndex >= 0 && data && (
+        <TestcaseDetailDialog
+          rows={data.items}
+          index={detailIndex}
+          onIndex={setDetailIndex}
+          onClose={() => setDetailIndex(-1)}
+        />
       )}
     </section>
   );

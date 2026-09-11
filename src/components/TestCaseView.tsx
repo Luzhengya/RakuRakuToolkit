@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Bug, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
-
-// Notion の「{システム}{年度}」テーブル 1 行 (属性名をキーにした素の文字列)
-type TcRow = Record<string, string> & { id: string };
+import {
+  HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, SECONDARY_FIELDS,
+  type TcRow,
+} from './testcaseFields';
 
 type ListResponse = {
   items: TcRow[];
@@ -34,21 +35,6 @@ const KEYWORD_FIELDS = [
   'CMDB番号', '大分類', '中分類', '小分類', '機能名', 'テスト内容',
 ] as const;
 
-// 詳細ダイアログで大きく見せる項目。
-// 備考は自由記述で行数が読めないため、右の一覧では窮屈になる。予期結果の下に置く。
-const PRIMARY_FIELDS = ['テスト内容', '前提条件', 'ステップ', '予期結果', '備考'] as const;
-// 詳細ダイアログの右側に出す重要項目
-const HIGHLIGHT_FIELDS = ['テスト結果', '優先級'] as const;
-// 残りの項目 (ケース番号はヘッダ、備考は左に出すので重複させない)
-const SECONDARY_FIELDS = [
-  'システム', '月次', 'CMDB番号',
-  '大分類', '中分類', '小分類',
-  '機能名', '要件名',
-  'ポイント', 'カテゴリ', '状態',
-  '作成者', '作成日', '更新者', '更新日',
-  'バージョン', '関連NO',
-] as const;
-
 // サーバー側で編集を許可している項目 (api の TESTCASE_EDITABLE_FIELDS と対応)
 const EDITABLE_FIELDS = new Set<string>([
   'CMDB番号', '大分類', '中分類', '小分類', '機能名', '要件名',
@@ -58,15 +44,6 @@ const EDITABLE_FIELDS = new Set<string>([
 
 const RESULT_OPTIONS = ['', 'OK', 'NG', 'テスト不可', '未実施'];
 
-const RESULT_COLOR: Record<string, string> = {
-  OK: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  NG: 'bg-red-50 text-red-700 border-red-200',
-  'テスト不可': 'bg-amber-50 text-amber-700 border-amber-200',
-  '未実施': 'bg-neutral-100 text-neutral-600 border-neutral-200',
-};
-
-// 長文はダイアログで改行を保持したいので pre-wrap 対象にする項目
-const LONG_TEXT_FIELDS = new Set(['前提条件', 'ステップ', '予期結果', 'テスト内容', '備考']);
 
 export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [systems, setSystems] = useState<string[]>([]);
