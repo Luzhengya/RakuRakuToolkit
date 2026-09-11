@@ -118,13 +118,18 @@ export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId
     let raf = 0;
     let last = performance.now();
     const speed = ROW_HEIGHT / (SECONDS_PER_ROW * 1000); // px/ms
+    // 位置は JS 側で持つ。1フレームの移動量は 0.24px しかなく、scrollTop を
+    // 読み戻して加算するとブラウザが画素に丸めた値が返り、加算ぶんが毎回
+    // 消えて1行目から動かなくなる。
+    // 開始時だけ現在位置を読む (停止中に手で動かした位置から続けるため)
+    let pos = el.scrollTop;
     const step = (now: number) => {
       const dt = now - last;
       last = now;
       const half = el.scrollHeight / 2;
-      let next = el.scrollTop + speed * dt;
-      if (half > 0 && next >= half) next -= half;
-      el.scrollTop = next;
+      pos += speed * dt;
+      if (half > 0 && pos >= half) pos -= half;
+      el.scrollTop = pos;
       raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
@@ -245,9 +250,12 @@ export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId
             CSS アニメーションではなく scrollTop を動かすのは、
             止めた位置に留まることと、止めている間に手で読み進められることの両方が要るため
             (transform を止めると先頭に戻ってしまい、手でも動かせない) */}
+        {/* スクロールバーは隠す。常時出ていると「手で動かす一覧」に見えてしまう。
+            ホイールでの手動スクロールはバーが無くても効く */}
+        <style>{`.tc-alert-list{scrollbar-width:none;-ms-overflow-style:none}.tc-alert-list::-webkit-scrollbar{display:none}`}</style>
         <div
           ref={listRef}
-          className="overflow-y-auto relative"
+          className="tc-alert-list overflow-y-auto relative"
           style={{ height: ROW_HEIGHT * VISIBLE_ROWS }}
           onMouseEnter={() => setHovering(true)}
           onMouseLeave={() => setHovering(false)}
