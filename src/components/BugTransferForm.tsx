@@ -21,6 +21,7 @@ interface BugContext {
     priority: string;
     caseNumber: string;
     execDate: string;
+    assignee: string;
     browserVersion: string;
     appVersion: string;
   };
@@ -106,6 +107,7 @@ export default function BugTransferForm({
           priority: ctx.defaults.priority,
           caseNumber: ctx.defaults.caseNumber,
           execDate: ctx.defaults.execDate,
+          assignee: ctx.defaults.assignee,
           browserVersion: ctx.defaults.browserVersion,
           appVersion: ctx.defaults.appVersion,
         }),
@@ -269,6 +271,7 @@ export default function BugTransferForm({
                 ['モジュール', ctx!.defaults.module],
                 ['優先度', ctx!.defaults.priority],
                 ['実施日', ctx!.defaults.execDate],
+                ['実施者', ctx!.defaults.assignee],
                 ['ブラウザ', ctx!.defaults.browserVersion],
                 ['アプリ', ctx!.defaults.appVersion],
               ].map(([k, v]) => (
