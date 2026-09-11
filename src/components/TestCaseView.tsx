@@ -684,8 +684,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             )}
 
             {/* 本文: 重点項目を左に大きく、その他を右に畳んで横幅を使う */}
-            <div className="p-5 grid grid-cols-1 lg:grid-cols-3 gap-5 overflow-auto">
-              <div className="lg:col-span-2 space-y-4">
+            <div className="p-5 space-y-5 overflow-auto">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+                <div className="lg:col-span-2 space-y-4">
                 {PRIMARY_FIELDS.map((f) => (
                   <div key={f} className="space-y-1">
                     <p className="text-xs font-bold text-neutral-700 flex items-center gap-2">
@@ -783,14 +784,30 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                   })}
                 </div>
 
-                {/* BUG移管フォーム / 移管済み BUG の内容 / 削除ボタン をモードで切り替える。
-                    左側の重点項目 (テスト内容・ステップ・予期結果) はそのまま見えるので、
-                    移管の材料を確認しながら実際結果を書ける */}
-                {dialogMode === 'transfer' ? (
-                  <div className="border border-red-200 rounded-lg p-3 bg-red-50/30">
+                <button
+                  type="button"
+                  onClick={() => removeRow(detail)}
+                  disabled={deletingId === detail.id}
+                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  {deletingId === detail.id
+                    ? <Loader2 size={14} className="animate-spin" />
+                    : <Trash2 size={14} />}
+                  このケースを削除
+                </button>
+                </div>
+              </div>
+
+              {/* BUG は右の狭い欄に入れると長文が細長く潰れるので、
+                  ケース情報の下に区切り線を引いて全幅で並べる。
+                  内部の配置はケース情報と同じ (重要を左に大きく、副次を右に) */}
+              {dialogMode !== 'detail' && (
+                <div className="border-t border-neutral-200 pt-5">
+                  {dialogMode === 'transfer' ? (
                     <BugTransferForm
                       caseId={detail.id}
                       year={year}
+                      onCancel={() => setDialogMode('detail')}
                       onDone={(bugId, bugNo) => {
                         // 画面側も更新して、閉じずに結果が見えるようにする
                         const caseNo = (detail['ケース番号'] || '').trim();
@@ -801,44 +818,34 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         setDialogMode('bug');
                       }}
                     />
-                  </div>
-                ) : dialogMode === 'bug' ? (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="text-sm font-bold text-neutral-800">移管済み BUG</h4>
-                      <button
-                        type="button"
-                        onClick={() => setDialogMode('detail')}
-                        className="text-[11px] text-neutral-500 hover:text-neutral-800"
-                      >
-                        ケース情報に戻る
-                      </button>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <h4 className="text-sm font-bold text-neutral-800">移管済み BUG</h4>
+                        <div className="flex items-center gap-3">
+                          <a
+                            href={`https://www.notion.so/${(transferred[(detail['ケース番号'] || '').trim()]?.id ?? '').replace(/-/g, '')}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-800"
+                          >
+                            <ExternalLink size={12} />
+                            Notion で開く（画像の添付や編集はこちら）
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => setDialogMode('detail')}
+                            className="text-[11px] text-neutral-500 hover:text-neutral-800"
+                          >
+                            閉じる
+                          </button>
+                        </div>
+                      </div>
+                      <BugSummary bugId={transferred[(detail['ケース番号'] || '').trim()]?.id ?? ''} />
                     </div>
-                    <BugSummary bugId={transferred[(detail['ケース番号'] || '').trim()]?.id ?? ''} />
-                    <a
-                      href={`https://www.notion.so/${(transferred[(detail['ケース番号'] || '').trim()]?.id ?? '').replace(/-/g, '')}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-800"
-                    >
-                      <ExternalLink size={12} />
-                      Notion で開く（画像の添付や編集はこちら）
-                    </a>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => removeRow(detail)}
-                    disabled={deletingId === detail.id}
-                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
-                  >
-                    {deletingId === detail.id
-                      ? <Loader2 size={14} className="animate-spin" />
-                      : <Trash2 size={14} />}
-                    このケースを削除
-                  </button>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

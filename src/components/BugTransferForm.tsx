@@ -28,11 +28,12 @@ interface BugContext {
 }
 
 export default function BugTransferForm({
-  caseId, year, onDone,
+  caseId, year, onDone, onCancel,
 }: {
   caseId: string;
   year: number;
   onDone: (bugId: string, bugNo: string) => void;
+  onCancel: () => void;
 }) {
   const [ctx, setCtx] = useState<BugContext | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,7 +103,7 @@ export default function BugTransferForm({
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((body as { error?: string }).error || '移管に失敗しました');
-      const r = body as { bugId: string; bugNo: string; skipped?: string[]; resultUpdated?: boolean; resultError?: string };
+      const r = body as { bugId: string; bugNo: string; resultUpdated?: boolean; resultError?: string };
       if (r.resultUpdated === false) {
         // BUG は作れているので、失敗したのはテスト結果の更新だけ
         setError(`BUG は作成しましたが、テスト結果を NG にできませんでした: ${r.resultError ?? ''}`);
@@ -133,14 +134,24 @@ export default function BugTransferForm({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Bug size={15} className="text-red-500" />
-        <h4 className="text-sm font-bold text-neutral-800">BUG移管</h4>
-        {ctx && (
-          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
-            No. {ctx.nextNo}（自動採番）
-          </span>
-        )}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Bug size={15} className="text-red-500" />
+          <h4 className="text-sm font-bold text-neutral-800">BUG移管</h4>
+          {ctx && (
+            <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">
+              No. {ctx.nextNo}（自動採番）
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="text-[11px] text-neutral-500 hover:text-neutral-800 disabled:opacity-50"
+        >
+          キャンセル
+        </button>
       </div>
 
       {error && (
@@ -159,100 +170,113 @@ export default function BugTransferForm({
           </span>
         </div>
       ) : (
-        <>
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold text-neutral-500">
-              テスト案件 <span className="text-red-500">*</span>
-            </span>
-            <select
-              value={selectedCase}
-              onChange={(e) => setSelectedCase(e.target.value)}
-              className={inputCls}
-            >
-              <option value="">選択してください</option>
-              {ctx!.candidates.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.projectName}{c.month ? `（${c.month}）` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold text-neutral-500">
-              実際結果 <span className="text-red-500">*</span>
-            </span>
-            <textarea
-              value={actualResult}
-              onChange={(e) => setActualResult(e.target.value)}
-              rows={3}
-              placeholder="実際に起きたことを記入してください"
-              className={inputCls}
-            />
-          </label>
-
-          <label className="block space-y-1">
-            <span className="text-[11px] font-semibold text-neutral-500">Bug説明</span>
-            <textarea
-              value={bugDesc}
-              onChange={(e) => setBugDesc(e.target.value)}
-              rows={2}
-              className={inputCls}
-            />
-          </label>
-
-          <div className="grid grid-cols-2 gap-3">
+        // ケース情報と同じ配置: 記入する項目を左に大きく、付随情報を右に
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          <div className="lg:col-span-2 space-y-4">
             <label className="block space-y-1">
-              <span className="text-[11px] font-semibold text-neutral-500">判定</span>
-              <select value={judgment} onChange={(e) => setJudgment(e.target.value)} className={inputCls}>
-                {(ctx!.fieldOptions.judgment.length ? ctx!.fieldOptions.judgment : ['NG']).map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
+              <span className="text-xs font-bold text-neutral-700">
+                実際結果 <span className="text-red-500">*</span>
+              </span>
+              <textarea
+                value={actualResult}
+                onChange={(e) => setActualResult(e.target.value)}
+                rows={5}
+                placeholder="実際に起きたことを記入してください"
+                className={inputCls}
+              />
             </label>
-            <label className="block space-y-1">
-              <span className="text-[11px] font-semibold text-neutral-500">ステータス</span>
-              <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
-                {(ctx!.fieldOptions.status.length ? ctx!.fieldOptions.status : ['対応待ち']).map((o) => (
-                  <option key={o} value={o}>{o}</option>
-                ))}
-              </select>
-            </label>
-          </div>
 
-          {/* 自動で入る項目。確認だけできるように読み取り専用で見せる */}
-          <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
-            {[
-              ['ケース番号', ctx!.defaults.caseNumber],
-              ['モジュール', ctx!.defaults.module],
-              ['優先度', ctx!.defaults.priority],
-              ['実施日', ctx!.defaults.execDate],
-              ['再現ステップ', ctx!.defaults.reproSteps],
-              ['予定結果', ctx!.defaults.expectedResult],
-              ['ブラウザ / バージョン', ctx!.defaults.browserVersion],
-              ['アプリバージョン', ctx!.defaults.appVersion],
-            ].map(([k, v]) => (
-              <div key={k} className="px-3 py-1.5 flex items-start gap-3">
-                <span className="text-neutral-400 w-32 shrink-0">{k}</span>
-                <span className="text-neutral-700 flex-1 min-w-0 whitespace-pre-wrap">{v || '-'}</span>
+            <label className="block space-y-1">
+              <span className="text-xs font-bold text-neutral-700">Bug説明</span>
+              <textarea
+                value={bugDesc}
+                onChange={(e) => setBugDesc(e.target.value)}
+                rows={3}
+                className={inputCls}
+              />
+            </label>
+
+            {/* 移管の材料。長文なので左側に置く */}
+            {[['再現ステップ', ctx!.defaults.reproSteps], ['予定結果', ctx!.defaults.expectedResult]].map(([k, v]) => (
+              <div key={k} className="space-y-1">
+                <p className="text-xs font-bold text-neutral-700">{k}</p>
+                <p className="text-sm text-neutral-800 whitespace-pre-wrap border border-neutral-200 rounded-lg p-3 bg-neutral-50 min-h-[3rem]">
+                  {v || '-'}
+                </p>
               </div>
             ))}
           </div>
 
-          <p className="text-[11px] text-neutral-400">
-            移管するとこのテストケースのテスト結果は NG になります。
-          </p>
+          <div className="space-y-4">
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold text-neutral-500">
+                テスト案件 <span className="text-red-500">*</span>
+              </span>
+              <select
+                value={selectedCase}
+                onChange={(e) => setSelectedCase(e.target.value)}
+                className={inputCls}
+              >
+                <option value="">選択してください</option>
+                {ctx!.candidates.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.projectName}{c.month ? `（${c.month}）` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <button
-            type="button"
-            onClick={submit}
-            disabled={!canSubmit}
-            className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed"
-          >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-            BUG を作成
-          </button>
-        </>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block space-y-1">
+                <span className="text-[11px] font-semibold text-neutral-500">判定</span>
+                <select value={judgment} onChange={(e) => setJudgment(e.target.value)} className={inputCls}>
+                  {(ctx!.fieldOptions.judgment.length ? ctx!.fieldOptions.judgment : ['NG']).map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-1">
+                <span className="text-[11px] font-semibold text-neutral-500">ステータス</span>
+                <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
+                  {(ctx!.fieldOptions.status.length ? ctx!.fieldOptions.status : ['対応待ち']).map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {/* 自動で入る項目。確認だけできるように読み取り専用で見せる */}
+            <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
+              {[
+                ['ケース番号', ctx!.defaults.caseNumber],
+                ['モジュール', ctx!.defaults.module],
+                ['優先度', ctx!.defaults.priority],
+                ['実施日', ctx!.defaults.execDate],
+                ['ブラウザ', ctx!.defaults.browserVersion],
+                ['アプリ', ctx!.defaults.appVersion],
+              ].map(([k, v]) => (
+                <div key={k} className="px-3 py-1.5 flex items-start gap-3">
+                  <span className="text-neutral-400 w-20 shrink-0">{k}</span>
+                  <span className="text-neutral-700 flex-1 min-w-0 break-words">{v || '-'}</span>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-[11px] text-neutral-400">
+              移管するとこのテストケースのテスト結果は NG になります。
+            </p>
+
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!canSubmit}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed"
+            >
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              BUG を作成
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
