@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Bug, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import { AlertCircle, Bug, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
 
@@ -193,6 +193,17 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     setDialogMode(mode);
   };
 
+  // ダイアログを開いたまま前後のケースへ移る。
+  // 絞り込み結果の並び順をそのまま辿る。
+  // 編集中の下書きと表示モードは必ず捨てる。持ち越すと別のケースに
+  // 前のケースの入力を保存してしまう。
+  const detailIndex = detail ? filtered.findIndex((r) => r.id === detail.id) : -1;
+  const stepDetail = (delta: number) => {
+    if (detailIndex < 0) return;
+    const next = filtered[detailIndex + delta];
+    if (next) openDetail(next);
+  };
+
   // 移管済み状況を取り直す。BUG 表を引いて判定しているので、
   // Notion 側で BUG を消せば移管ボタンが戻る
   const reloadTransferred = () => {
@@ -361,16 +372,12 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             type="button"
             onClick={exportExcel}
             disabled={exporting || filtered.length === 0}
-            title="絞り込んだ結果を Testcase Format と同じ書式で出力します"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+            title={`Excel出力（絞り込んだ ${filtered.length}件 / Testcase Format と同じ書式）`}
+            className="inline-flex items-center justify-center p-2 rounded-lg border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
           >
             {exporting
               ? <Loader2 size={14} className="animate-spin" />
               : <Download size={14} />}
-            Excel出力
-            {filtered.length > 0 && (
-              <span className="text-[11px] text-neutral-400 tabular-nums">{filtered.length}件</span>
-            )}
           </button>
         </div>
       </div>
@@ -565,14 +572,24 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
 
       {/* 詳細ダイアログ (縦に伸ばさず横に広げる) */}
       {detail && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 gap-2">
+          {/* 左右の送り。閉じずに前後のケースを見られる */}
+          <button
+            type="button"
+            onClick={() => stepDetail(-1)}
+            disabled={detailIndex <= 0}
+            title="前のケース"
+            className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronLeft size={20} />
+          </button>
+
           <div className="w-full max-w-6xl max-h-[88vh] bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
             {/* ヘッダ: ケース番号はここだけに出す (本文では重複させない) */}
             <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-baseline gap-3 min-w-0">
-                <span className="text-[11px] font-semibold text-neutral-400 shrink-0">ケース番号</span>
-                <h3 className="text-lg font-bold text-neutral-900 truncate">
-                  {detail['ケース番号'] || '-'}
+                <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+                  NO.{detail['ケース番号'] || '-'}
                 </h3>
                 {detail['機能名'] && (
                   <span className="text-sm text-neutral-400 truncate">{detail['機能名']}</span>
@@ -587,6 +604,33 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {/* 何件目か。送りボタンで移動したときに位置が分かる */}
+                {detailIndex >= 0 && filtered.length > 1 && (
+                  <span className="text-[11px] text-neutral-400 tabular-nums">
+                    {detailIndex + 1} / {filtered.length}
+                  </span>
+                )}
+                {/* 一覧に戻らずに移管できるよう、ここにも置く */}
+                {!editing && dialogMode === 'detail' && (
+                  transferred[(detail['ケース番号'] || '').trim()] ? (
+                    <button
+                      type="button"
+                      onClick={() => setDialogMode('bug')}
+                      className="px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 whitespace-nowrap"
+                    >
+                      移管済み No.{transferred[(detail['ケース番号'] || '').trim()].no || '-'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setDialogMode('transfer')}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 whitespace-nowrap"
+                    >
+                      <Bug size={14} />
+                      BUG移管
+                    </button>
+                  )
+                )}
                 {editing ? (
                   <>
                     <button
@@ -792,6 +836,16 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               </div>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={() => stepDetail(1)}
+            disabled={detailIndex < 0 || detailIndex >= filtered.length - 1}
+            title="次のケース"
+            className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          >
+            <ChevronRight size={20} />
+          </button>
         </div>
       )}
     </div>
