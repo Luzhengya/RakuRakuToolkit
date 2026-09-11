@@ -560,6 +560,21 @@ const SUMMARY_PRIORITY_DESC: Record<string, string> = {
 };
 const SUMMARY_PRIORITY_ORDER = ['P3', 'P2', 'P1', 'P0'];
 
+// 「予定通り完了」「遅延完了」はどちらも完了扱い（結果報告の集計・工数計算対象）
+function isCompletedStatus(status?: string): boolean {
+  return status === '予定通り完了' || status === '遅延完了';
+}
+
+function getStatusBadgeHtml(status?: string): string {
+  if (isCompletedStatus(status)) {
+    if (status === '遅延完了') {
+      return ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">遅延完了</span>';
+    }
+    return '';
+  }
+  return ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>';
+}
+
 function buildBugSummaryHtml(completedItems: ProgressItem[], bugsByCase: Map<string, ReportBug[]>): string {
   const lines: string[] = [];
   for (const item of completedItems) {
@@ -600,8 +615,8 @@ function buildResultReportHtml(
 ): string {
   if (selectedItems.length === 0) return template;
 
-  const completedItems = selectedItems.filter(item => item.status === '予定通り完了');
-  const inProgressItems = selectedItems.filter(item => item.status !== '予定通り完了');
+  const completedItems = selectedItems.filter(item => isCompletedStatus(item.status));
+  const inProgressItems = selectedItems.filter(item => !isCompletedStatus(item.status));
 
   const first = selectedItems[0];
   const yyyy = monthKey.slice(0, 4);
@@ -623,9 +638,7 @@ function buildResultReportHtml(
 
   const projectListHtml = selectedItems
     .map((item) => {
-      const badge = item.status !== '予定通り完了'
-        ? ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>'
-        : '';
+      const badge = getStatusBadgeHtml(item.status);
       return `<li>${safeHtml(item.projectName || '-')}${badge}</li>`;
     })
     .join('\n');
@@ -688,16 +701,14 @@ function buildResultReportHtml(
 
   const effortProjectBlocksHtml = selectedItems
     .map((item) => {
-      const isInProgress = item.status !== '予定通り完了';
+      const isCompleted = isCompletedStatus(item.status);
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
       const diff = parseFloat((actual - estimate).toFixed(2));
-      const badge = isInProgress
-        ? ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>'
-        : '';
-      const actualCell = isInProgress ? '' : fmtNum(actual);
+      const badge = getStatusBadgeHtml(item.status);
+      const actualCell = isCompleted ? fmtNum(actual) : '';
 
-      const effortNoteRow = !isInProgress && diff > 2
+      const effortNoteRow = isCompleted && diff > 2
         ? `<tr><th style="color:#b91c1c;">工数差分説明</th><td contenteditable="true" style="color:#b91c1c;min-width:200px;">差分が${fmtNum(diff)}人日を超えています。理由を記入してください。</td></tr>`
         : '';
 
@@ -2148,7 +2159,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         template = await response.text();
         setReportTemplateHtml(template);
       }
-      const completed = selectedItems.filter((it) => it.status === '予定通り完了');
+      const completed = selectedItems.filter((it) => isCompletedStatus(it.status));
       const entries = await Promise.all(
         completed.map(async (it): Promise<[string, ReportBug[]]> => {
           try {
