@@ -3326,6 +3326,115 @@ async function uploadTestcasesToNotion(
 }
 
 // TestCase 画面用: 指定システム・年度のテーブルから全ケースを取得
+// 親ページ配下から「{システム}{年度}」の子データベースを探す。
+// 無ければ null (閲覧目的では新規作成しない)。
+async function findTestcaseDatabaseId(parentPageId: string, dbTitle: string): Promise<string | null> {
+  if (!notion) return null;
+  let cursor: string | undefined = undefined;
+  do {
+    const r: any = await notion.blocks.children.list({
+      block_id: parentPageId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+    for (const block of r.results ?? []) {
+      if (block.type === "child_database" && (block.child_database?.title ?? "").trim() === dbTitle) {
+        return block.id as string;
+      }
+    }
+    cursor = r.has_more ? r.next_cursor : undefined;
+  } while (cursor);
+  return null;
+}
+
+// ── 案件に紐づくテストケース ────────────────────────────────────────────
+// 案件名は「CMDB番号 + 案件内容」という形なので、先頭の数字を CMDB番号として
+// 取り出し、TestCase 側の CMDB番号 と突き合わせる。
+// 実績表を経由せず案件名から直接引くのは、relation を張らずに済むため。
+
+// 先頭の連続する数字を取り出す。TestCase 側の CMDB番号 が
+// 「10018788」でも「10018788【海外調書】…」でも同じ値になる。
+function extractCmdbNo(text: string): string {
+  const m = (text ?? "").trim().match(/^(\d+)/);
+  return m ? m[1] : "";
+}
+
+// 「2026-09」「2026/9」「2026年9月」「202609」→ "202609"。取れなければ ""
+function toMonthKeyServer(value: string): string {
+  const text = (value ?? "").trim();
+  if (!text) return "";
+  const full = text.match(/(\d{4})[-/.年]?(\d{1,2})/);
+  if (!full) return "";
+  return `${full[1]}${String(Number(full[2])).padStart(2, "0")}`;
+}
+
+app.get("/api/test-center/case-testcases/:caseId", async (req, res) => {
+  const parentPageId = process.env.NOTION_TESTCASE_PARENT_PAGE_ID;
+  if (!notion || !parentPageId) {
+    return res.status(503).json({
+      error: "Notion 未設定",
+      detail: "NOTION_API_KEY / NOTION_TESTCASE_PARENT_PAGE_ID を設定してください",
+    });
+  }
+  const caseId = String(req.params.caseId ?? "").trim();
+  if (!caseId) return res.status(400).json({ error: "caseId は必須です" });
+
+  try {
+    const page = await notion.pages.retrieve({ page_id: caseId });
+    const item = parseProgressItem(page);
+    const cmdbNo = extractCmdbNo(item.projectName);
+    const monthKey = toMonthKeyServer(item.month);
+    // システムは複数値のことがある (isItemInArea が , で分割している)。先頭を使う
+    const system = (item.system ?? "").split(",")[0].trim();
+    const year = monthKey ? monthKey.slice(0, 4) : "";
+    const dbTitle = system && year ? `${system}${year}` : "";
+
+    // 案件名から CMDB番号 が取れない場合は突き合わせ不能
+    if (!cmdbNo) {
+      return res.json({
+        items: [], total: 0, exists: false, dbTitle, cmdbNo: "", projectName: item.projectName,
+      });
+    }
+    if (!dbTitle) {
+      return res.json({
+        items: [], total: 0, exists: false, dbTitle: "", cmdbNo, projectName: item.projectName,
+      });
+    }
+
+    const databaseId = await findTestcaseDatabaseId(parentPageId, dbTitle);
+    if (!databaseId) {
+      return res.json({ items: [], total: 0, exists: false, dbTitle, cmdbNo, projectName: item.projectName });
+    }
+
+    const db: any = await notion.databases.retrieve({ database_id: databaseId });
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) {
+      return res.json({ items: [], total: 0, exists: false, dbTitle, cmdbNo, projectName: item.projectName });
+    }
+
+    const index = await loadTestcaseIndex(dataSourceId);
+    const items: Record<string, string>[] = [];
+    for (const page of index.values()) {
+      const row: Record<string, string> = { id: (page as any).id };
+      for (const f of TESTCASE_NOTION_FIELDS) row[f.name] = readTcPlain(page, f);
+      if (extractCmdbNo(row["CMDB番号"]) !== cmdbNo) continue;
+      items.push(row);
+    }
+    items.sort((a, b) =>
+      (a["ケース番号"] || "").localeCompare(b["ケース番号"] || "", undefined, { numeric: true })
+    );
+
+    return res.json({
+      items, total: items.length, exists: true, dbTitle, cmdbNo, projectName: item.projectName,
+    });
+  } catch (error) {
+    console.error("Case testcases query error for %s:", caseId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "取得に失敗しました",
+    });
+  }
+});
+
 app.get("/api/testcase/list", async (req, res) => {
   const system = String(req.query.system ?? "").trim();
   const year = Number(String(req.query.year ?? "").trim());
@@ -3341,23 +3450,7 @@ app.get("/api/testcase/list", async (req, res) => {
   }
   try {
     const dbTitle = `${system}${year}`;
-    // 既存テーブルのみ対象 (無い場合は空を返す。閲覧目的で新規作成はしない)
-    let databaseId: string | null = null;
-    let cursor: string | undefined = undefined;
-    do {
-      const r: any = await notion.blocks.children.list({
-        block_id: parentPageId,
-        start_cursor: cursor,
-        page_size: 100,
-      });
-      for (const block of r.results ?? []) {
-        if (block.type === "child_database" && (block.child_database?.title ?? "").trim() === dbTitle) {
-          databaseId = block.id as string;
-          break;
-        }
-      }
-      cursor = databaseId ? undefined : r.has_more ? r.next_cursor : undefined;
-    } while (cursor);
+    const databaseId = await findTestcaseDatabaseId(parentPageId, dbTitle);
 
     if (!databaseId) return res.json({ items: [], total: 0, exists: false, dbTitle });
 
