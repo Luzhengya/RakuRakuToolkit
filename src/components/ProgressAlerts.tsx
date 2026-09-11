@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2, Loader2, Pause, Play } from 'lucide-react';
 
 type AlertLevel = 'overdue' | 'today' | 'soon' | 'missing' | 'inconsistent';
@@ -84,6 +84,7 @@ export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId
   const [paused, setPaused] = useState<boolean>(() => {
     try { return localStorage.getItem(PAUSE_KEY) === '1'; } catch { return false; }
   });
+  const listRef = useRef<HTMLDivElement | null>(null);
   // マウス中は止める。動いている行はクリックできないため
   const [hovering, setHovering] = useState(false);
 
@@ -102,6 +103,33 @@ export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
+
+  // 自動スクロール本体。1行 SECONDS_PER_ROW 秒の速度で scrollTop を進め、
+  // 複製したぶんを過ぎたら巻き戻す。止めるときは何もしないので位置が残る。
+  // 件数は data から数える (rows の useMemo はこの下で、Hook を条件分岐より
+  // 後ろに置けないため)
+  const alertCount = data
+    ? data.planMissing.length + data.design.length + data.execution.length + data.inconsistent.length
+    : 0;
+  useEffect(() => {
+    if (alertCount <= VISIBLE_ROWS || paused || hovering) return;
+    const el = listRef.current;
+    if (!el) return;
+    let raf = 0;
+    let last = performance.now();
+    const speed = ROW_HEIGHT / (SECONDS_PER_ROW * 1000); // px/ms
+    const step = (now: number) => {
+      const dt = now - last;
+      last = now;
+      const half = el.scrollHeight / 2;
+      let next = el.scrollTop + speed * dt;
+      if (half > 0 && next >= half) next -= half;
+      el.scrollTop = next;
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [alertCount, paused, hovering]);
 
   const togglePause = () =>
     setPaused((p) => {
@@ -179,8 +207,6 @@ export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId
   // 表示枠に収まる件数なら流す必要がない。
   // 少ない行を無理に回すと、同じ行が何度も通り過ぎて読みにくい。
   const scrolling = rows.length > VISIBLE_ROWS;
-  const duration = rows.length * SECONDS_PER_ROW;
-  const animating = scrolling && !paused && !hovering;
 
   return (
     <div className="space-y-2">
@@ -215,34 +241,29 @@ export default function ProgressAlerts({ onSelectCase }: { onSelectCase: (areaId
           )}
         </div>
 
-        {/* 自動スクロール。同じリストを2回並べ、-50% まで動かして繋ぎ目を無くす */}
+        {/* 自動スクロール。同じリストを2回並べ、下半分に入ったら上に巻き戻す。
+            CSS アニメーションではなく scrollTop を動かすのは、
+            止めた位置に留まることと、止めている間に手で読み進められることの両方が要るため
+            (transform を止めると先頭に戻ってしまい、手でも動かせない) */}
         <div
-          className="overflow-hidden relative"
+          ref={listRef}
+          className="overflow-y-auto relative"
           style={{ height: ROW_HEIGHT * VISIBLE_ROWS }}
           onMouseEnter={() => setHovering(true)}
           onMouseLeave={() => setHovering(false)}
         >
-          <style>{`@keyframes tc-alert-scroll { from { transform: translateY(0); } to { transform: translateY(-50%); } }`}</style>
-          <div
-            style={
-              animating
-                ? { animation: `tc-alert-scroll ${duration}s linear infinite` }
-                : undefined
-            }
-          >
-            {rows.map((a) => (
-              <AlertRow key={`a-${a.caseId}-${a.level}-${a.milestone ?? 'x'}-${a.message}`} a={a} onSelectCase={onSelectCase} />
-            ))}
-            {/* ループ用の複製。scrolling でない時は不要 */}
-            {scrolling && rows.map((a) => (
-              <AlertRow key={`b-${a.caseId}-${a.level}-${a.milestone ?? 'x'}-${a.message}`} a={a} onSelectCase={onSelectCase} />
-            ))}
-          </div>
+          {rows.map((a) => (
+            <AlertRow key={`a-${a.caseId}-${a.level}-${a.milestone ?? 'x'}-${a.message}`} a={a} onSelectCase={onSelectCase} />
+          ))}
+          {/* ループ用の複製。scrolling でない時は不要 */}
+          {scrolling && rows.map((a) => (
+            <AlertRow key={`b-${a.caseId}-${a.level}-${a.milestone ?? 'x'}-${a.message}`} a={a} onSelectCase={onSelectCase} />
+          ))}
         </div>
       </div>
       <p className="text-[11px] text-neutral-400 px-1">
         月次セレクタとは連動しません（過去月から遅れている案件も表示します）。監視中 {data.watched}件
-        {scrolling && '・マウスを乗せると停止します'}
+        {scrolling && '・マウスを乗せるとその場で止まり、手でスクロールできます'}
       </p>
     </div>
   );
