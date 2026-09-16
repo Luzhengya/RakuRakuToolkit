@@ -1457,6 +1457,7 @@ app.post("/api/test-center/achievement/:id/comment", async (req, res) => {
 // ── BUG流出 (NOTION_BUGLEAK_DATABASE_ID) ────────────────────────────────
 // サービス=システム、責任(checkbox)=テストセンター関連、案件別(YYYYMM)=期間
 type BugLeakItem = {
+  id: string;
   system: string;
   responsible: boolean;
   caseMonth: string;
@@ -1477,6 +1478,7 @@ function parseBugLeakItem(page: any): BugLeakItem {
   const p = page?.properties ?? {};
   const resp = p["責任"];
   return {
+    id: page?.id ?? "",
     system: propertyToPlainText(p["サービス"]),
     responsible: resp?.type === "checkbox" ? !!resp.checkbox : false,
     caseMonth: propertyToPlainText(p["案件別"]),
@@ -1494,11 +1496,72 @@ function parseBugLeakItem(page: any): BugLeakItem {
   };
 }
 
-async function queryAllBugLeakItems(databaseId: string): Promise<BugLeakItem[]> {
-  if (!notion) return [];
-  const database = await notion.databases.retrieve({ database_id: databaseId });
+// 画面の項目名 → Notion のプロパティ名。読み取り (parseBugLeakItem) と対で管理する。
+// 原因区分は表によって見出しが違うため候補を並べ、実在する方を使う
+const BUGLEAK_FIELDS: { key: string; names: string[] }[] = [
+  { key: "system", names: ["サービス"] },
+  { key: "caseMonth", names: ["案件別"] },
+  { key: "cmdb", names: ["CMDB番号"] },
+  { key: "feature", names: ["機能(画面)名"] },
+  { key: "defect", names: ["障害内容"] },
+  { key: "process", names: ["指摘工程"] },
+  { key: "category", names: ["指摘分類"] },
+  { key: "cause", names: ["原因区分（要件定義、設計、実装）", "原因区分"] },
+  { key: "releaseTime", names: ["リリース時期"] },
+  { key: "tcResult", names: ["TestCenter確認結果"] },
+  { key: "status", names: ["状態"] },
+  { key: "improvable", names: ["改善可/不可"] },
+  { key: "checklist", names: ["チェックリスト"] },
+  { key: "responsible", names: ["責任"] },
+];
+
+function pickSchemaName(schema: Record<string, any>, names: string[]): string | null {
+  for (const n of names) if (schema[n]) return n;
+  return null;
+}
+
+async function resolveBugLeakDataSource(databaseId: string): Promise<string> {
+  const database = await notion!.databases.retrieve({ database_id: databaseId });
   const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
   if (!dataSourceId) throw new Error("No data source found in NOTION_BUGLEAK_DATABASE_ID");
+  return dataSourceId;
+}
+
+// 画面に「どの項目がどんな入力欄か」を伝える。選択肢を渡さないと、
+// 表に無い値を送って Notion が新しい選択肢を作ってしまう
+async function getBugLeakFields(
+  databaseId: string,
+): Promise<Record<string, { type: string; options: string[]; writable: boolean }>> {
+  const dataSourceId = await resolveBugLeakDataSource(databaseId);
+  const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+  const schema: Record<string, any> = ds?.properties ?? {};
+  const out: Record<string, { type: string; options: string[]; writable: boolean }> = {};
+  for (const f of BUGLEAK_FIELDS) {
+    const name = pickSchemaName(schema, f.names);
+    if (!name) {
+      out[f.key] = { type: "missing", options: [], writable: false };
+      continue;
+    }
+    const prop = schema[name];
+    const opts: string[] =
+      prop.type === "select" ? (prop.select?.options ?? []).map((o: any) => o.name)
+      : prop.type === "status" ? (prop.status?.options ?? []).map((o: any) => o.name)
+      : prop.type === "multi_select" ? (prop.multi_select?.options ?? []).map((o: any) => o.name)
+      : [];
+    // 書けるかは buildBugProperty が実際に値を作れるかで判断する。
+    // rollup / formula / created_by などはここで false になる
+    out[f.key] = {
+      type: prop.type,
+      options: opts,
+      writable: buildBugProperty(prop, "") !== null,
+    };
+  }
+  return out;
+}
+
+async function queryAllBugLeakItems(databaseId: string): Promise<BugLeakItem[]> {
+  if (!notion) return [];
+  const dataSourceId = await resolveBugLeakDataSource(databaseId);
   const pages: any[] = [];
   let hasMore = true;
   let cursor: string | undefined = undefined;
@@ -1545,10 +1608,67 @@ app.get("/api/test-center/bug-leak", async (req, res) => {
     const bySystem = Array.from(bySystemMap.entries())
       .map(([system, count]) => ({ system, count }))
       .sort((a, b) => b.count - a.count);
-    return res.json({ total, tcRelated, bySystem, items: filtered });
+    // 詳細ダイアログの入力欄をプロパティ型に合わせるために一緒に返す。
+    // ここで落ちても一覧は出したいので、取れなければ空で返す
+    const fields = await getBugLeakFields(databaseId).catch((e) => {
+      console.error("Bug-leak schema error:", e);
+      return {};
+    });
+    return res.json({ total, tcRelated, bySystem, items: filtered, fields });
   } catch (error) {
     console.error("Bug-leak query error:", error);
     return res.status(500).json({ error: "Failed to query Notion bug-leak database" });
+  }
+});
+
+// インシデント1件を更新する。送られてきた項目だけ書き換える
+app.post("/api/test-center/bug-leak/:id/update", async (req, res) => {
+  const databaseId = process.env.NOTION_BUGLEAK_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY and NOTION_BUGLEAK_DATABASE_ID",
+    });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+
+  try {
+    const dataSourceId = await resolveBugLeakDataSource(databaseId);
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+
+    const props: Record<string, any> = {};
+    const skipped: string[] = [];
+    for (const f of BUGLEAK_FIELDS) {
+      if (!(f.key in body)) continue;   // 触っていない項目は残す
+      const name = pickSchemaName(schema, f.names);
+      if (!name) {
+        skipped.push(f.names[0]);
+        continue;
+      }
+      const raw = body[f.key];
+      const value = typeof raw === "boolean" ? String(raw) : String(raw ?? "");
+      const built = buildBugProperty(schema[name], value);
+      if (built === null) {
+        // rollup / formula など書けない型
+        skipped.push(name);
+        continue;
+      }
+      props[name] = built;
+    }
+
+    if (Object.keys(props).length === 0) {
+      return res.status(400).json({ error: "更新できる項目がありません", skipped });
+    }
+    await notion.pages.update({ page_id: pageId, properties: props } as any);
+    return res.json({ ok: true, updated: Object.keys(props), skipped });
+  } catch (error) {
+    console.error("Bug-leak update error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "更新に失敗しました",
+    });
   }
 });
 
@@ -3478,6 +3598,8 @@ function buildBugProperty(prop: any, value: string): any {
       return { select: v ? { name: v } : null };
     case "status":
       return { status: v ? { name: v } : null };
+    case "checkbox":
+      return { checkbox: v === "true" };
     case "date": {
       const iso = toIsoDate(v);
       return { date: iso ? { start: iso } : null };
