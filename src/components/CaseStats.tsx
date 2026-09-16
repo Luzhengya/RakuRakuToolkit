@@ -1323,6 +1323,17 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       systems: reportSystems,
       thresholds: th,
       confirmCases,
+      // 入力の参照用。インシデント区画と同じ絞り込み結果をそのまま渡す
+      incidents: (bugLeak?.items ?? []).map((b) => ({
+        system: b.system,
+        caseMonth: b.caseMonth,
+        cmdb: b.cmdb,
+        feature: b.feature,
+        process: b.process,
+        category: b.category,
+        status: b.status,
+        responsible: b.responsible,
+      })),
       overall: {
         caseCount: kpi.caseCount,
         estimateSum: kpi.estimateSum,

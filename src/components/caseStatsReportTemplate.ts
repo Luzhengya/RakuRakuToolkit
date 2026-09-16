@@ -61,6 +61,18 @@ export type ReportSystemGroup = {
 
 export type ConfirmCase = { name: string; system: string; labels: string[]; comment: string };
 
+// インシデント対応の章に載せる1件。画面の一覧と同じ並びにする
+export type ReportIncident = {
+  system: string;
+  caseMonth: string;
+  cmdb: string;
+  feature: string;
+  process: string;
+  category: string;
+  status: string;
+  responsible: boolean;
+};
+
 export type CaseStatsReportMeta = {
   monthKey: string;   // 月次=YYYYMM / 年度=YYYY
   periodType: 'month' | 'year';
@@ -76,6 +88,8 @@ export type CaseStatsReportMeta = {
   };
   // 要確認案件 (効率・品質の確認要を案件単位で統合)
   confirmCases: ConfirmCase[];
+  // インシデント対応の入力欄の下に付ける案件一覧
+  incidents: ReportIncident[];
   // 本月全体概要の統計パネル値
   overall: {
     caseCount: number;
@@ -271,6 +285,35 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
       .join('')}</ol>`
     : '<p>要確認案件はありません。</p>';
 
+  // インシデント対応の入力欄の下に付ける案件一覧。
+  // 入力の参照用なので既定は折りたたむ。details/summary なら出力した
+  // HTML 単体でも JS 無しで開閉できる
+  const incidentListHtml = meta.incidents.length
+    ? `<details class="inc-list">
+    <summary>対象インシデント ${meta.incidents.length}件</summary>
+    <table class="data-table">
+      <thead><tr>
+        <th>サービス</th><th>案件別</th><th>CMDB番号</th><th>機能(画面)名</th>
+        <th>指摘工程</th><th>指摘分類</th><th>状態</th><th>責任</th>
+      </tr></thead>
+      <tbody>${meta.incidents
+        .map(
+          (b) => `<tr>
+        <td>${esc(b.system || '-')}</td>
+        <td>${esc(b.caseMonth || '-')}</td>
+        <td>${esc(b.cmdb || '-')}</td>
+        <td>${esc(b.feature || '-')}</td>
+        <td>${esc(b.process || '-')}</td>
+        <td>${esc(b.category || '-')}</td>
+        <td>${esc(b.status || '-')}</td>
+        <td style="text-align:center">${b.responsible ? '✓' : '-'}</td>
+      </tr>`
+        )
+        .join('')}</tbody>
+    </table>
+  </details>`
+    : '<p class="muted" style="font-size:11px;margin-top:8px;">対象期間のインシデントはありません。</p>';
+
   // 本月全体概要 KPIパネル
   const kpiCards = [
     { label: '要確認件数', value: fmt(o.attention), tone: o.attention > 0 ? 'alert' : 'ok' },
@@ -348,6 +391,19 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   .attn ul { list-style:none; margin:0; padding:0; }
   .attn li { display:flex; justify-content:space-between; gap:12px; font-size:11px; padding:1px 0; }
   .incident-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:140px; padding:14px; font-size:13px; white-space:pre-wrap; }
+  .inc-list { margin-top:10px; border:1px solid #e5e7eb; border-radius:8px; }
+  .inc-list > summary { cursor:pointer; padding:7px 10px; font-size:12px; font-weight:600; color:#374151; background:#f8fafc; border-radius:8px; list-style:none; }
+  .inc-list[open] > summary { border-bottom:1px solid #e5e7eb; border-radius:8px 8px 0 0; }
+  /* 既定の三角を消して自前の ▼ を出す (Safari は ::-webkit-details-marker) */
+  .inc-list > summary::-webkit-details-marker { display:none; }
+  .inc-list > summary::before { content:'▼'; display:inline-block; margin-right:6px; font-size:9px; color:#9ca3af; transition:transform .15s; }
+  .inc-list:not([open]) > summary::before { transform:rotate(-90deg); }
+  .inc-list > table { margin:0; }
+  .inc-list > table th:first-child, .inc-list > table td:first-child { border-left:none; }
+  .inc-list > table th:last-child, .inc-list > table td:last-child { border-right:none; }
+  /* 紙に三角は要らない。閉じたまま印刷すると中身は出ないので、
+     載せたい時は印刷前に開く */
+  @media print { .inc-list > summary::before { content:''; margin:0; } }
   .summary-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:80px; padding:14px; font-size:13px; margin-bottom:8px; }
   .summary-box:focus { outline:2px solid #93c5fd; background:#fff; }
   .summary-box p { margin:0 0 6px; }
@@ -400,6 +456,7 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
     <h2 class="sec-title">2. インシデント対応</h2>
     <p class="muted" style="font-size:12px;">本月のインシデント内容・対応状況を記入してください（編集可）。</p>
     <div class="incident-box" contenteditable="true">ここにインシデント対応の内容を入力してください。</div>
+    ${incidentListHtml}
   </div>
 
   <div class="page page-break" id="sec-detail">
