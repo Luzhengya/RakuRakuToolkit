@@ -6,7 +6,7 @@ import {
 } from 'recharts';
 import { type Lang } from '../i18n/testcenter';
 import { buildCaseStatsReportHtml, caseStatsReportTitle, type ReportSystemGroup } from './caseStatsReportTemplate';
-import IncidentDetailDialog from './IncidentDetailDialog';
+import IncidentDetailDialog, { type IncidentFields } from './IncidentDetailDialog';
 
 type CaseStatItem = {
   id: string;
@@ -39,6 +39,7 @@ type CaseStatItem = {
 };
 
 type BugLeakDetail = {
+  id: string;
   system: string;
   responsible: boolean;
   caseMonth: string;
@@ -480,6 +481,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     tcRelated: number;
     bySystem: { system: string; count: number }[];
     items: BugLeakDetail[];
+    // 詳細ダイアログの入力欄をプロパティ型に合わせるための情報
+    fields?: IncidentFields;
   } | null>(null);
   useEffect(() => {
     const params = new URLSearchParams({ year: String(year) });
@@ -1954,9 +1957,32 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         {bugLeak && incidentIndex != null && (
           <IncidentDetailDialog
             rows={bugLeak.items}
+            fields={bugLeak.fields ?? {}}
             index={incidentIndex}
             onIndex={setIncidentIndex}
             onClose={() => setIncidentIndex(null)}
+            // 保存できた行を差し替え、派生している集計も数え直す。
+            // 再取得しないのは、開いている行の位置がずれないようにするため。
+            // 案件別を対象期間の外へ変えた場合だけ、次の期間切り替えまで残る
+            onSaved={(updated) =>
+              setBugLeak((prev) => {
+                if (!prev) return prev;
+                const items = prev.items.map((b) => (b.id === updated.id ? updated : b));
+                const bySystemMap = new Map<string, number>();
+                for (const b of items) {
+                  const s = b.system || '(未設定)';
+                  bySystemMap.set(s, (bySystemMap.get(s) ?? 0) + 1);
+                }
+                return {
+                  ...prev,
+                  items,
+                  tcRelated: items.filter((b) => b.responsible).length,
+                  bySystem: Array.from(bySystemMap.entries())
+                    .map(([system, count]) => ({ system, count }))
+                    .sort((a, b) => b.count - a.count),
+                };
+              })
+            }
           />
         )}
 
