@@ -6,6 +6,7 @@ import {
 } from 'recharts';
 import { type Lang } from '../i18n/testcenter';
 import { buildCaseStatsReportHtml, caseStatsReportTitle, type ReportSystemGroup } from './caseStatsReportTemplate';
+import IncidentDetailDialog from './IncidentDetailDialog';
 
 type CaseStatItem = {
   id: string;
@@ -374,6 +375,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   const [qualOpen, setQualOpen] = useState(true);
   const [assigneeOpen, setAssigneeOpen] = useState(true);
   const [incidentOpen, setIncidentOpen] = useState(true);
+  // 一覧で開いている行。null なら閉じている
+  const [incidentIndex, setIncidentIndex] = useState<number | null>(null);
   const [chartsOpen, setChartsOpen] = useState(true);
   const [deselected, setDeselected] = useState<Set<string>>(new Set());
   // 報告書プレビュー
@@ -1907,16 +1910,10 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                         <th className={th0}>案件別</th>
                         <th className={th0}>CMDB番号</th>
                         <th className={th0}>機能(画面)名</th>
-                        <th className={th0}>障害内容</th>
                         <th className={th0}>指摘工程</th>
                         <th className={th0}>指摘分類</th>
-                        <th className={th0}>原因区分</th>
-                        <th className={th0}>リリース時期</th>
-                        <th className={th0}>TestCenter確認結果</th>
                         <th className={th0}>状態</th>
-                        <th className={th0}>改善可/不可</th>
                         <th className={th0}>責任</th>
-                        <th className={th0}>チェックリスト</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1925,17 +1922,21 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                           <td className={td0}>{b.system || '-'}</td>
                           <td className={td0}>{b.caseMonth || '-'}</td>
                           <td className={td0}>{b.cmdb || '-'}</td>
-                          <td className={td0 + ' max-w-[160px] truncate'} title={b.feature}>{b.feature || '-'}</td>
-                          <td className={td0 + ' max-w-[240px] truncate'} title={b.defect}>{b.defect || '-'}</td>
+                          {/* 隠した項目 (障害内容・TestCenter確認結果 など) はここから開く */}
+                          <td className={td0 + ' max-w-[220px]'}>
+                            <button
+                              type="button"
+                              onClick={() => setIncidentIndex(i)}
+                              title={`${b.feature || '(機能名なし)'} の詳細を開く`}
+                              className="w-full text-left truncate text-neutral-800 hover:text-neutral-900 hover:underline"
+                            >
+                              {b.feature || '(機能名なし)'}
+                            </button>
+                          </td>
                           <td className={td0}>{b.process || '-'}</td>
                           <td className={td0}>{b.category || '-'}</td>
-                          <td className={td0}>{b.cause || '-'}</td>
-                          <td className={td0}>{b.releaseTime || '-'}</td>
-                          <td className={td0 + ' max-w-[180px] truncate'} title={b.tcResult}>{b.tcResult || '-'}</td>
                           <td className={td0}>{b.status || '-'}</td>
-                          <td className={td0}>{b.improvable || '-'}</td>
                           <td className={td0 + ' text-center'}>{b.responsible ? '✓' : '-'}</td>
-                          <td className={td0 + ' max-w-[160px] truncate'} title={b.checklist}>{b.checklist || '-'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1949,6 +1950,15 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           </div>
           )}
         </div>
+
+        {bugLeak && incidentIndex != null && (
+          <IncidentDetailDialog
+            rows={bugLeak.items}
+            index={incidentIndex}
+            onIndex={setIncidentIndex}
+            onClose={() => setIncidentIndex(null)}
+          />
+        )}
 
         {/* ─ 図形 (月次モード用、レポート出力対象外) ─ */}
         {/* overflow-hidden はリサイズ可能なカードを切り取ってしまうためヘッダ側のみに適用する */}
