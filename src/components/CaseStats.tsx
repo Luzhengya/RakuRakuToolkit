@@ -1336,6 +1336,12 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         category: b.category,
         status: b.status,
         responsible: b.responsible,
+        defect: b.defect,
+        cause: b.cause,
+        releaseTime: b.releaseTime,
+        tcResult: b.tcResult,
+        improvable: b.improvable,
+        checklist: b.checklist,
       })),
       overall: {
         caseCount: kpi.caseCount,
