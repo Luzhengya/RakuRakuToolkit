@@ -61,7 +61,8 @@ export type ReportSystemGroup = {
 
 export type ConfirmCase = { name: string; system: string; labels: string[]; comment: string };
 
-// インシデント対応の章に載せる1件。画面の一覧と同じ並びにする
+// インシデント対応の章に載せる1件。
+// 前半は行に出す簡略情報 (画面の一覧と同じ並び)、後半は展開して出す詳細。
 export type ReportIncident = {
   system: string;
   caseMonth: string;
@@ -71,6 +72,12 @@ export type ReportIncident = {
   category: string;
   status: string;
   responsible: boolean;
+  defect: string;
+  cause: string;
+  releaseTime: string;
+  tcResult: string;
+  improvable: string;
+  checklist: string;
 };
 
 export type CaseStatsReportMeta = {
@@ -286,32 +293,46 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
     : '<p>要確認案件はありません。</p>';
 
   // インシデント対応の入力欄の下に付ける案件一覧。
-  // 入力の参照用なので既定は折りたたむ。details/summary なら出力した
-  // HTML 単体でも JS 無しで開閉できる
+  // 一覧そのものは常に見えていて、行ごとに開いて詳細を出す (BUG一覧と同じ)。
+  // 1件ずつ details にしているので、出力した HTML 単体でも JS 無しで開閉できる
+  const incSec = (title: string, value: string) =>
+    `<div class="inc-sec"><h5>${esc(title)}</h5><p>${esc(value || '-')}</p></div>`;
+
   const incidentListHtml = meta.incidents.length
-    ? `<details class="inc-list">
-    <summary>対象インシデント ${meta.incidents.length}件</summary>
-    <table class="data-table">
-      <thead><tr>
-        <th>サービス</th><th>案件別</th><th>CMDB番号</th><th>機能(画面)名</th>
-        <th>指摘工程</th><th>指摘分類</th><th>状態</th><th>責任</th>
-      </tr></thead>
-      <tbody>${meta.incidents
-        .map(
-          (b) => `<tr>
-        <td>${esc(b.system || '-')}</td>
-        <td>${esc(b.caseMonth || '-')}</td>
-        <td>${esc(b.cmdb || '-')}</td>
-        <td>${esc(b.feature || '-')}</td>
-        <td>${esc(b.process || '-')}</td>
-        <td>${esc(b.category || '-')}</td>
-        <td>${esc(b.status || '-')}</td>
-        <td style="text-align:center">${b.responsible ? '✓' : '-'}</td>
-      </tr>`
-        )
-        .join('')}</tbody>
-    </table>
-  </details>`
+    ? `<div class="inc-list">
+    <p class="inc-cap">対象インシデント ${meta.incidents.length}件<span class="muted">（行をクリックすると詳細を表示）</span></p>
+    <div class="inc-head">
+      <span>サービス</span><span>案件別</span><span>CMDB番号</span><span>機能(画面)名</span>
+      <span>指摘工程</span><span>指摘分類</span><span>状態</span><span>責任</span><span></span>
+    </div>
+    ${meta.incidents
+      .map(
+        (b) => `<details class="inc-item">
+      <summary class="inc-row">
+        <span>${esc(b.system || '-')}</span>
+        <span>${esc(b.caseMonth || '-')}</span>
+        <span>${esc(b.cmdb || '-')}</span>
+        <span class="inc-feature">${esc(b.feature || '-')}</span>
+        <span>${esc(b.process || '-')}</span>
+        <span>${esc(b.category || '-')}</span>
+        <span>${esc(b.status || '-')}</span>
+        <span class="inc-center">${b.responsible ? '✓' : '-'}</span>
+        <span class="inc-arrow">›</span>
+      </summary>
+      <div class="inc-detail">
+        ${incSec('障害内容', b.defect)}
+        <div class="inc-meta">
+          <div class="im"><span class="im-label">原因区分</span><span class="im-value">${esc(b.cause || '-')}</span></div>
+          <div class="im"><span class="im-label">リリース時期</span><span class="im-value">${esc(b.releaseTime || '-')}</span></div>
+          <div class="im im-last"><span class="im-label">改善可/不可</span><span class="im-value">${esc(b.improvable || '-')}</span></div>
+        </div>
+        ${incSec('TestCenter確認結果', b.tcResult)}
+        ${incSec('チェックリスト', b.checklist)}
+      </div>
+    </details>`
+      )
+      .join('')}
+  </div>`
     : '<p class="muted" style="font-size:11px;margin-top:8px;">対象期間のインシデントはありません。</p>';
 
   // 本月全体概要 KPIパネル
@@ -391,19 +412,42 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   .attn ul { list-style:none; margin:0; padding:0; }
   .attn li { display:flex; justify-content:space-between; gap:12px; font-size:11px; padding:1px 0; }
   .incident-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:140px; padding:14px; font-size:13px; white-space:pre-wrap; }
-  .inc-list { margin-top:10px; border:1px solid #e5e7eb; border-radius:8px; }
-  .inc-list > summary { cursor:pointer; padding:7px 10px; font-size:12px; font-weight:600; color:#374151; background:#f8fafc; border-radius:8px; list-style:none; }
-  .inc-list[open] > summary { border-bottom:1px solid #e5e7eb; border-radius:8px 8px 0 0; }
-  /* 既定の三角を消して自前の ▼ を出す (Safari は ::-webkit-details-marker) */
-  .inc-list > summary::-webkit-details-marker { display:none; }
-  .inc-list > summary::before { content:'▼'; display:inline-block; margin-right:6px; font-size:9px; color:#9ca3af; transition:transform .15s; }
-  .inc-list:not([open]) > summary::before { transform:rotate(-90deg); }
-  .inc-list > table { margin:0; }
-  .inc-list > table th:first-child, .inc-list > table td:first-child { border-left:none; }
-  .inc-list > table th:last-child, .inc-list > table td:last-child { border-right:none; }
-  /* 紙に三角は要らない。閉じたまま印刷すると中身は出ないので、
-     載せたい時は印刷前に開く */
-  @media print { .inc-list > summary::before { content:''; margin:0; } }
+  /* インシデント一覧。一覧は常に見えていて、行ごとに開く (BUG一覧と同じ) */
+  .inc-list { margin-top:10px; }
+  .inc-cap { font-size:12px; font-weight:600; color:#374151; margin:0 0 6px; }
+  .inc-cap .muted { font-weight:400; margin-left:6px; font-size:11px; }
+  /* 見出しと行で同じ列幅を使って揃える */
+  .inc-head, .inc-row { display:grid; grid-template-columns:104px 64px 84px minmax(0,1fr) 104px 124px 76px 40px 14px; gap:8px; align-items:center; }
+  .inc-head { padding:5px 10px; font-size:10px; font-weight:600; color:#6b7280; background:#f1f5f9; border:1px solid #d1d5db; border-radius:6px 6px 0 0; }
+  .inc-item { border:1px solid #d1d5db; border-top:none; background:#fff; }
+  .inc-item:last-child { border-radius:0 0 6px 6px; }
+  .inc-row { padding:6px 10px; font-size:11px; color:#374151; cursor:pointer; list-style:none; }
+  .inc-row::-webkit-details-marker { display:none; }
+  .inc-row:hover { background:#fafbfc; }
+  .inc-row > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .inc-feature { font-weight:600; color:#111827; }
+  .inc-center { text-align:center; }
+  .inc-arrow { color:#9ca3af; font-size:13px; transition:transform .15s; }
+  .inc-item[open] .inc-arrow { transform:rotate(90deg); }
+  .inc-item[open] .inc-row { background:#f8fafc; }
+  /* 開いたときだけ出る詳細 */
+  .inc-detail { border-top:1px solid #e5e7eb; padding:12px 14px; background:#fafbfc; }
+  .inc-sec { margin-bottom:10px; }
+  .inc-sec:last-child { margin-bottom:0; }
+  .inc-sec h5 { font-size:11px; font-weight:700; color:#374151; margin:0 0 4px; }
+  .inc-sec p { font-size:11px; color:#4b5563; line-height:1.7; margin:0; white-space:pre-wrap; }
+  .inc-meta { display:grid; grid-template-columns:repeat(3,1fr); border:1px solid #e5e7eb; border-radius:6px; overflow:hidden; background:#fff; margin-bottom:10px; }
+  .im { padding:6px 10px; border-right:1px solid #e5e7eb; }
+  .im.im-last { border-right:none; }
+  .im-label { display:block; font-size:9px; color:#9ca3af; font-weight:600; }
+  .im-value { display:block; font-size:11px; color:#374151; margin-top:2px; }
+  /* 紙に矢印は要らない。閉じたまま印刷すると詳細は出ないので、
+     載せたい行は印刷前に開く */
+  @media print {
+    .inc-arrow { display:none; }
+    .inc-row:hover { background:transparent; }
+    .inc-item { break-inside:avoid; }
+  }
   .summary-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:80px; padding:14px; font-size:13px; margin-bottom:8px; }
   .summary-box:focus { outline:2px solid #93c5fd; background:#fff; }
   .summary-box p { margin:0 0 6px; }
