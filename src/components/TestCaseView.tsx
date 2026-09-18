@@ -42,7 +42,9 @@ const EDITABLE_FIELDS = new Set<string>([
   'ポイント', '優先級', 'カテゴリ', '状態', 'テスト結果', '関連NO', '備考',
 ]);
 
-const RESULT_OPTIONS = ['', 'OK', 'NG', 'テスト不可', '未実施'];
+// 空欄 = 未実施。Notion の選択肢に「未実施」は無いので、選ばせると
+// Notion 側に新しい選択肢が作られてしまう
+const RESULT_OPTIONS = ['', 'OK', 'NG', 'テスト不可'];
 
 
 export default function TestCaseView({ onBack }: { onBack: () => void }) {
@@ -153,8 +155,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   // 統計 (絞り込み結果に連動)
   const stats = useMemo(() => {
     const total = filtered.length;
-    const by = (v: string) => filtered.filter((r) => (r['テスト結果'] || '') === v).length;
-    return { total, ok: by('OK'), un: by('未実施'), block: by('テスト不可'), ng: by('NG') };
+    const by = (v: string) => filtered.filter((r) => (r['テスト結果'] || '').trim() === v).length;
+    // 未実施は空欄。Notion の選択肢は OK / NG / テスト不可 の3つしかなく、
+    // まだ実施していないケースはテスト結果が入っていない状態で表される
+    return { total, ok: by('OK'), un: by(''), block: by('テスト不可'), ng: by('NG') };
   }, [filtered]);
 
   const hasFilter = fKeyword || fResult || fVersion || fMajor || fMiddle || fMinor;
@@ -707,7 +711,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                           className={selectCls + ' w-full'}
                         >
                           {RESULT_OPTIONS.map((o) => (
-                            <option key={o} value={o}>{o || '(未設定)'}</option>
+                            <option key={o} value={o}>{o || '未実施'}</option>
                           ))}
                         </select>
                       ) : editing ? (
