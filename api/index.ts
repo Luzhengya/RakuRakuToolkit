@@ -53,6 +53,50 @@ interface UploadedFileResult {
 
 // ExcelJS は .xlsx (OOXML) しか読めない。旧形式の .xls (BIFF) を
 // workbook.xlsx.load() に渡すと必ず例外になるので、手前で弾いて理由を返す。
+// アップロードされたPDFが壊れている/そもそもPDFでないのは利用者側の入力起因。
+// サーバー障害(500)と同じ扱いにすると、利用者は「システムが落ちている」と受け取り、
+// ファイルを直せば済むことに気付けない。400 で理由を返す。
+const PDF_MAGIC = Buffer.from("%PDF-");
+
+// 先頭1KB以内に %PDF- が無ければPDFとして扱わない。
+// 壊れたアップロードの大半はここで弾ける (先頭に余分なバイトが付く実物もあるため全一致では見ない)。
+function looksLikePdf(buf: Buffer): boolean {
+  return buf.subarray(0, 1024).includes(PDF_MAGIC);
+}
+
+// Adobe 側が「PDFではない」と判断した場合のコード。
+function isBadPdfInputError(error: unknown): boolean {
+  return (error as any)?._errorCode === "BAD_PDF_FILE_TYPE";
+}
+
+// PDFとして読めないファイルの名前を返す (空配列なら全て正常)。
+//
+// ヘッダー検査だけでは中身の破損を判定できない。pdf-lib は構造が壊れたPDFに対して
+// 「Cannot read properties of undefined (reading 'Pages')」のような汎用エラーを投げるため、
+// メッセージでの判別は当てにならない (当てにすると本物のサーバー不具合まで入力エラーとして隠れる)。
+// 実際に読み込めるかどうかで判定する。
+// Adobe へ送る前に弾くことで、壊れたファイルで変換回数を消費することも防げる。
+async function unreadablePdfNames(files: Express.Multer.File[]): Promise<string[]> {
+  const bad: string[] = [];
+  for (const f of files) {
+    const name = Buffer.from(f.originalname, "latin1").toString("utf8");
+    const buf = f.buffer as unknown as Buffer;
+    if (!looksLikePdf(buf)) {
+      bad.push(name);
+      continue;
+    }
+    try {
+      const doc = await PDFDocument.load(buf);
+      // load() は寛容で、ヘッダーさえ合っていれば壊れた中身でも通る。
+      // ページを数える段で初めて落ちるため、ここまでやって初めて「読める」と判定する。
+      doc.getPageCount();
+    } catch {
+      bad.push(name);
+    }
+  }
+  return bad;
+}
+
 function legacyXlsError(name: string): string | null {
   return /\.xls$/i.test(name)
     ? "旧形式の .xls は読み込めません。Excel で「.xlsx」として保存し直してください"
@@ -310,6 +354,9 @@ app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
   }
   const f = req.file as Express.Multer.File | undefined;
   if (!f) return res.status(400).json({ error: "No file provided" });
+  if ((await unreadablePdfNames([f])).length > 0) {
+    return res.status(400).json({ error: "PDFファイルとして読み取れません。ファイルを確認してください" });
+  }
   try {
     const { tables, elementCount } = await extractPdfTables(f.buffer);
     return res.json({
@@ -320,9 +367,11 @@ app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
     });
   } catch (error) {
     console.error("PDF table extract error:", error);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : "テーブル抽出に失敗しました",
-    });
+    if (isBadPdfInputError(error)) {
+      return res.status(400).json({ error: "PDFファイルとして読み取れません。ファイルを確認してください" });
+    }
+    // 外部サービスの生メッセージはそのまま返さない (利用者には意味が分からず、内部構成も晒す)
+    return res.status(500).json({ error: "テーブル抽出に失敗しました" });
   }
 });
 
@@ -2636,6 +2685,10 @@ app.post("/api/pdf-convert", upload.array("files", 10), async (req, res) => {
   if (!process.env.ADOBE_CLIENT_ID || !process.env.ADOBE_CLIENT_SECRET) {
     return res.status(503).json({ error: "Adobe PDF Services API credentials not configured" });
   }
+  const unreadable = await unreadablePdfNames(multerFiles);
+  if (unreadable.length > 0) {
+    return res.status(400).json({ error: `PDFファイルとして読み取れません: ${unreadable.join("、")}` });
+  }
 
   const downloadPath = (req.body.downloadPath as string) || "";
 
@@ -2678,6 +2731,10 @@ app.post("/api/pdf-merge", upload.array("files", 20), async (req, res) => {
   const multerFiles = req.files as Express.Multer.File[];
   if (!multerFiles || multerFiles.length === 0) {
     return res.status(400).json({ error: "No files provided" });
+  }
+  const unreadable = await unreadablePdfNames(multerFiles);
+  if (unreadable.length > 0) {
+    return res.status(400).json({ error: `PDFファイルとして読み取れません: ${unreadable.join("、")}` });
   }
 
   const pagesParam = req.body.pages as string | undefined;
@@ -2729,6 +2786,9 @@ app.post("/api/pdf-merge", upload.array("files", 20), async (req, res) => {
     res.send(mergedBuffer);
   } catch (error) {
     console.error("PDF merge error:", error);
+    if (isBadPdfInputError(error)) {
+      return res.status(400).json({ error: "PDFファイルとして読み取れません。ファイルを確認してください" });
+    }
     res.status(500).json({ error: "Failed to merge PDF files" });
   }
 });
