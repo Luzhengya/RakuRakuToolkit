@@ -34,10 +34,12 @@ npm run clean     # Remove dist/
 **Setup:**
 ```bash
 npm install
-cp .env.example .env.local   # Fill in API keys before running
+cp .env.example .env         # Fill in API keys before running (dotenv reads .env, not .env.local)
 ```
 
-No test framework is configured.
+No unit test framework is configured. `npm run smoke` (scripts/smoke.mjs) hits every
+read endpoint and the input-validation paths against a running dev server — run it before
+and after changing `api/index.ts`. Use `--save` / `--compare` to diff against a baseline.
 
 ---
 
@@ -49,7 +51,9 @@ Full-stack TypeScript app ("ToolSetLimo") — one Express server serves both the
 
 - **Development**: `server.ts` imports the Express app from `api/index.ts`, wraps it with Vite dev middleware, and listens on PORT (default 5173).
 - **Production/Vercel**: `api/index.ts` is the Express app exported as a serverless function. `vercel.json` rewrites `/api/*` to this single function (maxDuration 90s, 1024 MB memory).
-- **All API routes live in `api/index.ts`** (single file, ~2100 lines). File uploads use in-memory storage only (`multer.memoryStorage`) — no disk I/O, required for Vercel serverless.
+- **All API routes live in `api/index.ts`** (single file, ~4400 lines). File uploads use in-memory storage only (`multer.memoryStorage`) — no disk I/O, required for Vercel serverless.
+- **Unknown `/api/*` paths return 404 JSON** (registered at the end of `api/index.ts`, before the SPA fallback). Without it the SPA fallback answers 200 with HTML and `res.json()` fails confusingly on the client.
+- **The progress database (`NOTION_PROGRESS_DATABASE_ID`) full query is cached in memory for 60s** and concurrent callers share one in-flight request. Routes that write to it (`/api/test-center/results`, `/api/test-center/case-schedule/:id`) invalidate the cache so a saved value never rolls back. Transient Notion failures are retried (`withNotionRetry`); a page that still cannot be fetched throws rather than being silently dropped from the list.
 
 ### Frontend
 
@@ -73,16 +77,49 @@ All configured via env vars (see `.env.example`):
 
 | Route | Purpose |
 |---|---|
+| **Config** ||
 | `GET /api/pdf-status` | Whether Adobe PDF Services credentials are configured |
-| `GET /api/test-center` | Progress list from Notion progress DB |
-| `GET /api/test-center/overview` | Aggregated overview stats |
-| `GET /api/test-center/bugs` | Bug list from Notion bug DB |
-| `GET /api/test-center/bugs/:id/children` | Child bug records for a given bug page |
-| `POST /api/test-center/results` | Update test results |
-| `GET/POST /api/test-center/history` | List / create history snapshots |
-| `GET/DELETE /api/test-center/history/:id` | Fetch / delete a single history snapshot |
-| `POST /api/upload` | File upload (Excel metadata extraction) |
-| `POST /api/convert` | Excel → Markdown conversion |
-| `POST /api/pdf-convert` | PDF → Word (Adobe) |
-| `POST /api/pdf-merge` | Merge multiple PDFs |
-| `GET /api/jiji-list` | 時事速報 list from Notion jijinews DB |
+| `GET /api/config/env-versions` | Chrome / iOS / Android versions used in reports (Notion) |
+| `GET /api/config/kpi-targets` | KPI target values shown on the case list (Notion) |
+| **Documents** ||
+| `POST /api/upload` | Parse uploaded file metadata (Excel sheet names). Bytes are not stored |
+| `POST /api/convert` | Excel → Markdown |
+| `POST /api/pdf-convert` | PDF → Word via Adobe. Returns a zip |
+| `POST /api/pdf-merge` | Merge PDFs, with per-page reorder/delete |
+| `POST /api/pdf-extract-tables` | Detect tables in a PDF via Adobe Extract (PDF Editor, table mode) |
+| **Test Center — progress** ||
+| `GET /api/test-center?area=` | Case list for one area (11 valid areas; invalid → 400) |
+| `GET /api/test-center/overview` | All leaf cases across areas |
+| `GET /api/test-center/alerts` | Schedule alerts (due today / plan missing / needs check) |
+| `GET /api/test-center/case-stats` | Case list with effort and efficiency aggregates |
+| `GET/POST /api/test-center/case-schedule/:id` | Read / update a case's planned and actual dates |
+| `POST /api/test-center/results` | Update test result counts on progress rows |
+| `POST /api/test-center/achievement/:id/comment` | Update the comment on an achievement row |
+| **Test Center — bugs** ||
+| `GET /api/test-center/bugs` | Whole bug list |
+| `GET /api/test-center/bugs/by-case/:caseId` | Bugs for one case, plus selectable field options |
+| `GET /api/test-center/bugs/single/:id` | One bug record |
+| `GET /api/test-center/bugs/:id/children` | Bug detail child page rendered as HTML |
+| `POST /api/test-center/bugs/:id/update` | Update remarks / judgment / status / priority |
+| `GET /api/test-center/bug-leak` | Incident (bug leak) aggregate for the report |
+| `POST /api/test-center/bug-leak/:id/update` | Update one incident record |
+| `GET /api/test-center/notion-image` | Proxy a Notion S3 image as a data URI (amazonaws.com only) |
+| **Test Center — history** ||
+| `GET /api/test-center/history` | List saved plan / report snapshots |
+| `GET /api/test-center/history/:id` | One snapshot including its HTML body |
+| `POST /api/test-center/history` | Save a snapshot |
+| `DELETE /api/test-center/history/:id` | Archive a snapshot |
+| **Test cases** ||
+| `GET /api/testcase/list` | Test cases for a system + year (both required) |
+| `GET /api/testcase/:id/bug-context` | Candidate cases / numbering / defaults for the bug transfer dialog |
+| `POST /api/testcase/:id/transfer-bug` | Create a bug record from a test case |
+| `POST /api/testcase/:id/update` | Update editable fields of a test case |
+| `DELETE /api/testcase/:id` | Archive a test case |
+| `POST /api/testcase/export` | Export the filtered rows as xlsx |
+| `GET /api/testcase/bug-status` | Which test cases already have a transferred bug |
+| `GET /api/test-center/case-testcases/:caseId` | Test cases linked to a case |
+| `GET /api/testcase-format/systems` | System names available for upload |
+| `POST /api/testcase-format` | CSV → formatted xlsx, and register to Notion when system+year given |
+| **Data collection** ||
+| `GET /api/jiji-list` | 時事速報 list (Notion) |
+| `GET /api/jiemian-list` | 界面新聞 list (Notion) |
