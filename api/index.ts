@@ -4375,5 +4375,13 @@ app.get("/api/config/kpi-targets", async (_req, res) => {
   }
 });
 
+// 未知の /api/* は 404 の JSON で返す。
+// これが無いと dev の Vite / 本番の SPA フォールバックが index.html を
+// 200 で返してしまい、クライアントでは res.ok が true になった後の
+// res.json() が JSON パースエラーになって原因が分かりにくい。
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: `Unknown API route: ${req.method} ${req.baseUrl}${req.path}` });
+});
+
 export default app;
 

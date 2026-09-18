@@ -484,14 +484,27 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     // 詳細ダイアログの入力欄をプロパティ型に合わせるための情報
     fields?: IncidentFields;
   } | null>(null);
+  // 取得失敗を「該当データなし」と区別するためのエラー。
+  // 設定漏れ(DB未設定)を「今月は流出なし」と同じ見た目にしてはいけない。
+  const [bugLeakError, setBugLeakError] = useState<string | null>(null);
   useEffect(() => {
     const params = new URLSearchParams({ year: String(year) });
     if (effectiveMonth !== 'all') params.set('month', String(effectiveMonth));
     let alive = true;
     fetch(`/api/test-center/bug-leak?${params.toString()}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((d) => { if (alive) setBugLeak(d); })
-      .catch(() => { if (alive) setBugLeak(null); });
+      .then(async (res) => {
+        if (res.ok) return res.json();
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { detail?: string; error?: string }).detail
+          || (body as { error?: string }).error
+          || `取得に失敗しました (${res.status})`);
+      })
+      .then((d) => { if (alive) { setBugLeak(d); setBugLeakError(null); } })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        setBugLeak(null);
+        setBugLeakError(e instanceof Error ? e.message : '取得に失敗しました');
+      });
     return () => { alive = false; };
   }, [year, effectiveMonth]);
 
@@ -1964,6 +1977,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 </div>
               )}
             </>
+          ) : bugLeakError ? (
+            <p className="text-sm text-red-600">インシデント情報を取得できませんでした: {bugLeakError}</p>
           ) : (
             <p className="text-sm text-neutral-400">{loading ? '読み込み中...' : '該当データなし'}</p>
           )}
