@@ -25,7 +25,7 @@ A multi-functional tool suite built with React + TypeScript + Express, providing
 | Backend | Express, tsx |
 | PDF | pdf-lib, pdfjs-dist, Adobe PDF Services SDK |
 | Excel | ExcelJS |
-| Deploy | Vercel + Docker |
+| Deploy | Vercel |
 
 ## Getting Started
 
@@ -36,7 +36,7 @@ A multi-functional tool suite built with React + TypeScript + Express, providing
 npm install
 
 # Copy environment variables and fill in your API keys
-cp .env.example .env.local
+cp .env.example .env
 
 # Start the development server
 npm run dev
@@ -48,7 +48,7 @@ See [.env.example](.env.example) for the full list. Key variables:
 
 | Variable | Description |
 |----------|-------------|
-| `GEMINI_API_KEY` | Google Gemini API key (used for PDF/document processing) |
+| `NOTION_API_KEY` | Notion integration secret (Test Center, TestCase, data collection) |
 | `PDF_SERVICES_CLIENT_ID` | Adobe PDF Services client ID |
 | `PDF_SERVICES_CLIENT_SECRET` | Adobe PDF Services client secret |
 
