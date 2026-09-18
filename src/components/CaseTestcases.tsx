@@ -48,7 +48,8 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
         ok: data.items.filter((r) => r['テスト結果'] === 'OK').length,
         ng: data.items.filter((r) => r['テスト結果'] === 'NG').length,
         block: data.items.filter((r) => r['テスト結果'] === 'テスト不可').length,
-        un: data.items.filter((r) => r['テスト結果'] === '未実施').length,
+        // 未実施は空欄 (Notion の選択肢は OK / NG / テスト不可 の3つのみ)
+        un: data.items.filter((r) => (r['テスト結果'] || '').trim() === '').length,
       }
     : null;
 
