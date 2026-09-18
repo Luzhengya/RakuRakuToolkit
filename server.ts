@@ -83,7 +83,7 @@ async function startProdServer() {
   );
 }
 
-// 本番判定は NODE_ENV (Dockerfile/Vercel) と --prod (npm start) の両対応。
+// 本番判定は NODE_ENV (Vercel) と --prod (npm start) の両対応。
 // npm script に NODE_ENV=x を書くと cmd.exe で動かないため。
 const isProduction = process.env.NODE_ENV === "production" || process.argv.includes("--prod");
 
