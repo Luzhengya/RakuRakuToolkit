@@ -630,10 +630,10 @@ function buildUpdatableProperty(property: any, rawValue: string, fieldName: stri
   }
 }
 
-async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]> {
-  if (!notion) return [];
-
-  const database = await notion.databases.retrieve({ database_id: databaseId });
+async function fetchAllProgressItems(databaseId: string): Promise<ProgressItem[]> {
+  const database = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
   const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
   if (!dataSourceId) {
     throw new Error("No data source found in NOTION_PROGRESS_DATABASE_ID");
@@ -644,11 +644,14 @@ async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]
   let nextCursor: string | undefined = undefined;
 
   while (hasMore) {
-    const response = await notion.dataSources.query({
-      data_source_id: dataSourceId,
-      start_cursor: nextCursor,
-      page_size: 100,
-    });
+    const cursor = nextCursor;
+    const response = await withNotionRetry("dataSources.query", () =>
+      notion!.dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+      }),
+    );
 
     for (const page of response.results) {
       items.push(parseProgressItem(page));
@@ -661,24 +664,99 @@ async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]
   return items;
 }
 
+// 進捗DBの全件取得は test-center / overview / alerts / case-stats /
+// bug-context / testcase-format-systems の6箇所から呼ばれ、1回あたり数秒かかる。
+// 画面表示時にこれらが同時に走るため、短時間のメモリキャッシュと
+// 実行中リクエストの共有でNotionへの往復を減らす。
+// Vercel では warm なインスタンス単位で、インスタンス間では共有しない。
+const PROGRESS_CACHE_TTL_MS = 60_000;
+let progressCache: { databaseId: string; at: number; items: ProgressItem[] } | null = null;
+let progressInFlight: { databaseId: string; promise: Promise<ProgressItem[]> } | null = null;
+
+// 進捗DBへ書き込んだ直後にキャッシュを捨てる。
+// これを忘れると、画面から保存した値が一覧の再取得で古い値に巻き戻り、
+// 「保存できていない」ように見える。書き込み系ルートから必ず呼ぶこと。
+function invalidateProgressCache(): void {
+  progressCache = null;
+}
+
+async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]> {
+  if (!notion) return [];
+
+  const now = Date.now();
+  if (
+    progressCache &&
+    progressCache.databaseId === databaseId &&
+    now - progressCache.at < PROGRESS_CACHE_TTL_MS
+  ) {
+    return progressCache.items;
+  }
+  // 同時に走った分は先行リクエストの結果を待つ (同じ問い合わせを重複させない)
+  if (progressInFlight && progressInFlight.databaseId === databaseId) {
+    return progressInFlight.promise;
+  }
+
+  const promise = fetchAllProgressItems(databaseId)
+    .then((items) => {
+      progressCache = { databaseId, at: Date.now(), items };
+      return items;
+    })
+    .finally(() => {
+      if (progressInFlight?.promise === promise) progressInFlight = null;
+    });
+  progressInFlight = { databaseId, promise };
+  return promise;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Notion のレート制限(約3 req/s)を避けるため、ページ取得を少数ずつ直列化し、
-// rate_limited は指数バックオフで再試行する。
-async function retrievePageWithRetry(pageId: string, maxRetries = 4): Promise<ProgressItem | null> {
+// 一時的な失敗。時間をおけば成功しうるので再試行する。
+const NOTION_RETRYABLE_CODES = new Set([
+  "rate_limited",
+  "notionhq_client_request_timeout",
+  "service_unavailable",
+  "internal_server_error",
+  "conflict_error",
+]);
+// 恒久的な欠落。再試行しても変わらない (削除済み・権限が無い等)。
+const NOTION_MISSING_CODES = new Set([
+  "object_not_found",
+  "validation_error",
+  "unauthorized",
+  "restricted_resource",
+]);
+
+function isRetryableNotionError(error: any): boolean {
+  if (NOTION_RETRYABLE_CODES.has(error?.code)) return true;
+  // ネットワーク断は Node 側のコードになる
+  return ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND"].includes(error?.code);
+}
+
+// Notion 呼び出しを指数バックオフで再試行する。
+// 再試行しても駄目なものは握りつぶさず throw し、呼び出し元で失敗させる。
+async function withNotionRetry<T>(label: string, fn: () => Promise<T>, maxRetries = 3): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const page = await notion!.pages.retrieve({ page_id: pageId });
-      return parseProgressItem(page);
+      return await fn();
     } catch (error: any) {
-      if (error?.code === "rate_limited" && attempt < maxRetries) {
-        await sleep(1000 * (attempt + 1));
-        continue;
-      }
-      console.error("Failed to retrieve Notion page %s:", pageId, error);
-      return null;
+      if (attempt >= maxRetries || !isRetryableNotionError(error)) throw error;
+      const waitMs = 1000 * 2 ** attempt;
+      console.warn(
+        "Notion %s failed (%s). retry %d/%d in %dms",
+        label, error?.code ?? "unknown", attempt + 1, maxRetries, waitMs,
+      );
+      await sleep(waitMs);
     }
   }
+}
+
+// Notion のレート制限(約3 req/s)を避けるため、ページ取得は少数ずつ直列化する。
+// 一時的な失敗は withNotionRetry が再試行し、それでも駄目なら throw する。
+async function retrievePageWithRetry(pageId: string): Promise<ProgressItem> {
+  const page = await withNotionRetry("pages.retrieve", () =>
+    notion!.pages.retrieve({ page_id: pageId }),
+  );
+  return parseProgressItem(page);
 }
 
 async function retrievePagesByIds(pageIds: string[]): Promise<ProgressItem[]> {
@@ -686,14 +764,29 @@ async function retrievePagesByIds(pageIds: string[]): Promise<ProgressItem[]> {
 
   const uniquePageIds = Array.from(new Set(pageIds));
   const CONCURRENCY = 3; // 同時実行数を制限してレート制限を回避
-  const results: (ProgressItem | null)[] = [];
+  const results: ProgressItem[] = [];
   for (let i = 0; i < uniquePageIds.length; i += CONCURRENCY) {
     const chunk = uniquePageIds.slice(i, i + CONCURRENCY);
-    const part = await Promise.all(chunk.map((id) => retrievePageWithRetry(id)));
-    results.push(...part);
+    const part = await Promise.all(
+      chunk.map(async (id) => {
+        try {
+          return await retrievePageWithRetry(id);
+        } catch (error: any) {
+          // 削除済み・参照権限が無いページは一覧から除いてよい(恒久的な欠落)。
+          // 一時的な失敗をここで握りつぶすと案件が黙って一覧から消えるため、
+          // 区別できないものは上位へ投げてリクエストごと失敗させる。
+          if (NOTION_MISSING_CODES.has(error?.code)) {
+            console.warn("Skip unavailable Notion page %s (%s)", id, error.code);
+            return null;
+          }
+          throw error;
+        }
+      }),
+    );
+    results.push(...part.filter((p): p is ProgressItem => !!p));
   }
 
-  return results.filter((page): page is ProgressItem => !!page);
+  return results;
 }
 
 // ── History storage (Notion-backed) ───────────────────────────────────
@@ -897,8 +990,21 @@ app.get("/api/test-center", async (req, res) => {
       .filter((item) => isItemInArea(area, item.system))
       .filter((item) => item.childProjectIds.length > 0);
 
-    const childIds = parentItems.flatMap((item) => item.childProjectIds);
-    const childItems = await retrievePagesByIds(childIds);
+    // 子案件は同じ進捗DBの行なので、まず全件取得結果から id 引きし、
+    // 見つからないものだけ個別取得する (resolveLeafCases と同じ方針)。
+    // pages.retrieve の大量発行による遅延・レート制限を避ける。
+    const childIds = Array.from(new Set(parentItems.flatMap((item) => item.childProjectIds)));
+    const byId = new Map(allItems.map((it) => [it.id, it]));
+    const childItems: ProgressItem[] = [];
+    const missingChildIds: string[] = [];
+    for (const id of childIds) {
+      const found = byId.get(id);
+      if (found) childItems.push(found);
+      else missingChildIds.push(id);
+    }
+    if (missingChildIds.length > 0) {
+      childItems.push(...(await retrievePagesByIds(missingChildIds)));
+    }
 
     const areaItems = childItems
       .filter((item) => item.childProjectIds.length === 0)
@@ -2269,6 +2375,7 @@ app.post("/api/test-center/case-schedule/:id", async (req, res) => {
     }
 
     await notion.pages.update({ page_id: pageId, properties: nextProperties } as any);
+    invalidateProgressCache();
     const updated = await notion.pages.retrieve({ page_id: pageId });
     return res.json({ ok: true, fields: readCaseSchedule((updated as any)?.properties ?? {}) });
   } catch (error) {
@@ -2340,6 +2447,8 @@ app.post("/api/test-center/results", async (req, res) => {
 
   const failed = results.filter((result) => !result.success);
   const ok = failed.length === 0;
+  // 1件でも書き込めたら進捗DBの内容が変わっているのでキャッシュを捨てる
+  if (failed.length < results.length) invalidateProgressCache();
   const payload = { ok, updated: results.length - failed.length, failed: failed.length, results };
   return res.status(ok ? 200 : 207).json(payload);
 });
