@@ -135,6 +135,32 @@ for (const [method, path, body, want] of ERROR_CHECKS) {
   }
 }
 
+// 壊れたPDFは利用者側の入力エラーなので 400 で返すこと。
+// 500 に戻ると「システム障害」に見えてしまい、ファイルを直せば済むことに気付けない。
+console.log("\n── 壊れたPDFの扱い (400 であること) ──");
+for (const [label, route, field, count] of [
+  ["pdf-merge", "/api/pdf-merge", "files", 2],
+  ["pdf-convert", "/api/pdf-convert", "files", 1],
+  ["pdf-extract-tables", "/api/pdf-extract-tables", "file", 1],
+]) {
+  const key = `POST ${route} (broken pdf)`;
+  try {
+    const form = new FormData();
+    for (let i = 0; i < count; i++) {
+      form.append(field, new Blob(["not a pdf at all"], { type: "application/pdf" }), `broken${i}.pdf`);
+    }
+    const res = await fetch(BASE + route, { method: "POST", body: form });
+    const ok = res.status === 400;
+    results.errors[key] = res.status;
+    console.log(`  ${ok ? "OK  " : "NG  "}[${res.status}] ${label}`);
+    if (!ok) failures.push(`${key}: status ${res.status} (期待 400)`);
+  } catch (e) {
+    results.errors[key] = 0;
+    console.log(`  NG  [---] ${label} ${e.message}`);
+    failures.push(`${key}: ${e.message}`);
+  }
+}
+
 if (savePath) {
   fs.writeFileSync(savePath, JSON.stringify(results, null, 2), "utf8");
   console.log(`\n基準値を保存しました: ${savePath}`);
