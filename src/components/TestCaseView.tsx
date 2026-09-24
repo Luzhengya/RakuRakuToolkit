@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Bug, ChevronLeft, ChevronRight, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
 import {
@@ -82,6 +82,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [fMiddle, setFMiddle] = useState('');
   const [fMinor, setFMinor] = useState('');
 
+  const [sortCol, setSortCol] = useState('');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc' | null>(null);
+
   // システム候補 (Testcase Format と同じ、進捗管理表から取得)
   useEffect(() => {
     let alive = true;
@@ -89,9 +92,11 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       .then((res) => (res.ok ? res.json() : { systems: [] }))
       .then((d: any) => {
         if (!alive) return;
-        const list = (d?.systems ?? []) as string[];
+        const EXCLUDE = new Set(['全体システム', '脆弱性診断']);
+        const list = ((d?.systems ?? []) as string[]).filter(
+          (s) => !s.includes('改善') && !EXCLUDE.has(s),
+        );
         setSystems(list);
-        if (list.length > 0) setSystem((cur) => cur || list[0]);
       })
       .catch(() => { /* 取得できなければ手入力にフォールバック */ });
     return () => { alive = false; };
@@ -152,6 +157,22 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     });
   }, [rows, fMonth, fKeyword, fResult, fVersion, fMajor, fMiddle, fMinor]);
 
+  const sorted = useMemo(() => {
+    if (!sortCol || !sortDir) return filtered;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const va = (a[sortCol] || '').trim();
+      const vb = (b[sortCol] || '').trim();
+      return dir * va.localeCompare(vb, undefined, { numeric: true });
+    });
+  }, [filtered, sortCol, sortDir]);
+
+  const toggleSort = (col: string) => {
+    if (sortCol !== col) { setSortCol(col); setSortDir('asc'); }
+    else if (sortDir === 'asc') { setSortDir('desc'); }
+    else { setSortCol(''); setSortDir(null); }
+  };
+
   // 統計 (絞り込み結果に連動)
   const stats = useMemo(() => {
     const total = filtered.length;
@@ -178,10 +199,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   // 絞り込み結果の並び順をそのまま辿る。
   // 編集中の下書きと表示モードは必ず捨てる。持ち越すと別のケースに
   // 前のケースの入力を保存してしまう。
-  const detailIndex = detail ? filtered.findIndex((r) => r.id === detail.id) : -1;
+  const detailIndex = detail ? sorted.findIndex((r) => r.id === detail.id) : -1;
   const stepDetail = (delta: number) => {
     if (detailIndex < 0) return;
-    const next = filtered[detailIndex + delta];
+    const next = sorted[detailIndex + delta];
     if (next) openDetail(next);
   };
 
@@ -242,14 +263,14 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   // 絞り込み結果をそのまま Excel にする。
   // 画面で見えているものが出るよう、条件ではなく行データを送る。
   const exportExcel = async () => {
-    if (filtered.length === 0) return;
+    if (sorted.length === 0) return;
     setExporting(true);
     setError(null);
     try {
       const res = await fetch('/api/testcase/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: filtered, title: dbTitle || `${system}${year}` }),
+        body: JSON.stringify({ rows: sorted, title: dbTitle || `${system}${year}` }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
@@ -320,6 +341,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
         <div className="flex items-center gap-2 flex-wrap">
           {systems.length > 0 ? (
             <select value={system} onChange={(e) => setSystem(e.target.value)} className={selectCls}>
+              <option value="">すべて</option>
               {systems.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           ) : (
@@ -335,9 +357,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               <option key={y} value={y}>{y}年</option>
             ))}
           </select>
-          {/* 月次は年度の右。未選択なら通年を対象にする */}
           <select value={fMonth} onChange={(e) => setFMonth(e.target.value)} className={selectCls}>
-            <option value="">通年</option>
+            <option value="">すべて</option>
             {optionsOf('月次').map((m) => <option key={m} value={m}>{m}月</option>)}
           </select>
           <button
@@ -352,8 +373,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={exportExcel}
-            disabled={exporting || filtered.length === 0}
-            title={`Excel出力（絞り込んだ ${filtered.length}件 / Testcase Format と同じ書式）`}
+            disabled={exporting || sorted.length === 0}
+            title={`Excel出力（絞り込んだ ${sorted.length}件 / Testcase Format と同じ書式）`}
             className="inline-flex items-center justify-center p-2 rounded-lg border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
           >
             {exporting
@@ -455,7 +476,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <Loader2 size={18} className="animate-spin" />
           読み込み中...
         </div>
-      ) : filtered.length === 0 ? (
+      ) : sorted.length === 0 ? (
         <div className="bg-white border border-neutral-200 rounded-xl p-10 text-center text-sm text-neutral-400">
           {rows.length === 0 ? 'データがありません' : '条件に一致するデータがありません'}
         </div>
@@ -464,13 +485,25 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                {LIST_COLUMNS.map((c) => <th key={c} className={th0}>{c}</th>)}
+                {LIST_COLUMNS.map((c) => (
+                  <th
+                    key={c}
+                    className={th0 + ' cursor-pointer hover:bg-neutral-50 select-none'}
+                    onClick={() => toggleSort(c)}
+                  >
+                    <span className="inline-flex items-center gap-1">
+                      {c}
+                      {sortCol === c && sortDir === 'asc' && <ChevronUp size={12} />}
+                      {sortCol === c && sortDir === 'desc' && <ChevronDown size={12} />}
+                    </span>
+                  </th>
+                ))}
                 <th className={th0}></th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((r) => (
-                <tr key={r.id} className="hover:bg-neutral-50">
+              {sorted.map((r) => (
+                <tr key={r.id} className="hover:bg-neutral-50 cursor-pointer" onClick={() => openDetail(r)}>
                   {LIST_COLUMNS.map((c) => {
                     const v = r[c] || '';
                     if (c === 'テスト結果') {
@@ -500,17 +533,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       </td>
                     );
                   })}
-                  <td className={td0}>
+                  <td className={td0} onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => openDetail(r)}
-                        className="px-2 py-1 rounded border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100"
-                      >
-                        詳細
-                      </button>
-                      {/* 移管済みかは BUG 表の ケース番号 を引いて判定する。
-                          BUG を削除すれば自動的に移管ボタンへ戻る */}
                       {transferred[(r['ケース番号'] || '').trim()] ? (
                         <button
                           type="button"
@@ -586,9 +610,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {/* 何件目か。送りボタンで移動したときに位置が分かる */}
-                {detailIndex >= 0 && filtered.length > 1 && (
+                {detailIndex >= 0 && sorted.length > 1 && (
                   <span className="text-[11px] text-neutral-400 tabular-nums">
-                    {detailIndex + 1} / {filtered.length}
+                    {detailIndex + 1} / {sorted.length}
                   </span>
                 )}
                 {/* 一覧に戻らずに移管できるよう、ここにも置く。
@@ -833,7 +857,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={() => stepDetail(1)}
-            disabled={editing || detailIndex < 0 || detailIndex >= filtered.length - 1}
+            disabled={editing || detailIndex < 0 || detailIndex >= sorted.length - 1}
             title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '次のケース'}
             className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >

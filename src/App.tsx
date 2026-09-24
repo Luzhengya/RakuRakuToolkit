@@ -15,10 +15,11 @@ import PdfEditorTable from './components/PdfEditorTable';
 import TestCenter from './components/TestCenter';
 import TestCaseOrganize from './components/TestCaseOrganize';
 import TestCaseView from './components/TestCaseView';
+import TestCaseLibrary from './components/TestCaseLibrary';
 import DataCollection from './components/DataCollection';
 import DailyNews from './components/DailyNews';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'data-collection' | 'daily-news';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'data-collection' | 'daily-news';
 type Category = '文档类' | '管理类' | 'データ収集类';
 
 const CATEGORIES: Category[] = ['文档类', '管理类', 'データ収集类'];
@@ -146,6 +147,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <TestCaseView onBack={() => setView('home')} />
+            </motion.div>
+          ) : view === 'testcase-library' ? (
+            <motion.div
+              key="testcase-library"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <TestCaseLibrary onBack={() => setView('home')} />
             </motion.div>
           ) : view === 'data-collection' ? (
             <motion.div

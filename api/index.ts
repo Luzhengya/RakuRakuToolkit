@@ -4435,6 +4435,138 @@ app.get("/api/config/kpi-targets", async (_req, res) => {
   }
 });
 
+// ── TestCase Library ──────────────────────────────────────────────────
+// 基礎ケースライブラリ。NOTION_TESTCASE_LIBRARY_PARENT_ID 配下の子データベースを参照する。
+
+const LIBRARY_FIELDS: TcField[] = [
+  { name: "ケース番号", kind: "title", col: 0 },
+  { name: "CMDB番号", kind: "rich_text", col: null },
+  { name: "大分類", kind: "rich_text", col: null },
+  { name: "中分類", kind: "rich_text", col: null },
+  { name: "小分類", kind: "rich_text", col: null },
+  { name: "機能名", kind: "rich_text", col: null },
+  { name: "要件名", kind: "rich_text", col: null },
+  { name: "テスト内容", kind: "rich_text", col: null },
+  { name: "前提条件", kind: "rich_text", col: null },
+  { name: "ステップ", kind: "rich_text", col: null },
+  { name: "予期結果", kind: "rich_text", col: null },
+  { name: "ポイント", kind: "rich_text", col: null },
+  { name: "優先級", kind: "rich_text", col: null },
+  { name: "カテゴリ", kind: "rich_text", col: null },
+  { name: "状態", kind: "rich_text", col: null },
+  { name: "テスト結果", kind: "select", col: null },
+  { name: "備考", kind: "rich_text", col: null },
+  { name: "関連NO", kind: "rich_text", col: null },
+  { name: "正常/異常", kind: "rich_text", col: null },
+  { name: "源", kind: "rich_text", col: null },
+  { name: "システム", kind: "select", col: null },
+  { name: "月次", kind: "select", col: null },
+  { name: "バージョン", kind: "number", col: null },
+  { name: "作成者", kind: "rich_text", col: null },
+  { name: "作成日", kind: "date", col: null },
+  { name: "更新者", kind: "rich_text", col: null },
+  { name: "更新日", kind: "date", col: null },
+];
+
+app.get("/api/testcase-library/systems", async (_req, res) => {
+  const parentPageId = process.env.NOTION_TESTCASE_LIBRARY_PARENT_ID;
+  if (!notion || !parentPageId) {
+    return res.status(503).json({
+      error: "Notion 未設定",
+      detail: "NOTION_API_KEY / NOTION_TESTCASE_LIBRARY_PARENT_ID を設定してください",
+    });
+  }
+  try {
+    const systems: { dbId: string; dbTitle: string; hasData: boolean }[] = [];
+    let cursor: string | undefined = undefined;
+    // 執行庫は「{system}{4桁年}」命名。ライブラリ DB を区別するため年度末尾を除外する
+    const isYearSuffix = /\d{4}$/;
+    do {
+      const r: any = await notion.blocks.children.list({
+        block_id: parentPageId,
+        start_cursor: cursor,
+        page_size: 100,
+      });
+      for (const block of r.results ?? []) {
+        if (block.type === "child_database") {
+          const title = (block.child_database?.title ?? "").trim();
+          if (title && !isYearSuffix.test(title)) {
+            systems.push({ dbId: block.id, dbTitle: title, hasData: false });
+          }
+        }
+      }
+      cursor = r.has_more ? r.next_cursor : undefined;
+    } while (cursor);
+
+    for (const sys of systems) {
+      try {
+        const db: any = await notion.databases.retrieve({ database_id: sys.dbId });
+        const dsId = db?.data_sources?.[0]?.id as string | undefined;
+        if (!dsId) continue;
+        const r: any = await (notion as any).dataSources.query({
+          data_source_id: dsId,
+          page_size: 1,
+        });
+        sys.hasData = (r?.results?.length ?? 0) > 0;
+      } catch { /* skip */ }
+    }
+
+    return res.json({ systems });
+  } catch (error) {
+    console.error("Library systems error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
+app.get("/api/testcase-library/list", async (req, res) => {
+  const system = String(req.query.system ?? "").trim();
+  if (!system) {
+    return res.status(400).json({ error: "system は必須です" });
+  }
+  const parentPageId = process.env.NOTION_TESTCASE_LIBRARY_PARENT_ID;
+  if (!notion || !parentPageId) {
+    return res.status(503).json({
+      error: "Notion 未設定",
+      detail: "NOTION_API_KEY / NOTION_TESTCASE_LIBRARY_PARENT_ID を設定してください",
+    });
+  }
+  try {
+    const databaseId = await findTestcaseDatabaseId(parentPageId, system);
+    if (!databaseId) return res.json({ items: [], total: 0, exists: false, dbTitle: system });
+
+    const db: any = await notion.databases.retrieve({ database_id: databaseId });
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.json({ items: [], total: 0, exists: false, dbTitle: system });
+
+    const pages: any[] = [];
+    let cursor: string | undefined = undefined;
+    do {
+      const r: any = await (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+      });
+      pages.push(...(r.results ?? []));
+      cursor = r.has_more ? r.next_cursor : undefined;
+    } while (cursor);
+
+    const items = pages.map((page: any) => {
+      const row: Record<string, string> = { id: page.id };
+      for (const f of LIBRARY_FIELDS) {
+        row[f.name] = readTcPlain(page, f);
+      }
+      return row;
+    });
+    items.sort((a, b) =>
+      (a["ケース番号"] || "").localeCompare(b["ケース番号"] || "", undefined, { numeric: true })
+    );
+    return res.json({ items, total: items.length, exists: true, dbTitle: system });
+  } catch (error) {
+    console.error("Library list error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
 // 未知の /api/* は 404 の JSON で返す。
 // これが無いと dev の Vite / 本番の SPA フォールバックが index.html を
 // 200 で返してしまい、クライアントでは res.ok が true になった後の
