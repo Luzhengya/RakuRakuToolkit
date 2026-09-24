@@ -77,7 +77,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
     },
     {
       id: 'test-center',
-      title: '测试中心',
+      title: 'Test Center',
       description: '进入测试中心管理画面，按区域管理测试模块。',
       category: '管理类',
       icon: <LayoutGrid className="text-sky-600" size={24} />,
@@ -98,6 +98,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <ClipboardList className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('testcase-view'),
+    },
+    {
+      id: 'testcase-library',
+      title: 'TestCase Library',
+      description: 'システムごとの基礎テストケースライブラリを閲覧します。',
+      category: '管理类',
+      icon: <ClipboardList className="text-emerald-600" size={24} />,
+      onClick: () => onSelectTool('testcase-library'),
     },
     {
       id: 'data-collection',
