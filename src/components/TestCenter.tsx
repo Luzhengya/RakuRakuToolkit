@@ -22,6 +22,9 @@ import {
   Cloud,
   SlidersHorizontal,
   ChevronRight,
+  Pencil,
+  Save,
+  Check,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import BugList from './BugList';
@@ -29,6 +32,7 @@ import ProgressAlerts from './ProgressAlerts';
 import CaseStats from './CaseStats';
 import CaseBugList from './CaseBugList';
 import CaseSchedule from './CaseSchedule';
+import CaseEffort from './CaseEffort';
 import CaseTestcases from './CaseTestcases';
 import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
 import {
@@ -41,15 +45,13 @@ import {
   PieChart,
   Pie,
   Cell,
-  LineChart,
-  Line,
 } from 'recharts';
 
 type TestCenterProps = {
   onBack: () => void;
 };
 
-type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros' | 'meikancho';
+type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros' | 'meikancho' | 'credit-asp';
 
 type ProgressItem = {
   id: string;
@@ -350,6 +352,10 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId, versions: EnvVersions = D
       `☑ [ブラウザ] Chrome（${chrome}）`,
       '☑ [URL] （名館長クラウドのテストURLを入力してください）',
     ],
+    'credit-asp': [
+      `☑ [ブラウザ] Chrome（${chrome}）`,
+      '☑ [URL] （与信ASPのテストURLを入力してください）',
+    ],
   };
   return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
 }
@@ -409,6 +415,11 @@ const AREA_DOC_META: Record<AreaId, AreaDocMeta> = {
     releaseNameJa: '名館長クラウド',
     planFileNamePrefix: '名館長クラウド',
     svnPathSegment: '名館長クラウド',
+  },
+  'credit-asp': {
+    releaseNameJa: '与信ASP',
+    planFileNamePrefix: '与信ASP',
+    svnPathSegment: '与信ASP',
   },
 };
 
@@ -1476,6 +1487,12 @@ const AREAS = [
     description: { zh: '名館長クラウド相关测试项的统一管理。', ja: '名館長クラウド関連のテスト項目を統一管理する。' },
     icon: <Cloud className="text-sky-600" size={22} />
   },
+  {
+    id: 'credit-asp' as AreaId,
+    title: { zh: '与信ASP区域', ja: '与信ASPエリア' },
+    description: { zh: '与信ASP相关测试项的统一管理。', ja: '与信ASP関連のテスト項目を統一管理する。' },
+    icon: <FileText className="text-indigo-600" size={22} />
+  },
 ];
 
 export default function TestCenter({ onBack }: TestCenterProps) {
@@ -1503,7 +1520,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [resultDraftMap, setResultDraftMap] = useState<Record<string, ResultDraft>>({});
   const [savingResultMap, setSavingResultMap] = useState<Record<string, boolean>>({});
   const [resultSaveNoticeMap, setResultSaveNoticeMap] = useState<Record<string, SaveNotice>>({});
-  const [editingResultItemId, setEditingResultItemId] = useState<string | null>(null);
+  const [resultEditingId, setResultEditingId] = useState<string | null>(null);
   // 案件行展开状态: 展示 7 输入项 (Test総件数/NG数/Test不可/確認中/想定外NG数/日本側case数/日本側NG数)
   const [expandedInputsMap, setExpandedInputsMap] = useState<Record<string, boolean>>({});
   const toggleInputsExpand = (id: string) => setExpandedInputsMap((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -1523,7 +1540,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const initialAreaUpdatedAtMap = useMemo<Record<string, number>>(() => {
     const map: Record<string, number> = {};
-    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho'];
+    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp'];
     for (const id of allAreaIds) {
       const cache = loadAreaCache(id);
       if (cache) map[id] = cache.updatedAt;
@@ -1540,7 +1557,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
   const [ganttOpen, setGanttOpen] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
-  const targetMonthKeys = useMemo(() => getTargetMonthKeys(), []);
+  const [areaYear, setAreaYear] = useState<number>(() => new Date().getFullYear());
+  const [areaMonth, setAreaMonth] = useState<number>(() => new Date().getMonth() + 1);
+  const [areaDetailView, setAreaDetailView] = useState<'summary' | 'detail' | 'history'>('summary');
+  const targetMonthKeys = useMemo(() => {
+    const m = String(areaMonth).padStart(2, '0');
+    return [`${areaYear}${m}`];
+  }, [areaYear, areaMonth]);
   const targetMonthKeySet = useMemo(() => new Set(targetMonthKeys), [targetMonthKeys]);
 
   // 結果報告の左側に表示する：このエリアの最新の計画資料HTML
@@ -1633,7 +1656,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setResultDraftMap({});
     setSavingResultMap({});
     setResultSaveNoticeMap({});
-    setEditingResultItemId(null);
 
     const cache = loadAreaCache(areaId);
     if (cache) {
@@ -1645,13 +1667,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     await fetchAreaFromNotion(areaId);
   };
 
-  // アラートの行から、その案件の詳細画面まで一気に開く。
-  // loadAreaData が内部で editingResultItemId を null に戻すので、
-  // エリアの読み込みが終わってから案件を指定する必要がある。
-  const jumpToCase = async (areaId: string, caseId: string) => {
+  const jumpToCase = async (areaId: string, _caseId: string) => {
     if (!AREAS.some((a) => a.id === areaId)) return;
     await loadAreaData(areaId as AreaId);
-    setEditingResultItemId(caseId);
   };
 
   const reloadAreaData = async () => {
@@ -1825,7 +1843,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const caseCount = filteredOverview.length;
     const bugTotal = filteredOverview.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
     const systemSet = new Set(filteredOverview.map((item) => item.areaId));
-    return { caseCount, bugTotal, systemCount: systemSet.size };
+    const doneCount = filteredOverview.filter((item) => item.status.trim() === '完了').length;
+    const inProgressCount = filteredOverview.filter((item) => item.status.trim() === '進行中').length;
+    const blockedCount = filteredOverview.filter((item) => item.status.trim() === 'ブロック').length;
+    const doneRate = caseCount > 0 ? Math.round((doneCount / caseCount) * 100) : 0;
+    return { caseCount, bugTotal, systemCount: systemSet.size, doneCount, inProgressCount, blockedCount, doneRate };
   }, [filteredOverview]);
 
   const monthlyBugSeries = useMemo(() => {
@@ -1865,9 +1887,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   }, [filteredOverview]);
 
   const areaStats = useMemo(() => {
-    const map = new Map<AreaId, { caseCount: number; bugTotal: number; series: number[]; bugSeries: number[] }>();
+    const map = new Map<AreaId, { caseCount: number; bugTotal: number; doneCount: number; series: number[]; bugSeries: number[] }>();
     for (const area of AREAS) {
-      map.set(area.id, { caseCount: 0, bugTotal: 0, series: Array(12).fill(0), bugSeries: Array(12).fill(0) });
+      map.set(area.id, { caseCount: 0, bugTotal: 0, doneCount: 0, series: Array(12).fill(0), bugSeries: Array(12).fill(0) });
     }
     for (const item of overviewItems) {
       const key = toMonthKey(item.month);
@@ -1881,6 +1903,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       if (filterMonth === 'all' || m === filterMonth) {
         slot.caseCount += 1;
         slot.bugTotal += bug;
+        if (item.status.trim() === '完了') slot.doneCount += 1;
       }
       slot.series[m - 1] += 1;
       slot.bugSeries[m - 1] += bug;
@@ -1913,11 +1936,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     () => currentItems.filter((item) => checkedMap[item.id]),
     [checkedMap, currentItems]
   );
-  const editingResultItem = useMemo(
-    () => items.find((item) => item.id === editingResultItemId) ?? null,
-    [editingResultItemId, items]
-  );
-
   const currentMonthKey = useMemo(() => {
     if (monthGroups.length > 0) {
       return activeMonthTab || monthGroups[0].month;
@@ -1932,16 +1950,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       (e) => e.areaId === selectedAreaId && e.monthKey === currentMonthKey
     ).length;
   }, [htmlHistory, selectedAreaId, currentMonthKey]);
-
-  const areaResultReady = useMemo(() => {
-    if (!isAreaSelected || currentItems.length === 0) return false;
-    return currentItems.every((item) =>
-      hasValue(resultDraftMap[item.id]?.testTotalCount ?? item.testTotalCount) &&
-      hasValue(resultDraftMap[item.id]?.bugCount ?? item.bugCount) &&
-      hasValue(resultDraftMap[item.id]?.testBlockedCount ?? item.testBlockedCount) &&
-      hasValue(resultDraftMap[item.id]?.pendingConfirmCount ?? item.pendingConfirmCount)
-    );
-  }, [currentItems, isAreaSelected, resultDraftMap]);
 
   const updateResultDraft = (itemId: string, key: keyof ResultDraft, value: string) => {
     setResultDraftMap((prev) => ({
@@ -2261,7 +2269,6 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     setResultDraftMap({});
     setSavingResultMap({});
     setResultSaveNoticeMap({});
-    setEditingResultItemId(null);
   };
 
   const breadcrumb = (
@@ -2288,32 +2295,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       {selectedArea && (
         <>
           <span className="text-neutral-400">{'>>'}</span>
-          {editingResultItem ? (
-            <button
-              type="button"
-              onClick={() => setEditingResultItemId(null)}
-              className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors"
-            >
-              {selectedArea.title[lang].replace(/エリア$|区域$/, '')}
-            </button>
-          ) : (
-            <span className="text-neutral-900 font-medium">
-              {selectedArea.title[lang].replace(/エリア$|区域$/, '')}
-            </span>
-          )}
-        </>
-      )}
-      {editingResultItem && (
-        <>
-          <span className="text-neutral-400">{'>>'}</span>
-          <span
-            className="text-neutral-900 font-medium"
-            title={editingResultItem.projectName || '-'}
-          >
-            {(() => {
-              const name = editingResultItem.projectName || '-';
-              return name.length > 8 ? `${name.slice(0, 8)}...` : name;
-            })()}
+          <span className="text-neutral-900 font-medium">
+            {selectedArea.title[lang].replace(/エリア$|区域$/, '')}
           </span>
         </>
       )}
@@ -2366,53 +2349,42 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     <div className="space-y-6">
       {breadcrumb}
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
+      <div className="flex items-stretch justify-between gap-4">
+        <div className="flex flex-col justify-center">
           <h2 className="text-2xl font-bold text-neutral-900">
-            {editingResultItem ? t('caseDetail') : t('pageTitle')}
+            {t('pageTitle')}
           </h2>
-          <div className="flex items-center gap-2">
-            {selectedAreaId && (
-              <>
-                {areaUpdatedAtMap[selectedAreaId] && (
-                  <span className="text-[11px] text-neutral-400 leading-tight">
-                    {t('lastUpdated')}<br />{formatUpdatedAt(areaUpdatedAtMap[selectedAreaId])}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={reloadAreaData}
-                  disabled={loading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  title="Notionから最新データを再取得"
-                >
-                  <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-                  {t('update')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setHistoryShowAll(false); setHistoryOpen(true); }}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 transition-colors"
-                >
-                  <History size={15} />
-                  {t('btnHistory')}
-                  {historyBadgeCount > 0 && (
-                    <span className="ml-0.5 inline-flex items-center justify-center rounded-full bg-neutral-900 text-white text-[10px] font-bold w-4 h-4">
-                      {historyBadgeCount > 9 ? '9+' : historyBadgeCount}
-                    </span>
-                  )}
-                </button>
-              </>
-            )}
-          </div>
+          <p className="text-neutral-500 mt-1">
+            {selectedArea
+                ? `${selectedArea.title[lang]} - ${t('progressList')}`
+                : t('pageSubtitle')}
+          </p>
         </div>
-        <p className="text-neutral-500">
-          {editingResultItem
-            ? editingResultItem.projectName || '-'
-            : selectedArea
-              ? `${selectedArea.title[lang]} - ${t('progressList')}`
-              : t('pageSubtitle')}
-        </p>
+        {selectedAreaId && (
+          <div className="bg-white border border-neutral-200 rounded-xl p-3 flex flex-col items-center justify-center gap-1.5 shrink-0 aspect-square">
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => { setAreaYear((y) => y - 1); setActiveMonthTab(''); }} className="p-0.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"><ArrowLeft size={12} /></button>
+              <span className="text-xs font-bold text-neutral-700 w-10 text-center">{areaYear}</span>
+              <button type="button" onClick={() => { setAreaYear((y) => y + 1); setActiveMonthTab(''); }} className="p-0.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"><ArrowRight size={12} /></button>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setAreaMonth(m); setActiveMonthTab(''); }}
+                  className={`w-6 h-6 rounded text-[11px] font-medium transition-colors ${
+                    m === areaMonth
+                      ? 'bg-neutral-900 text-white'
+                      : 'text-neutral-500 hover:bg-neutral-100'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {selectedArea ? (
@@ -2438,55 +2410,45 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           )}
 
           {!loading && !error && items.length > 0 && (
-            editingResultItem ? (
-              <div className="space-y-4">
-                <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm">
-                  <p className="text-xs uppercase tracking-wider text-neutral-400 font-semibold">{t('fieldCaseName')}</p>
-                  <p className="text-base font-semibold text-neutral-900 mt-1">{editingResultItem.projectName || '-'}</p>
-                </section>
-
-                {/* アラートから飛んできた時に、その場で日付を直せるようにする */}
-                <CaseSchedule caseId={editingResultItem.id} />
-
-                <CaseBugList caseId={editingResultItem.id} lang={lang} />
-
-                {/* 案件名の先頭の CMDB番号 で TestCase 表を引く */}
-                <CaseTestcases caseId={editingResultItem.id} />
-              </div>
-            ) : (
             <div className="space-y-4">
-              {monthGroups.length > 0 && (
-                <div className="bg-white border border-neutral-200 rounded-xl p-3 flex flex-wrap gap-2">
-                  {monthGroups.map((group) => {
-                    const isActive = (activeMonthTab || monthGroups[0].month) === group.month;
-                    return (
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="bg-white border border-neutral-200 rounded-xl p-1 inline-flex gap-1">
+                    {(['summary', 'detail', 'history'] as const).map((v) => (
                       <button
-                        key={group.month}
+                        key={v}
                         type="button"
-                        onClick={() => setActiveMonthTab(group.month)}
-                        className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                          isActive
+                        onClick={() => setAreaDetailView(v)}
+                        className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                          areaDetailView === v
                             ? 'bg-neutral-900 text-white'
-                            : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+                            : 'text-neutral-500 hover:bg-neutral-100'
                         }`}
                       >
-                        {group.month}
+                        {v === 'summary' ? '概要' : v === 'detail' ? '詳細' : '履歴'}
+                        {v === 'history' && historyBadgeCount > 0 && (
+                          <span className="ml-1 inline-flex items-center justify-center rounded-full bg-white/20 text-[10px] font-bold w-4 h-4">
+                            {historyBadgeCount > 9 ? '9+' : historyBadgeCount}
+                          </span>
+                        )}
                       </button>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="bg-white border border-neutral-200 rounded-xl p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <p className="text-sm text-neutral-600">
-                  {t('caseCount')}<span className="font-semibold text-neutral-900">{currentItems.length}</span>
-                </p>
-                <div className="flex flex-wrap items-center gap-2">
-                  {areaResultReady && (
-                    <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 border border-emerald-200">
-                      {t('resultReady')}
-                    </span>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={reloadAreaData}
+                    disabled={loading}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    title="Notionから最新データを再取得"
+                  >
+                    <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+                    {t('update')}
+                  </button>
+                  {areaUpdatedAtMap[selectedAreaId!] && (
+                    <span className="text-[11px] text-neutral-400">{t('lastUpdated')} {formatUpdatedAt(areaUpdatedAtMap[selectedAreaId!])}</span>
                   )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={handleCreatePlan}
@@ -2531,114 +2493,299 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 </div>
               )}
 
-              {currentItems.map((item) => {
-                const expanded = !!expandedInputsMap[item.id];
-                const draft = getResultDraft(item);
-                const inputCls = 'w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none';
-                const labelCls = 'text-[11px] tracking-wider uppercase text-neutral-400 font-semibold';
-                return (
-                  <section
-                    key={item.id}
-                    className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-4"
-                  >
-                    <div className="flex items-start gap-4">
-                      <input
-                        type="checkbox"
-                        checked={!!checkedMap[item.id]}
-                        onChange={(e) =>
-                          setCheckedMap((prev) => ({
-                            ...prev,
-                            [item.id]: e.target.checked,
-                          }))
-                        }
-                        className="mt-1 h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
-                      />
-                      <div className="grid flex-1 grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-                        {renderField(t('fieldMonth'), item.month)}
-                        <div className="space-y-1">
-                          <p className={labelCls}>{t('fieldCaseName')}</p>
-                          <button
-                            type="button"
-                            onClick={() => setEditingResultItemId(item.id)}
-                            className="text-sm text-left text-blue-600 hover:text-blue-700 hover:underline break-all"
-                          >
-                            {item.projectName || '-'}
-                          </button>
+              {areaDetailView === 'history' ? (
+                <div className="space-y-3">
+                  {selectedAreaId && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setHistoryShowAll((v) => !v)}
+                        className={`px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                          historyShowAll
+                            ? 'border-neutral-900 bg-neutral-900 text-white'
+                            : 'border-neutral-300 text-neutral-600 hover:bg-neutral-50'
+                        }`}
+                      >
+                        {historyShowAll ? t('btnAllAreasActive') : t('btnAllAreas')}
+                      </button>
+                      {hasLegacyHistory && (
+                        <button
+                          type="button"
+                          onClick={handleMigrateLocalHistory}
+                          disabled={migrating}
+                          className="px-2.5 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                        >
+                          {migrating ? t('migrating') : t('migrateLocal')}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {historyLoading && htmlHistory.length === 0 ? (
+                    <div className="bg-white border border-neutral-200 rounded-xl p-8 text-center text-neutral-400 text-sm">{t('historyLoading')}</div>
+                  ) : historyError ? (
+                    <div className="bg-white border border-neutral-200 rounded-xl p-8 text-center text-red-500 text-sm">{t('historyLoadError')}: {historyError}</div>
+                  ) : filteredHistory.length === 0 ? (
+                    <div className="bg-white border border-neutral-200 rounded-xl p-8 text-center text-neutral-400 text-sm">{htmlHistory.length === 0 ? t('historyEmpty') : t('historyAreaEmpty')}</div>
+                  ) : (
+                    filteredHistory.map((entry) => {
+                      const entryArea = AREAS.find((a) => a.id === entry.areaId);
+                      const entryAreaTitle = entryArea ? entryArea.title[lang] : entry.areaId;
+                      return (
+                        <div key={entry.id} className="bg-white border border-neutral-200 rounded-xl flex items-center gap-3 px-4 py-3 hover:bg-neutral-50">
+                          <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                            entry.type === 'plan'
+                              ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
+                              : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                          }`}>
+                            {entry.type === 'plan' ? t('historyTypePlan') : t('historyTypeReport')}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p className="text-sm font-medium text-neutral-800 truncate">{entry.title}</p>
+                              {historyShowAll && (
+                                <span className="shrink-0 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] bg-neutral-50 border border-neutral-200 text-neutral-500">
+                                  {entryAreaTitle.replace(/エリア$|区域$/, '')}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              {new Date(entry.savedAt).toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => { setHistoryPreviewId(entry.id); }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 transition-colors"
+                            >
+                              <Eye size={13} />
+                              {t('btnPreview')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHtmlHistory((prev) => prev.filter((e) => e.id !== entry.id));
+                                apiDeleteHistory(entry.id).catch((err) => console.error('Delete history failed:', err));
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-100 text-xs text-red-500 hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
                         </div>
-                        {renderField(t('fieldStatus'), item.status)}
-                        {renderField(t('fieldEstTotal'), item.estimateTotal)}
-                        {renderField(t('fieldActTotal'), item.actualTotal)}
-                      </div>
+                      );
+                    })
+                  )}
+                </div>
+              ) : areaDetailView === 'summary' ? (
+                <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-neutral-50 border-b border-neutral-200 text-[11px] uppercase tracking-wider text-neutral-400 font-semibold">
+                          <th className="px-3 py-2.5 text-left w-8">
+                            <input
+                              type="checkbox"
+                              checked={currentItems.length > 0 && currentItems.every((i) => checkedMap[i.id])}
+                              onChange={(e) => {
+                                const next: Record<string, boolean> = {};
+                                for (const i of currentItems) next[i.id] = e.target.checked;
+                                setCheckedMap((prev) => ({ ...prev, ...next }));
+                              }}
+                              className="h-3.5 w-3.5 rounded border-neutral-300"
+                            />
+                          </th>
+                          <th className="px-3 py-2.5 text-left">{t('fieldCaseName')}</th>
+                          <th className="px-3 py-2.5 text-center">{t('fieldStatus')}</th>
+                          <th className="px-3 py-2.5 text-center">予定期間</th>
+                          <th className="px-3 py-2.5 text-center">実績期間</th>
+                          <th className="px-3 py-2.5 text-right">{t('fieldEstTotal')}</th>
+                          <th className="px-3 py-2.5 text-right">{t('fieldActTotal')}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-100">
+                        {currentItems.map((item) => {
+                          const fmtDate = (d: string) => d ? d.replace(/^\d{4}-/, '').replace('-', '/') : '-';
+                          const statusColor = item.status.trim() === '完了' ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500';
+                          return (
+                            <tr key={item.id} className="hover:bg-neutral-50/50">
+                              <td className="px-3 py-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={!!checkedMap[item.id]}
+                                  onChange={(e) => setCheckedMap((prev) => ({ ...prev, [item.id]: e.target.checked }))}
+                                  className="h-3.5 w-3.5 rounded border-neutral-300"
+                                />
+                              </td>
+                              <td className="px-3 py-2.5 text-sm text-neutral-900 break-all">{item.projectName || '-'}</td>
+                              <td className="px-3 py-2.5 text-center">
+                                <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${statusColor}`}>{item.status || '-'}</span>
+                              </td>
+                              <td className="px-3 py-2.5 text-center text-xs text-neutral-500 whitespace-nowrap">
+                                {fmtDate(item.tcStartDate)}〜{fmtDate(item.tcExecutionCompleteDate)}
+                              </td>
+                              <td className="px-3 py-2.5 text-center text-xs text-neutral-500 whitespace-nowrap">
+                                {fmtDate(item.actualStartDate)}〜{fmtDate(item.actualExecutionCompleteDate)}
+                              </td>
+                              <td className="px-3 py-2.5 text-right font-mono text-xs">{item.estimateTotal || '-'}</td>
+                              <td className="px-3 py-2.5 text-right font-mono text-xs">{item.actualTotal || '-'}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (<>
+                <div className="bg-white border border-neutral-200 rounded-xl p-4">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+                    <div>
+                      <p className="text-[11px] text-neutral-400 font-medium">案件数</p>
+                      <p className="text-xl font-bold text-neutral-900">{currentItems.length}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-neutral-400 font-medium">完了</p>
+                      <p className="text-xl font-bold text-emerald-600">{currentItems.filter((i) => i.status.trim() === '完了').length}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-neutral-400 font-medium">進行中</p>
+                      <p className="text-xl font-bold text-blue-600">{currentItems.filter((i) => i.status.trim() === '進行中').length}</p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-neutral-400 font-medium">見積工数合計</p>
+                      <p className="text-xl font-bold text-neutral-900">{currentItems.reduce((s, i) => s + (parseFloat(i.estimateTotal) || 0), 0).toFixed(1)}</p>
+                    </div>
+                  </div>
+                </div>
+                {currentItems.map((item) => {
+                  const isExpanded = !!expandedInputsMap[item.id];
+                  const draft = getResultDraft(item);
+                  const inputCls = 'w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none';
+                  const labelCls = 'text-[11px] tracking-wider uppercase text-neutral-400 font-semibold';
+                  return (
+                    <section key={item.id} className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
                       <button
                         type="button"
                         onClick={() => toggleInputsExpand(item.id)}
-                        className="mt-1 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-neutral-200 bg-white text-xs text-neutral-600 hover:bg-neutral-50 shrink-0"
-                        title={expanded ? '結果入力を閉じる' : '結果入力を開く'}
+                        className="w-full flex items-center justify-between gap-3 px-5 py-3.5 hover:bg-neutral-50 transition-colors text-left"
                       >
-                        <ChevronDown size={14} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
-                        結果入力
+                        <div className="flex items-center gap-3 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={!!checkedMap[item.id]}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => setCheckedMap((prev) => ({ ...prev, [item.id]: e.target.checked }))}
+                            className="h-4 w-4 rounded border-neutral-300"
+                          />
+                          <span className="text-sm font-semibold text-neutral-900 truncate">{item.projectName || '-'}</span>
+                          <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${item.status.trim() === '完了' ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500'}`}>{item.status || '-'}</span>
+                        </div>
+                        <ChevronDown size={16} className={`shrink-0 text-neutral-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       </button>
-                    </div>
-                    {expanded && (
-                      <div className="border-t border-neutral-100 pt-4 space-y-4">
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <label className="space-y-1">
-                            <p className={labelCls}>{t('fieldTestTotal')}</p>
-                            <input type="text" value={draft.testTotalCount} onChange={(e) => updateResultDraft(item.id, 'testTotalCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
-                          <label className="space-y-1">
-                            <p className={labelCls}>{t('fieldNgCount')}</p>
-                            <input type="text" value={draft.bugCount} onChange={(e) => updateResultDraft(item.id, 'bugCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
-                          <label className="space-y-1">
-                            <p className={labelCls}>{t('fieldTestBlocked')}</p>
-                            <input type="text" value={draft.testBlockedCount} onChange={(e) => updateResultDraft(item.id, 'testBlockedCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
-                          <label className="space-y-1">
-                            <p className={labelCls}>{t('fieldPendingCount')}</p>
-                            <input type="text" value={draft.pendingConfirmCount} onChange={(e) => updateResultDraft(item.id, 'pendingConfirmCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
-                          <label className="space-y-1">
-                            <p className={labelCls}>想定外NG数</p>
-                            <input type="text" value={draft.unexpectedNgCount} onChange={(e) => updateResultDraft(item.id, 'unexpectedNgCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
-                          <label className="space-y-1">
-                            <p className={labelCls}>日本側case数</p>
-                            <input type="text" value={draft.japanCaseCount} onChange={(e) => updateResultDraft(item.id, 'japanCaseCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
-                          <label className="space-y-1">
-                            <p className={labelCls}>日本側NG数</p>
-                            <input type="text" value={draft.japanBugCount} onChange={(e) => updateResultDraft(item.id, 'japanBugCount', e.target.value)} className={inputCls} placeholder={t('inputPlaceholder')} />
-                          </label>
+                      {isExpanded && (
+                        <div className="border-t border-neutral-100 px-5 py-4 space-y-4">
+                          <CaseSchedule caseId={item.id} />
+
+                          <CaseEffort caseId={item.id} />
+
+                          <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-3">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div className="flex items-center gap-2">
+                                <FileText size={15} className="text-neutral-400" />
+                                <h3 className="text-sm font-bold text-neutral-800">テスト結果</h3>
+                                {resultSaveNoticeMap[item.id]?.type === 'success' && !savingResultMap[item.id] && (
+                                  <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600">
+                                    <Check size={12} /> {resultSaveNoticeMap[item.id].message}
+                                  </span>
+                                )}
+                              </div>
+                              {resultEditingId === item.id ? (
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => { setResultEditingId(null); }}
+                                    disabled={!!savingResultMap[item.id]}
+                                    className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                                  >
+                                    キャンセル
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      await handleSaveResultToNotion(item);
+                                      setResultEditingId(null);
+                                    }}
+                                    disabled={!!savingResultMap[item.id]}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
+                                  >
+                                    {savingResultMap[item.id] ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                                    保存
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setResultEditingId(item.id)}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+                                >
+                                  <Pencil size={14} />
+                                  編集
+                                </button>
+                              )}
+                            </div>
+                            {resultSaveNoticeMap[item.id]?.type === 'error' && (
+                              <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 text-red-600 text-sm flex items-start gap-2">
+                                <AlertCircle size={15} className="mt-0.5 shrink-0" />
+                                {resultSaveNoticeMap[item.id].message}
+                              </div>
+                            )}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                              {([
+                                { key: 'testTotalCount' as const, label: t('fieldTestTotal') },
+                                { key: 'bugCount' as const, label: t('fieldNgCount') },
+                                { key: 'testBlockedCount' as const, label: t('fieldTestBlocked') },
+                                { key: 'pendingConfirmCount' as const, label: t('fieldPendingCount') },
+                                { key: 'unexpectedNgCount' as const, label: '想定外NG数' },
+                                { key: 'japanCaseCount' as const, label: '日本側case数' },
+                                { key: 'japanBugCount' as const, label: '日本側NG数' },
+                              ] as const).map((col) => (
+                                <div key={col.key} className="bg-neutral-50 rounded-lg px-3 py-2">
+                                  <p className="text-neutral-400 text-[10px] font-medium mb-0.5">{col.label}</p>
+                                  {resultEditingId === item.id ? (
+                                    <input
+                                      type="text"
+                                      value={draft[col.key]}
+                                      onChange={(e) => updateResultDraft(item.id, col.key, e.target.value)}
+                                      className="w-full rounded border border-neutral-300 px-2 py-1 text-sm font-mono text-neutral-800 focus:border-neutral-500 focus:outline-none"
+                                    />
+                                  ) : (
+                                    <span className={`font-mono text-neutral-700 ${draft[col.key] ? '' : 'text-neutral-300'}`}>
+                                      {draft[col.key] || '-'}
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </section>
+
+                          <div className="border-t border-neutral-100 pt-3">
+                            <CaseBugList caseId={item.id} lang={lang} />
+                          </div>
+                          <div className="border-t border-neutral-100 pt-3">
+                            <CaseTestcases caseId={item.id} />
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <button
-                            type="button"
-                            onClick={() => handleSaveResultToNotion(item)}
-                            disabled={!!savingResultMap[item.id]}
-                            className="inline-flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-not-allowed"
-                          >
-                            {savingResultMap[item.id] ? <Loader2 size={14} className="animate-spin" /> : null}
-                            {t('btnSaveToNotion')}
-                          </button>
-                          {resultSaveNoticeMap[item.id] && (
-                            <span className={`text-xs ${resultSaveNoticeMap[item.id].type === 'success' ? 'text-emerald-600' : 'text-red-600'}`}>
-                              {resultSaveNoticeMap[item.id].message}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </section>
-                );
-              })}
+                      )}
+                    </section>
+                  );
+                })}
+              </>)}
             </div>
-            )
           )}
         </div>
       ) : (
         <div className="space-y-6">
-          {/* 顶部筛选 + KPI */}
+          {/* 顶部筛选 */}
           <div className="flex flex-wrap items-center justify-end gap-3">
             <div className="flex items-center gap-2">
               <div className="relative">
@@ -2683,11 +2830,34 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 {t('lastUpdated')}<br />{formatUpdatedAt(overviewUpdatedAt)}
               </span>
             )}
-            <div className="flex items-center gap-4 pl-4 border-l border-neutral-200">
-              <KpiInline label={t('kpiCaseCount')} value={overviewKpi.caseCount} />
-              <KpiInline label={t('kpiBugTotal')} value={overviewKpi.bugTotal} />
-              <KpiInline label={t('kpiSystemClass')} value={overviewKpi.systemCount} suffix={t('kpiSystemSuffix')} />
-            </div>
+          </div>
+
+          {/* KPI カード */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <button type="button" onClick={() => setCaseStatsOpen(true)} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+              <div className="h-0.5 w-8 rounded bg-neutral-800 mb-3" />
+              <p className="text-xs text-neutral-500 font-medium">{t('kpiCaseCount')}</p>
+              <p className="text-2xl font-bold text-neutral-900 mt-1">{overviewKpi.caseCount.toLocaleString()}</p>
+              <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.systemCount}{t('kpiSystemSuffix')}</p>
+            </button>
+            <button type="button" onClick={() => { setBugListInitialMonth(''); setBugListOpen(true); }} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+              <div className="h-0.5 w-8 rounded bg-red-500 mb-3" />
+              <p className="text-xs text-neutral-500 font-medium">{t('kpiBugTotal')}</p>
+              <p className="text-2xl font-bold text-red-600 mt-1">{overviewKpi.bugTotal.toLocaleString()}</p>
+              <p className="text-[11px] text-neutral-400 mt-1">{t('bugLabel')}</p>
+            </button>
+            <button type="button" onClick={() => setCaseStatsOpen(true)} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+              <div className="h-0.5 w-8 rounded bg-emerald-500 mb-3" />
+              <p className="text-xs text-neutral-500 font-medium">完了率</p>
+              <p className="text-2xl font-bold text-emerald-600 mt-1">{overviewKpi.doneRate}<span className="text-base font-semibold">%</span></p>
+              <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.doneCount} / {overviewKpi.caseCount} 完了</p>
+            </button>
+            <button type="button" onClick={() => setCaseStatsOpen(true)} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+              <div className="h-0.5 w-8 rounded bg-blue-500 mb-3" />
+              <p className="text-xs text-neutral-500 font-medium">進行中</p>
+              <p className="text-2xl font-bold text-blue-600 mt-1">{overviewKpi.inProgressCount}</p>
+              <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.blockedCount > 0 ? `ブロック ${overviewKpi.blockedCount}` : 'ブロックなし'}</p>
+            </button>
           </div>
 
           {overviewError && (
@@ -2700,7 +2870,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           {/* 案件進捗アラート。月次セレクタには従わない (過去月の遅延を隠さないため) */}
           <ProgressAlerts onSelectCase={jumpToCase} />
 
-          {/* 3 つのダッシュボードカード */}
+          {/* ダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
               <div className="h-44">
@@ -2754,45 +2924,35 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             </DashboardCard>
           </div>
 
-          {/* エリアカード（含 sparkline + 月环比） */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* エリアカード */}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             {AREAS.map((area) => {
               const stats = areaStats.get(area.id);
-              const caseSeries = stats?.series ?? [];
-              const bugSeries = stats?.bugSeries ?? [];
+              const caseCount = stats?.caseCount ?? 0;
+              const bugTotal = stats?.bugTotal ?? 0;
+              const doneCount = stats?.doneCount ?? 0;
+              const doneRate = caseCount > 0 ? Math.round((doneCount / caseCount) * 100) : 0;
+              const barColor = doneRate === 100 ? '#10b981' : doneRate >= 50 ? '#3b82f6' : '#f59e0b';
               return (
                 <button
                   key={area.id}
                   type="button"
                   onClick={() => loadAreaData(area.id)}
-                  className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-3 text-left hover:border-neutral-300 hover:shadow-md transition-all"
+                  className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-400 hover:shadow-sm transition-all space-y-2"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg bg-neutral-50 flex items-center justify-center">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-neutral-50 flex items-center justify-center flex-shrink-0">
                       {area.icon}
                     </div>
-                    <h3 className="text-lg font-bold text-neutral-900">{area.title[lang]}</h3>
+                    <h3 className="text-sm font-bold text-neutral-900 truncate">{area.title[lang]}</h3>
                   </div>
-                  <p className="text-sm text-neutral-500 leading-relaxed">{area.description[lang]}</p>
-                  <div className="h-10 -mx-1">
-                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                      <LineChart data={caseSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
-                        <Line type="monotone" dataKey="v" stroke="#6366f1" strokeWidth={1.5} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
+                  <div className="flex items-center gap-3 text-xs text-neutral-500">
+                    <span>{t('caseLabel')} <span className="font-bold text-neutral-900">{caseCount}</span></span>
+                    <span>{t('bugLabel')} <span className={`font-bold ${bugTotal > 0 ? 'text-red-600' : 'text-neutral-900'}`}>{bugTotal}</span></span>
+                    <span className="ml-auto text-neutral-400">{doneRate}%</span>
                   </div>
-                  <div className="h-12 -mx-1 -mt-2">
-                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                      <LineChart data={bugSeries.map((v, i) => ({ m: i + 1, v }))} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
-                        <XAxis dataKey="m" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: '#94a3b8' }} interval={0} height={14} />
-                        <Line type="monotone" dataKey="v" stroke="#cbd5e1" strokeWidth={1.5} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="flex items-center gap-4 text-xs text-neutral-500">
-                    <span>{t('caseLabel')} <span className="font-bold text-neutral-900 text-sm">{stats?.caseCount ?? 0}</span></span>
-                    <span className="text-neutral-300">•</span>
-                    <span>{t('bugLabel')} <span className="font-bold text-neutral-900 text-sm">{stats?.bugTotal ?? 0}</span></span>
+                  <div className="h-1 bg-neutral-100 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${doneRate}%`, backgroundColor: barColor }} />
                   </div>
                 </button>
               );
@@ -3088,7 +3248,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setHistoryPreviewId(null); setHistoryOpen(true); }}
+                  onClick={() => { setHistoryPreviewId(null); setAreaDetailView('history'); }}
                   className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
                 >
                   {t('btnBack')}

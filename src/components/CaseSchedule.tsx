@@ -10,23 +10,28 @@ interface ScheduleField {
   reason: string | null;
 }
 
-// 予定と実績を左右に並べる。同じ行に置くと「予定 3/10 / 実績 未入力」が
-// 一目で分かり、どちらを直せばよいか迷わない。
 const ROWS: { plan: string; actual: string; title: string }[] = [
   { plan: 'tcStartDate', actual: 'actualStartDate', title: '開始' },
   { plan: 'tcDesignCompleteDate', actual: 'actualDesignCompleteDate', title: '設計書完了' },
   { plan: 'tcExecutionCompleteDate', actual: 'actualExecutionCompleteDate', title: '実施完了' },
 ];
 
-// "2026-03-10" / "2026/3/10" → input[type=date] が受け取れる "2026-03-10"
 function toInputDate(raw: string): string {
   const m = (raw ?? '').trim().match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})/);
   if (!m) return '';
   return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
 }
 
+const STATUS_COLORS: Record<string, string> = {
+  '未着手': 'bg-neutral-100 text-neutral-600',
+  '進行中': 'bg-blue-50 text-blue-700',
+  '完了': 'bg-emerald-50 text-emerald-700',
+  'リリース済み': 'bg-purple-50 text-purple-700',
+};
+
 export default function CaseSchedule({ caseId }: { caseId: string }) {
   const [fields, setFields] = useState<ScheduleField[]>([]);
+  const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -46,20 +51,30 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
           const b = await res.json().catch(() => ({}));
           throw new Error((b as { error?: string }).error || '取得に失敗しました');
         }
-        return res.json() as Promise<{ fields: ScheduleField[] }>;
+        return res.json() as Promise<{ fields: ScheduleField[]; statusOptions?: string[] }>;
       })
-      .then((d) => { if (alive) setFields(d.fields ?? []); })
+      .then((d) => {
+        if (alive) {
+          setFields(d.fields ?? []);
+          setStatusOptions(d.statusOptions ?? []);
+        }
+      })
       .catch((e) => { if (alive) setError(e instanceof Error ? e.message : '取得に失敗しました'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [caseId]);
 
   const byKey = (k: string) => fields.find((f) => f.key === k);
-  const anyEditable = fields.some((f) => f.editable);
+
+  const statusField = fields.find((f) => f.key === 'status');
+  const dateFields = fields.filter((f) => f.key !== 'status');
+  const anyDateEditable = dateFields.some((f) => f.editable);
+  const anyFieldEditable = anyDateEditable || (statusField?.editable ?? false);
 
   const startEdit = () => {
     const d: Record<string, string> = {};
-    for (const f of fields) if (f.editable) d[f.key] = toInputDate(f.value);
+    for (const f of dateFields) if (f.editable) d[f.key] = toInputDate(f.value);
+    if (statusField?.editable) d['status'] = statusField.value ?? '';
     setDraft(d);
     setEditing(true);
     setSaved(false);
@@ -67,9 +82,12 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
   };
 
   const save = async () => {
-    // 変わった項目だけ送る
     const changed: Record<string, string> = {};
     for (const k of Object.keys(draft)) {
+      if (k === 'status') {
+        if (draft[k] !== (statusField?.value ?? '')) changed[k] = draft[k];
+        continue;
+      }
       const cur = toInputDate(byKey(k)?.value ?? '');
       if (draft[k] !== cur) changed[k] = draft[k];
     }
@@ -87,8 +105,9 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((body as { error?: string }).error || '更新に失敗しました');
-      // サーバーが返す最新値で上書きする (Notion 側の正規化を画面に反映するため)
-      setFields((body as { fields?: ScheduleField[] }).fields ?? fields);
+      const resp = body as { fields?: ScheduleField[]; statusOptions?: string[] };
+      setFields(resp.fields ?? fields);
+      if (resp.statusOptions) setStatusOptions(resp.statusOptions);
       setEditing(false);
       setSaved(true);
     } catch (e) {
@@ -135,7 +154,7 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
             </span>
           )}
         </div>
-        {!loading && anyEditable && (
+        {!loading && anyFieldEditable && (
           editing ? (
             <div className="flex items-center gap-2">
               <button
@@ -163,7 +182,7 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
             >
               <Pencil size={14} />
-              日付を編集
+              編集
             </button>
           )
         )}
@@ -183,6 +202,26 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
         </div>
       ) : (
         <>
+          {statusField && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-neutral-500 text-xs font-medium">状態</span>
+              {editing && statusField.editable ? (
+                <select
+                  value={draft['status'] ?? ''}
+                  onChange={(e) => setDraft((p) => ({ ...p, status: e.target.value }))}
+                  className="rounded-lg border border-neutral-300 px-2 py-1 text-sm text-neutral-800 focus:border-neutral-500 focus:outline-none"
+                >
+                  {statusOptions.map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+              ) : (
+                <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[statusField.value] ?? 'bg-neutral-100 text-neutral-600'}`}>
+                  {statusField.value || '未設定'}
+                </span>
+              )}
+            </div>
+          )}
           <table className="w-full border-collapse">
             <thead>
               <tr>
@@ -201,7 +240,7 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
               ))}
             </tbody>
           </table>
-          {!anyEditable && (
+          {!anyFieldEditable && (
             <p className="text-[11px] text-amber-600">
               この案件の日付は編集できません（{fields.find((f) => f.reason)?.reason ?? '理由不明'}）。
               Notion 側で直接更新してください。

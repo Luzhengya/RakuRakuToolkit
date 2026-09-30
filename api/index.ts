@@ -375,7 +375,7 @@ app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
   }
 });
 
-type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros" | "meikancho";
+type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros" | "meikancho" | "credit-asp";
 
 type ProgressItem = {
   id: string;
@@ -631,6 +631,8 @@ function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
       return matchesAny(["与信ROS"]);
     case "meikancho":
       return matchesAny(["名館長クラウド", "名館長"]);
+    case "credit-asp":
+      return matchesAny(["与信ASP"]);
     default:
       return false;
   }
@@ -1020,7 +1022,7 @@ app.get("/api/pdf-status", (_req, res) => {
 
 app.get("/api/test-center", async (req, res) => {
   const area = req.query.area as TestCenterArea | undefined;
-  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho"];
+  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp"];
   if (!area || !validAreas.includes(area)) {
     return res.status(400).json({ error: "Invalid area parameter" });
   }
@@ -1119,7 +1121,7 @@ app.get("/api/test-center", async (req, res) => {
 // 親案件のリレーションを辿り、エリア付きの「葉」案件(実データを持つ子案件)を解決する。
 // overview と case-stats で共用。
 async function resolveLeafCases(databaseId: string): Promise<{ item: ProgressItem; areaId: TestCenterArea }[]> {
-  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho"];
+  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp"];
   const allItems = await queryAllProgressItems(databaseId);
   // 子案件は同じ進捗DBの行なので、全件取得結果から id 引きできる。
   // これにより pages.retrieve の大量発行(=レート制限/遅延)を回避する。
@@ -2347,7 +2349,7 @@ interface CaseScheduleField {
 }
 
 function readCaseSchedule(properties: Record<string, any>): CaseScheduleField[] {
-  return CASE_SCHEDULE_FIELDS.map(({ key, label, aliases }) => {
+  const dateFields = CASE_SCHEDULE_FIELDS.map(({ key, label, aliases }) => {
     const property = findDatePropertyName(properties, aliases);
     if (!property) {
       return { key, label, property: null, value: "", editable: false, reason: "項目が見つかりません" };
@@ -2362,6 +2364,30 @@ function readCaseSchedule(properties: Record<string, any>): CaseScheduleField[] 
     }
     return { key, label, property, value, editable: true, reason: null };
   });
+
+  const statusProp = properties["状態"];
+  if (statusProp) {
+    const value = propertyToPlainText(statusProp);
+    const editable = statusProp.type === "status" || statusProp.type === "select";
+    dateFields.push({
+      key: "status",
+      label: "状態",
+      property: "状態",
+      value,
+      editable,
+      reason: editable ? null : `${statusProp.type} 型のため編集できません`,
+    });
+  }
+
+  return dateFields;
+}
+
+function readStatusOptions(dbSchema: Record<string, any>): string[] {
+  const prop = dbSchema["状態"];
+  if (!prop) return [];
+  if (prop.type === "status") return (prop.status?.options ?? []).map((o: any) => o.name);
+  if (prop.type === "select") return (prop.select?.options ?? []).map((o: any) => o.name);
+  return [];
 }
 
 app.get("/api/test-center/case-schedule/:id", async (req, res) => {
@@ -2373,7 +2399,16 @@ app.get("/api/test-center/case-schedule/:id", async (req, res) => {
   try {
     const page = await notion.pages.retrieve({ page_id: pageId });
     const properties = (page as any)?.properties ?? {};
-    return res.json({ fields: readCaseSchedule(properties) });
+    const fields = readCaseSchedule(properties);
+    let statusOptions: string[] = [];
+    const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+    if (databaseId) {
+      try {
+        const db = await notion.databases.retrieve({ database_id: databaseId });
+        statusOptions = readStatusOptions((db as any)?.properties ?? {});
+      } catch { /* ignore — options are a convenience */ }
+    }
+    return res.json({ fields, statusOptions });
   } catch (error) {
     console.error("Case schedule fetch error for %s:", pageId, error);
     return res.status(500).json({
@@ -2426,12 +2461,91 @@ app.post("/api/test-center/case-schedule/:id", async (req, res) => {
     await notion.pages.update({ page_id: pageId, properties: nextProperties } as any);
     invalidateProgressCache();
     const updated = await notion.pages.retrieve({ page_id: pageId });
-    return res.json({ ok: true, fields: readCaseSchedule((updated as any)?.properties ?? {}) });
+    let statusOptions: string[] = [];
+    const dbId = process.env.NOTION_PROGRESS_DATABASE_ID;
+    if (dbId) {
+      try {
+        const db = await notion.databases.retrieve({ database_id: dbId });
+        statusOptions = readStatusOptions((db as any)?.properties ?? {});
+      } catch { /* ignore */ }
+    }
+    return res.json({ ok: true, fields: readCaseSchedule((updated as any)?.properties ?? {}), statusOptions });
   } catch (error) {
     console.error("Case schedule update error for %s:", pageId, error);
     return res.status(500).json({
       error: error instanceof Error ? error.message : "更新に失敗しました",
     });
+  }
+});
+
+// ── 案件の工数見積 ────────────────────────────────────────────────
+const EFFORT_FIELDS: { key: string; label: string; aliases: string[] }[] = [
+  { key: "designEstimate", label: "工数見積(設計)", aliases: ["工数見積(設計書)", "工数見積(設計)"] },
+  { key: "implementationEstimate", label: "工数見積(実装)", aliases: ["工数見積(実装)"] },
+  { key: "executionEstimate", label: "工数見積(実施)", aliases: ["工数見積(実施)"] },
+  { key: "reviewEstimate", label: "工数見積(レビュー)", aliases: ["review見積工数", "Review見積工数", "レビュー見積工数"] },
+];
+
+interface EffortField { key: string; label: string; property: string | null; value: string; editable: boolean; reason: string | null; }
+
+function readEffortFields(properties: Record<string, any>): EffortField[] {
+  return EFFORT_FIELDS.map(({ key, label, aliases }) => {
+    const prop = pickProperty(properties, aliases);
+    const propName = aliases.find((a) => properties[a] !== undefined) ?? null;
+    if (!prop || !propName) {
+      return { key, label, property: null, value: "", editable: false, reason: "項目が見つかりません" };
+    }
+    const value = propertyToPlainText(prop);
+    if (prop.type === "formula") {
+      return { key, label, property: propName, value, editable: false, reason: "数式項目のため編集できません" };
+    }
+    return { key, label, property: propName, value, editable: true, reason: null };
+  });
+}
+
+app.get("/api/test-center/case-effort/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    return res.json({ fields: readEffortFields((page as any)?.properties ?? {}) });
+  } catch (error) {
+    console.error("Case effort fetch error for %s:", pageId, error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
+app.post("/api/test-center/case-effort/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const pageId = String(req.params.id ?? "").trim();
+  const updates = req.body?.fields;
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  if (!updates || typeof updates !== "object") return res.status(400).json({ error: "fields は必須です" });
+
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const properties = (page as any)?.properties ?? {};
+    const effortFields = readEffortFields(properties);
+
+    const nextProperties: Record<string, any> = {};
+    const rejected: string[] = [];
+    for (const [key, raw] of Object.entries(updates as Record<string, unknown>)) {
+      const field = effortFields.find((f) => f.key === key);
+      if (!field) { rejected.push(`${key}: 未知の項目です`); continue; }
+      if (!field.editable || !field.property) { rejected.push(`${field.label}: ${field.reason ?? "編集できません"}`); continue; }
+      nextProperties[field.property] = buildUpdatableProperty(properties[field.property], String(raw ?? ""), field.label);
+    }
+    if (rejected.length) return res.status(400).json({ error: rejected.join("\n") });
+    if (Object.keys(nextProperties).length === 0) return res.status(400).json({ error: "更新する項目がありません" });
+
+    await notion.pages.update({ page_id: pageId, properties: nextProperties } as any);
+    invalidateProgressCache();
+    const updated = await notion.pages.retrieve({ page_id: pageId });
+    return res.json({ ok: true, fields: readEffortFields((updated as any)?.properties ?? {}) });
+  } catch (error) {
+    console.error("Case effort update error for %s:", pageId, error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "更新に失敗しました" });
   }
 });
 
@@ -3731,6 +3845,17 @@ app.get("/api/test-center/case-testcases/:caseId", async (req, res) => {
     items.sort((a, b) =>
       (a["ケース番号"] || "").localeCompare(b["ケース番号"] || "", undefined, { numeric: true })
     );
+
+    const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+    if (bugDbId) {
+      try {
+        const bugMap = await loadTransferredBugs(bugDbId, system, year);
+        for (const row of items) {
+          const bug = bugMap.get((row["ケース番号"] || "").trim());
+          if (bug) { row._bugId = bug.id; row._bugNo = bug.no; }
+        }
+      } catch { /* bug status is best-effort */ }
+    }
 
     return res.json({
       items, total: items.length, exists: true, dbTitle, cmdbNo, projectName: item.projectName,

@@ -12,7 +12,7 @@ type Response = {
   projectName: string;
 };
 
-const COLUMNS = ['ケース番号', '機能名', 'テスト内容', 'テスト結果', '優先級'] as const;
+const COLUMNS = ['ケース番号', '機能名', 'テスト内容', 'テスト結果', '優先級', 'BUG'] as const;
 
 export default function CaseTestcases({ caseId }: { caseId: string }) {
   // 既定は閉じておく。1案件で数十〜百件あるため、開いたときだけ取得する
@@ -112,12 +112,24 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
               <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
                 <table className="w-full border-collapse">
                   <thead className="sticky top-0 bg-white">
-                    <tr>{COLUMNS.map((c) => <th key={c} className={th0}>{c}</th>)}<th className={th0}></th></tr>
+                    <tr>{COLUMNS.map((c) => <th key={c} className={th0}>{c}</th>)}</tr>
                   </thead>
                   <tbody>
                     {data.items.map((r, i) => (
-                      <tr key={r.id} className="hover:bg-neutral-50">
+                      <tr key={r.id} className="hover:bg-neutral-50 cursor-pointer" onClick={() => setDetailIndex(i)}>
                         {COLUMNS.map((c) => {
+                          if (c === 'BUG') {
+                            const bugNo = r._bugNo || '';
+                            return (
+                              <td key={c} className={td0}>
+                                {bugNo ? (
+                                  <span className="inline-block rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-[10px] font-bold tabular-nums">
+                                    #{bugNo}
+                                  </span>
+                                ) : '-'}
+                              </td>
+                            );
+                          }
                           const v = r[c] || '';
                           if (c === 'テスト結果') {
                             return (
@@ -137,15 +149,6 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
                             </td>
                           );
                         })}
-                        <td className={td0}>
-                          <button
-                            type="button"
-                            onClick={() => setDetailIndex(i)}
-                            className="px-2 py-1 rounded border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100"
-                          >
-                            詳細
-                          </button>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -156,14 +159,27 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
         </div>
       )}
 
-      {/* 内容を見るだけのダイアログ。編集・削除・BUG移管 は置かない
-          (それらは TestCase 画面から行う)。前後送りは残す */}
       {detailIndex >= 0 && data && (
         <TestcaseDetailDialog
           rows={data.items}
           index={detailIndex}
           onIndex={setDetailIndex}
           onClose={() => setDetailIndex(-1)}
+          onSave={async (id, fields) => {
+            const res = await fetch(`/api/testcase/${encodeURIComponent(id)}/update`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ fields }),
+            });
+            if (!res.ok) {
+              const b = await res.json().catch(() => ({}));
+              throw new Error((b as { error?: string }).error || '更新に失敗しました');
+            }
+            setData((prev) => prev ? {
+              ...prev,
+              items: prev.items.map((r) => r.id === id ? { ...r, ...fields } : r),
+            } : prev);
+          }}
         />
       )}
     </section>

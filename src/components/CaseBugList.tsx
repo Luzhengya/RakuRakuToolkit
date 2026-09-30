@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, Loader2, AlertCircle, Bug, Save, CheckCircle2 } from 'lucide-react';
+import { Loader2, AlertCircle, Bug, ChevronRight } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
+import BugDetailDialog from './BugDetailDialog';
 
 type CaseBug = {
   id: string;
@@ -44,24 +45,8 @@ function fmtDate(value: string): string {
 
 const GRID = '64px 130px minmax(0,1fr) 120px 120px 40px';
 
-// 現在値が選択肢に無い場合でも失わないよう先頭に補う
-function withCurrent(opts: string[], cur: string): string[] {
-  return cur && !opts.includes(cur) ? [cur, ...opts] : opts;
-}
-
-// caseId 単位のキャッシュ (案件切替時の重複リクエスト回避)
 const cache = new Map<string, CaseBug[]>();
-// 選択肢はDB共通なので全体で1度取得すれば十分
 let optionsCache: FieldOptions | null = null;
-
-function Field({ label, value, pre }: { label: string; value: string; pre?: boolean }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-[11px] font-medium text-neutral-400">{label}</p>
-      <p className={`text-sm text-neutral-700 ${pre ? 'whitespace-pre-wrap' : ''}`}>{value || '-'}</p>
-    </div>
-  );
-}
 
 export default function CaseBugList({ caseId, lang }: { caseId: string; lang: Lang }) {
   const zh = false;
@@ -93,18 +78,13 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
   const [fieldOptions, setFieldOptions] = useState<FieldOptions>({ judgment: [], status: [], priority: [] });
   const [loading, setLoading] = useState(!cache.has(caseId));
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [noticeId, setNoticeId] = useState<string | null>(null);
+  const [dialogIndex, setDialogIndex] = useState<number | null>(null);
   const [childMap, setChildMap] = useState<Record<string, string>>({});
   const [childLoadingId, setChildLoadingId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    setOpenId(null);
-    setDrafts({});
-    setNoticeId(null);
+    setDialogIndex(null);
     setChildMap({});
     setError(null);
     if (cache.has(caseId) && optionsCache) {
@@ -152,60 +132,32 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
       .finally(() => setChildLoadingId((cur) => (cur === id ? null : cur)));
   };
 
-  const toggle = (id: string) =>
-    setOpenId((cur) => {
-      const next = cur === id ? null : id;
-      if (next && childMap[id] === undefined && childLoadingId !== id) loadChild(id);
-      return next;
+  const openDialog = (idx: number) => {
+    setDialogIndex(idx);
+    const bug = visibleItems[idx];
+    if (bug && childMap[bug.id] === undefined && childLoadingId !== bug.id) loadChild(bug.id);
+  };
+
+  const handleDialogNav = (idx: number) => {
+    setDialogIndex(idx);
+    const bug = visibleItems[idx];
+    if (bug && childMap[bug.id] === undefined && childLoadingId !== bug.id) loadChild(bug.id);
+  };
+
+  const handleSaveBug = async (bugId: string, d: Draft) => {
+    const res = await fetch(`/api/test-center/bugs/${bugId}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(d),
     });
-
-  const getDraft = (bug: CaseBug): Draft =>
-    drafts[bug.id] ?? {
-      judgment: bug.judgment,
-      status: bug.status,
-      priority: bug.priority,
-      remarks: bug.remarks,
-    };
-
-  const setField = (bug: CaseBug, key: keyof Draft, value: string) => {
-    setNoticeId(null);
-    setDrafts((prev) => ({ ...prev, [bug.id]: { ...getDraft(bug), [key]: value } }));
-  };
-
-  const saveBug = async (bug: CaseBug) => {
-    const d = getDraft(bug);
-    setSavingId(bug.id);
-    setNoticeId(null);
-    setError(null);
-    try {
-      const res = await fetch(`/api/test-center/bugs/${bug.id}/update`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(d),
-      });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        throw new Error((b as { error?: string }).error || (zh ? '更新失败' : '更新失敗'));
-      }
-      // ローカル反映 (items + キャッシュ) して badge/表示を最新化
-      const updated = items.map((it) => (it.id === bug.id ? { ...it, ...d } : it));
-      setItems(updated);
-      cache.set(caseId, updated);
-      setDrafts((prev) => {
-        const next = { ...prev };
-        delete next[bug.id];
-        return next;
-      });
-      setNoticeId(bug.id);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : zh ? '更新失败' : '更新失敗');
-    } finally {
-      setSavingId(null);
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error((b as { error?: string }).error || '更新に失敗しました');
     }
+    const updated = items.map((it) => (it.id === bugId ? { ...it, ...d } : it));
+    setItems(updated);
+    cache.set(caseId, updated);
   };
-
-  const selectCls =
-    'w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none';
 
   // 判定=確認OK かつ 状態=対応不要 のバグは表示しない
   const visibleItems = items.filter((b) => !(b.judgment === '確認OK' && b.status === '対応不要'));
@@ -246,136 +198,49 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
             <div />
           </div>
 
-          {visibleItems.map((bug) => {
-            const isOpen = openId === bug.id;
-            const d = getDraft(bug);
-            return (
-              <div key={bug.id} className="border-b border-neutral-100 last:border-b-0">
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => toggle(bug.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      toggle(bug.id);
-                    }
-                  }}
-                  className={`grid items-center cursor-pointer transition-colors ${isOpen ? 'bg-neutral-50' : 'bg-white hover:bg-neutral-50/60'}`}
-                  style={{ gridTemplateColumns: GRID }}
-                >
-                  <div className="px-3 py-3 text-xs font-semibold text-blue-600 tabular-nums">{bug.no || '-'}</div>
-                  <div className="px-3 py-3 text-xs text-neutral-500 truncate" title={bug.caseNumber}>{bug.caseNumber || '-'}</div>
-                  <div className="px-3 py-3 text-sm text-neutral-800 truncate" title={bug.bugDesc}>{bug.bugDesc || '-'}</div>
-                  <div className="px-3 py-3">
-                    {bug.judgment ? (
-                      <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.judgment, JUDGMENT_COLOR)}`}>{bug.judgment}</span>
-                    ) : '-'}
-                  </div>
-                  <div className="px-3 py-3">
-                    {bug.status ? (
-                      <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.status, STATUS_COLOR)}`}>{bug.status}</span>
-                    ) : '-'}
-                  </div>
-                  <div className="flex items-center justify-center text-neutral-400">
-                    <ChevronDown size={16} className={`transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} />
-                  </div>
+          {visibleItems.map((bug, idx) => (
+              <div
+                key={bug.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openDialog(idx)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDialog(idx); }
+                }}
+                className="grid items-center cursor-pointer transition-colors bg-white hover:bg-neutral-50/60 border-b border-neutral-100 last:border-b-0"
+                style={{ gridTemplateColumns: GRID }}
+              >
+                <div className="px-3 py-3 text-xs font-semibold text-blue-600 tabular-nums">{bug.no || '-'}</div>
+                <div className="px-3 py-3 text-xs text-neutral-500 truncate" title={bug.caseNumber}>{bug.caseNumber || '-'}</div>
+                <div className="px-3 py-3 text-sm text-neutral-800 truncate" title={bug.bugDesc}>{bug.bugDesc || '-'}</div>
+                <div className="px-3 py-3">
+                  {bug.judgment ? (
+                    <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.judgment, JUDGMENT_COLOR)}`}>{bug.judgment}</span>
+                  ) : '-'}
                 </div>
-
-                {isOpen && (
-                  <div className="bg-neutral-50/60 border-t border-neutral-100 px-5 py-4 space-y-4">
-                    <div className="border border-neutral-200 rounded-lg bg-white overflow-hidden">
-                      <div className="px-4 py-3 border-b border-neutral-100">
-                        <Field label={L.repro} value={bug.reproSteps} pre />
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-neutral-100">
-                        <div className="px-4 py-3"><Field label={L.expected} value={bug.expectedResult} /></div>
-                        <div className="px-4 py-3"><Field label={L.actual} value={bug.actualResult} /></div>
-                      </div>
-                    </div>
-                    {/* 只读メタ */}
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                      <Field label={L.date} value={fmtDate(bug.execDate)} />
-                      <Field label={L.assignee} value={bug.assignee} />
-                      <Field label={L.browser} value={bug.browserVersion} />
-                    </div>
-
-                    {/* 編集: 判定 / ステータス / 優先度 */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div className="space-y-1">
-                        <p className="text-[11px] font-medium text-neutral-400">{L.judg}</p>
-                        <select className={selectCls} value={d.judgment} onChange={(e) => setField(bug, 'judgment', e.target.value)}>
-                          <option value="">-</option>
-                          {withCurrent(fieldOptions.judgment, d.judgment).map((o) => <option key={o} value={o}>{o}</option>)}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-[11px] font-medium text-neutral-400">{L.status}</p>
-                        <select className={selectCls} value={d.status} onChange={(e) => setField(bug, 'status', e.target.value)}>
-                          <option value="">-</option>
-                          {withCurrent(fieldOptions.status, d.status).map((o) => <option key={o} value={o}>{o}</option>)}
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-[11px] font-medium text-neutral-400">{L.priority}</p>
-                        <select className={selectCls} value={d.priority} onChange={(e) => setField(bug, 'priority', e.target.value)}>
-                          <option value="">-</option>
-                          {withCurrent(fieldOptions.priority, d.priority).map((o) => <option key={o} value={o}>{o}</option>)}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* 確認結果(備考) + 更新 */}
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-medium text-neutral-400">{L.confirmResult}</p>
-                      <div className="flex items-start gap-2">
-                        <textarea
-                          rows={2}
-                          value={d.remarks}
-                          onChange={(e) => setField(bug, 'remarks', e.target.value)}
-                          className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none resize-y"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => saveBug(bug)}
-                          disabled={savingId === bug.id}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-300 disabled:cursor-not-allowed shrink-0"
-                        >
-                          {savingId === bug.id ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                          {L.update}
-                        </button>
-                      </div>
-                      {noticeId === bug.id && (
-                        <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
-                          <CheckCircle2 size={12} />
-                          {L.saved}
-                        </span>
-                      )}
-                    </div>
-
-                    {/* 子ページ (画像+テキスト) */}
-                    <div className="space-y-1">
-                      <p className="text-[11px] font-medium text-neutral-400">{L.child}</p>
-                      {childLoadingId === bug.id ? (
-                        <p className="text-sm text-neutral-400 flex items-center gap-2">
-                          <Loader2 size={14} className="animate-spin" />
-                          {L.loading}
-                        </p>
-                      ) : childMap[bug.id]?.trim() ? (
-                        <div
-                          className="text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded [&_img]:my-1.5"
-                          dangerouslySetInnerHTML={{ __html: childMap[bug.id] }}
-                        />
-                      ) : (
-                        <p className="text-sm text-neutral-400">{L.childEmpty}</p>
-                      )}
-                    </div>
-                  </div>
-                )}
+                <div className="px-3 py-3">
+                  {bug.status ? (
+                    <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${badge(bug.status, STATUS_COLOR)}`}>{bug.status}</span>
+                  ) : '-'}
+                </div>
+                <div className="flex items-center justify-center text-neutral-400">
+                  <ChevronRight size={14} />
+                </div>
               </div>
-            );
-          })}
+          ))}
         </div>
+      )}
+
+      {dialogIndex !== null && visibleItems[dialogIndex] && (
+        <BugDetailDialog
+          bugs={visibleItems}
+          index={dialogIndex}
+          onIndex={handleDialogNav}
+          onClose={() => setDialogIndex(null)}
+          fieldOptions={fieldOptions}
+          childHtml={childMap[visibleItems[dialogIndex].id] ?? ''}
+          onSave={handleSaveBug}
+        />
       )}
     </section>
   );
