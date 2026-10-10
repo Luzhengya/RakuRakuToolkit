@@ -38,6 +38,9 @@ import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  CartesianGrid,
   XAxis,
   YAxis,
   Tooltip,
@@ -1843,7 +1846,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const caseCount = filteredOverview.length;
     const bugTotal = filteredOverview.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
     const systemSet = new Set(filteredOverview.map((item) => item.areaId));
-    const doneCount = filteredOverview.filter((item) => item.status.trim() === '完了').length;
+    const doneCount = filteredOverview.filter((item) => isCompletedStatus(item.status.trim())).length;
     const inProgressCount = filteredOverview.filter((item) => item.status.trim() === '進行中').length;
     const blockedCount = filteredOverview.filter((item) => item.status.trim() === 'ブロック').length;
     const doneRate = caseCount > 0 ? Math.round((doneCount / caseCount) * 100) : 0;
@@ -1864,18 +1867,21 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     return Array.from(buckets.entries()).map(([month, bug]) => ({ month, bug }));
   }, [overviewItems, filterYear]);
 
-  const systemDistribution = useMemo(() => {
-    const counts = new Map<AreaId, number>();
-    for (const item of filteredOverview) counts.set(item.areaId, (counts.get(item.areaId) ?? 0) + 1);
-    return AREAS
-      .map((area) => ({
-        areaId: area.id,
-        label: area.title[lang].replace(/エリア$|区域$/, ''),
-        count: counts.get(area.id) ?? 0,
-      }))
-      .filter((row) => row.count > 0)
-      .sort((a, b) => b.count - a.count);
-  }, [filteredOverview, lang]);
+  const monthlyCaseSeries = useMemo(() => {
+    const buckets = new Map<number, { total: number; done: number }>();
+    for (let m = 1; m <= 12; m++) buckets.set(m, { total: 0, done: 0 });
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key) continue;
+      const y = Number(key.slice(0, 4));
+      if (y !== filterYear) continue;
+      const m = Number(key.slice(4, 6));
+      const slot = buckets.get(m)!;
+      slot.total += 1;
+      if (isCompletedStatus(item.status.trim())) slot.done += 1;
+    }
+    return Array.from(buckets.entries()).map(([month, v]) => ({ month: `${month}月`, total: v.total, done: v.done }));
+  }, [overviewItems, filterYear]);
 
   const statusDistribution = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1903,7 +1909,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       if (filterMonth === 'all' || m === filterMonth) {
         slot.caseCount += 1;
         slot.bugTotal += bug;
-        if (item.status.trim() === '完了') slot.doneCount += 1;
+        if (isCompletedStatus(item.status.trim())) slot.doneCount += 1;
       }
       slot.series[m - 1] += 1;
       slot.bugSeries[m - 1] += bug;
@@ -2606,7 +2612,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       <tbody className="divide-y divide-neutral-100">
                         {currentItems.map((item) => {
                           const fmtDate = (d: string) => d ? d.replace(/^\d{4}-/, '').replace('-', '/') : '-';
-                          const statusColor = item.status.trim() === '完了' ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500';
+                          const statusColor = isCompletedStatus(item.status.trim()) ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500';
                           return (
                             <tr key={item.id} className="hover:bg-neutral-50/50">
                               <td className="px-3 py-2.5">
@@ -2645,7 +2651,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     </div>
                     <div>
                       <p className="text-[11px] text-neutral-400 font-medium">完了</p>
-                      <p className="text-xl font-bold text-emerald-600">{currentItems.filter((i) => i.status.trim() === '完了').length}</p>
+                      <p className="text-xl font-bold text-emerald-600">{currentItems.filter((i) => isCompletedStatus(i.status.trim())).length}</p>
                     </div>
                     <div>
                       <p className="text-[11px] text-neutral-400 font-medium">進行中</p>
@@ -2678,7 +2684,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                             className="h-4 w-4 rounded border-neutral-300"
                           />
                           <span className="text-sm font-semibold text-neutral-900 truncate">{item.projectName || '-'}</span>
-                          <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${item.status.trim() === '完了' ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500'}`}>{item.status || '-'}</span>
+                          <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${isCompletedStatus(item.status.trim()) ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500'}`}>{item.status || '-'}</span>
                         </div>
                         <ChevronDown size={16} className={`shrink-0 text-neutral-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       </button>
@@ -2898,24 +2904,18 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="ガントチャート">
-              <div className="space-y-2.5 pt-1">
-                {systemDistribution.slice(0, 6).map((row, idx) => {
-                  const max = systemDistribution[0]?.count || 1;
-                  const palette = ['#f97316', '#3b82f6', '#8b5cf6', '#06b6d4', '#0ea5e9', '#ec4899'];
-                  return (
-                    <div key={row.areaId} className="flex items-center gap-2 text-xs">
-                      <span className="w-20 text-neutral-600 truncate" title={row.label}>{row.label}</span>
-                      <div className="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${(row.count / max) * 100}%`, backgroundColor: palette[idx % palette.length] }} />
-                      </div>
-                      <span className="w-7 text-right font-semibold text-neutral-700">{row.count}</span>
-                    </div>
-                  );
-                })}
-                {systemDistribution.length === 0 && (
-                  <p className="text-xs text-neutral-400 py-6 text-center">{t('noData')}</p>
-                )}
+            <DashboardCard title="月別 案件数推移" iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="ガントチャート">
+              <div className="h-40 pt-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={monthlyCaseSeries} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+                    <XAxis dataKey="month" tick={{ fontSize: 10 }} stroke="#a3a3a3" />
+                    <YAxis tick={{ fontSize: 10 }} stroke="#a3a3a3" allowDecimals={false} />
+                    <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                    <Line type="monotone" dataKey="total" name="案件数" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="done" name="完了数" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
             </DashboardCard>
 
