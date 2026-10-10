@@ -154,7 +154,7 @@ export default function CaseEffort({ caseId }: { caseId: string }) {
                       {f.value || '-'}
                     </span>
                     {!f.editable && f.reason && (
-                      <Lock size={10} className="text-neutral-300" title={f.reason} />
+                      <span title={f.reason}><Lock size={10} className="text-neutral-300" /></span>
                     )}
                   </span>
                 )}

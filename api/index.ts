@@ -1999,7 +1999,15 @@ function parseBugItem(page: any, relMap: Map<string, string>): BugItem {
   };
 }
 
-async function queryAllBugItems(databaseId: string): Promise<BugItem[]> {
+const BUG_CACHE_TTL_MS = 60_000;
+let bugCache: { databaseId: string; at: number; items: BugItem[] } | null = null;
+let bugInFlight: { databaseId: string; promise: Promise<BugItem[]> } | null = null;
+
+function invalidateBugCache(): void {
+  bugCache = null;
+}
+
+async function fetchAllBugItems(databaseId: string): Promise<BugItem[]> {
   if (!notion) return [];
 
   const database = await notion.databases.retrieve({ database_id: databaseId });
@@ -2041,6 +2049,33 @@ async function queryAllBugItems(databaseId: string): Promise<BugItem[]> {
   );
 
   return pages.map((pg) => parseBugItem(pg, relMap));
+}
+
+async function queryAllBugItems(databaseId: string): Promise<BugItem[]> {
+  if (!notion) return [];
+
+  const now = Date.now();
+  if (
+    bugCache &&
+    bugCache.databaseId === databaseId &&
+    now - bugCache.at < BUG_CACHE_TTL_MS
+  ) {
+    return bugCache.items;
+  }
+  if (bugInFlight && bugInFlight.databaseId === databaseId) {
+    return bugInFlight.promise;
+  }
+
+  const promise = fetchAllBugItems(databaseId)
+    .then((items) => {
+      bugCache = { databaseId, at: Date.now(), items };
+      return items;
+    })
+    .finally(() => {
+      if (bugInFlight?.promise === promise) bugInFlight = null;
+    });
+  bugInFlight = { databaseId, promise };
+  return promise;
 }
 
 // 特定案件(caseId=進捗管理ページID)に紐づくバグのみを relation フィルタで取得。
@@ -2278,6 +2313,7 @@ app.post("/api/test-center/bugs/:id/update", async (req, res) => {
       return res.status(400).json({ error: "No updatable fields provided" });
     }
     await notion.pages.update({ page_id: req.params.id, properties: next });
+    invalidateBugCache();
     return res.json({ success: true });
   } catch (error) {
     console.error("Bug update error:", error);
@@ -3929,14 +3965,18 @@ async function loadTransferredBugs(
   const map = new Map<string, { id: string; no: string }>();
   const bugs = await queryAllBugItems(databaseId);
   for (const b of bugs) {
-    const caseNo = (b.caseNumber ?? "").trim();
-    if (!caseNo) continue;
+    const raw = (b.caseNumber ?? "").trim();
+    if (!raw) continue;
     // システムは rollup なので複数値になることがある。含まれていれば対象
     if (system && !(b.system ?? "").includes(system)) continue;
     // 月次が取れない (relation 未設定) 場合は年で絞らない
     const bugYear = toMonthKeyServer(b.month).slice(0, 4);
     if (bugYear && year && bugYear !== year) continue;
-    if (!map.has(caseNo)) map.set(caseNo, { id: b.id, no: b.no });
+    // ケース番号はカンマ or 改行で複数格納されている場合がある
+    const caseNos = raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    for (const cn of caseNos) {
+      if (!map.has(cn)) map.set(cn, { id: b.id, no: b.no });
+    }
   }
   return map;
 }
@@ -4098,6 +4138,39 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
   }
 });
 
+// スクリーンショットを Notion にアップロードし、file_upload_id を返す
+app.post("/api/testcase/upload-bug-image", upload.single("file"), async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: "ファイルが必要です" });
+  if (!file.mimetype.startsWith("image/")) {
+    return res.status(400).json({ error: "画像ファイルのみ対応しています" });
+  }
+
+  try {
+    const created: any = await notion.fileUploads.create({
+      mode: "single_part",
+      filename: file.originalname || "screenshot.png",
+      content_type: file.mimetype,
+    });
+    const fileUploadId: string = created.id;
+
+    await notion.fileUploads.send({
+      file_upload_id: fileUploadId,
+      file: { data: new Blob([file.buffer], { type: file.mimetype }), filename: file.originalname || "screenshot.png" },
+    });
+
+    return res.json({ fileUploadId });
+  } catch (error) {
+    console.error("Bug image upload error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "アップロードに失敗しました",
+    });
+  }
+});
+
 // BUG を1件作り、元のテストケースのテスト結果を NG にする
 app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
   const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
@@ -4105,7 +4178,7 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
     return res.status(503).json({ error: "Notion 未設定" });
   }
   const pageId = String(req.params.id ?? "").trim();
-  const b = (req.body ?? {}) as Record<string, string>;
+  const b = (req.body ?? {}) as Record<string, any>;
   if (!pageId) return res.status(400).json({ error: "id は必須です" });
   if (!String(b.caseId ?? "").trim()) {
     // 案件が決まらないと システム/月次 の rollup が空になり、
@@ -4155,6 +4228,36 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
       properties: props,
     } as any);
 
+    // 詳細説明 + 截图を子ブロックとして追加（失敗しても BUG 作成自体は成功扱い）
+    const detailDesc = String(b.detailDesc ?? "").trim();
+    const imageIds: string[] = Array.isArray(b.imageIds) ? b.imageIds : [];
+    const childBlocks: any[] = [];
+    if (detailDesc) {
+      childBlocks.push({
+        type: "paragraph",
+        paragraph: { rich_text: [{ type: "text", text: { content: detailDesc } }] },
+      });
+    }
+    for (const fid of imageIds) {
+      childBlocks.push({
+        type: "image",
+        image: { type: "file_upload" as const, file_upload: { id: fid } },
+      });
+    }
+    let childrenAttached = true;
+    let childrenError: string | null = null;
+    if (childBlocks.length > 0) {
+      try {
+        await notion.blocks.children.append({
+          block_id: created.id,
+          children: childBlocks,
+        });
+      } catch (e) {
+        childrenAttached = false;
+        childrenError = e instanceof Error ? e.message : String(e);
+      }
+    }
+
     // 元のテストケースを NG にする。BUG は作れているので、ここが失敗しても
     // 全体は成功として扱い、結果だけ伝える
     let resultUpdated = true;
@@ -4172,6 +4275,7 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
       resultError = e instanceof Error ? e.message : String(e);
     }
 
+    invalidateBugCache();
     return res.json({
       ok: true,
       bugId: created?.id ?? "",
@@ -4179,11 +4283,177 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
       skipped,
       resultUpdated,
       resultError,
+      childrenAttached,
+      childrenError,
     });
   } catch (error) {
     console.error("Bug transfer error for %s:", pageId, error);
     return res.status(500).json({
       error: error instanceof Error ? error.message : "移管に失敗しました",
+    });
+  }
+});
+
+// 関連付け先の候補 BUG 一覧 (同じシステム + 同じ月次)
+app.get("/api/testcase/:id/linkable-bugs", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !bugDbId) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const tc: Record<string, string> = {};
+    for (const f of TESTCASE_NOTION_FIELDS) tc[f.name] = readTcPlain(page, f);
+
+    const system = (tc["システム"] ?? "").trim();
+    const year = String(req.query.year ?? "").trim();
+
+    const bugs = await queryAllBugItems(bugDbId);
+    const items: { id: string; no: string; bugDesc: string; caseNumbers: string[]; month: string }[] = [];
+    for (const b of bugs) {
+      if (system && !(b.system ?? "").includes(system)) continue;
+      const caseNumbers = (b.caseNumber ?? "")
+        .split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+      items.push({ id: b.id, no: b.no, bugDesc: b.bugDesc, caseNumbers, month: b.month ?? "" });
+    }
+    // 月次の降順 → 同月内は No 降順
+    items.sort((a, b) => {
+      const ma = toMonthKeyServer(a.month) || "000000";
+      const mb = toMonthKeyServer(b.month) || "000000";
+      if (ma !== mb) return mb.localeCompare(ma);
+      const na = Number(a.no.replace(/[^0-9]/g, ""));
+      const nb = Number(b.no.replace(/[^0-9]/g, ""));
+      return (Number.isFinite(nb) ? nb : 0) - (Number.isFinite(na) ? na : 0);
+    });
+
+    return res.json({ items });
+  } catch (error) {
+    console.error("Linkable bugs error for %s:", pageId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "取得に失敗しました",
+    });
+  }
+});
+
+// 既存 BUG にケース番号を追加で紐付ける
+app.post("/api/testcase/:id/link-bug", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !bugDbId) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  const body = (req.body ?? {}) as { bugId?: string };
+  const bugId = String(body.bugId ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  if (!bugId) return res.status(400).json({ error: "bugId は必須です" });
+
+  try {
+    // 元テストケースからケース番号を取得
+    const tcPage = await notion.pages.retrieve({ page_id: pageId });
+    const tc: Record<string, string> = {};
+    for (const f of TESTCASE_NOTION_FIELDS) tc[f.name] = readTcPlain(tcPage, f);
+    const newCaseNo = (tc["ケース番号"] ?? "").trim();
+    if (!newCaseNo) {
+      return res.status(400).json({ error: "元テストケースにケース番号がありません" });
+    }
+
+    // BUG の既存ケース番号を読み、重複でなければ追加
+    const bugPage = await notion.pages.retrieve({ page_id: bugId });
+    const existing = propertyToPlainText((bugPage as any)?.properties?.["ケース番号"]);
+    const existingNos = existing.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    if (existingNos.includes(newCaseNo)) {
+      return res.status(409).json({ error: `ケース番号 ${newCaseNo} は既に関連付けられています` });
+    }
+    const updated = [...existingNos, newCaseNo].join("\n");
+
+    // ケース番号を更新
+    const { properties: schema } = await getBugSchema(bugDbId);
+    const built = buildBugProperty(schema["ケース番号"], updated);
+    if (built) {
+      await notion.pages.update({
+        page_id: bugId,
+        properties: { "ケース番号": built },
+      } as any);
+    }
+
+    // 元テストケースのテスト結果を NG にする
+    let resultUpdated = true;
+    let resultError: string | null = null;
+    try {
+      const f = TESTCASE_NOTION_FIELDS.find((x) => x.name === "テスト結果")!;
+      await notion.pages.update({
+        page_id: pageId,
+        properties: { ["テスト結果"]: buildTcPropertyValue(f, "NG", false) },
+      } as any);
+    } catch (e) {
+      resultUpdated = false;
+      resultError = e instanceof Error ? e.message : String(e);
+    }
+
+    invalidateBugCache();
+    return res.json({
+      ok: true,
+      bugId,
+      bugNo: propertyToPlainText((bugPage as any)?.properties?.["No"]),
+      resultUpdated,
+      resultError,
+    });
+  } catch (error) {
+    console.error("Link bug error for %s -> %s:", pageId, bugId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "関連付けに失敗しました",
+    });
+  }
+});
+
+// 既存 BUG からケース番号の紐付けを解除する
+app.post("/api/testcase/:id/unlink-bug", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !bugDbId) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  const pageId = String(req.params.id ?? "").trim();
+  const body = (req.body ?? {}) as { bugId?: string };
+  const bugId = String(body.bugId ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  if (!bugId) return res.status(400).json({ error: "bugId は必須です" });
+
+  try {
+    const tcPage = await notion.pages.retrieve({ page_id: pageId });
+    const tc: Record<string, string> = {};
+    for (const f of TESTCASE_NOTION_FIELDS) tc[f.name] = readTcPlain(tcPage, f);
+    const caseNo = (tc["ケース番号"] ?? "").trim();
+    if (!caseNo) {
+      return res.status(400).json({ error: "元テストケースにケース番号がありません" });
+    }
+
+    const bugPage = await notion.pages.retrieve({ page_id: bugId });
+    const existing = propertyToPlainText((bugPage as any)?.properties?.["ケース番号"]);
+    const existingNos = existing.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+    const updated = existingNos.filter((n) => n !== caseNo);
+
+    if (updated.length === existingNos.length) {
+      return res.status(404).json({ error: `ケース番号 ${caseNo} はこの BUG に関連付けられていません` });
+    }
+
+    const { properties: schema } = await getBugSchema(bugDbId);
+    const built = buildBugProperty(schema["ケース番号"], updated.join("\n"));
+    if (built) {
+      await notion.pages.update({
+        page_id: bugId,
+        properties: { "ケース番号": built },
+      } as any);
+    }
+
+    invalidateBugCache();
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Unlink bug error for %s -> %s:", pageId, bugId, error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "解除に失敗しました",
     });
   }
 });

@@ -582,7 +582,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={() => stepDetail(-1)}
-            disabled={editing || detailIndex <= 0}
+            disabled={editing || detailIndex <= 0 || dialogMode !== 'detail'}
             title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '前のケース'}
             className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
@@ -593,19 +593,27 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             {/* ヘッダ: ケース番号はここだけに出す (本文では重複させない) */}
             <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-baseline gap-3 min-w-0">
-                <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
-                  NO.{detail['ケース番号'] || '-'}
-                </h3>
-                {detail['機能名'] && (
-                  <span className="text-sm text-neutral-400 truncate">{detail['機能名']}</span>
-                )}
-                {changedCount(detail.id) > 0 && (
-                  <span
-                    className="shrink-0 rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-[11px] font-bold text-red-600"
-                    title="前回のアップロードで値が変わった項目です"
-                  >
-                    変更 {changedCount(detail.id)}項目
-                  </span>
+                {dialogMode === 'bug' ? (
+                  <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+                    BUG No.{transferred[(detail['ケース番号'] || '').trim()]?.no || '-'}
+                  </h3>
+                ) : (
+                  <>
+                    <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+                      NO.{detail['ケース番号'] || '-'}
+                    </h3>
+                    {detail['機能名'] && (
+                      <span className="text-sm text-neutral-400 truncate">{detail['機能名']}</span>
+                    )}
+                    {changedCount(detail.id) > 0 && (
+                      <span
+                        className="shrink-0 rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-[11px] font-bold text-red-600"
+                        title="前回のアップロードで値が変わった項目です"
+                      >
+                        変更 {changedCount(detail.id)}項目
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -615,8 +623,15 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     {detailIndex + 1} / {sorted.length}
                   </span>
                 )}
-                {/* 一覧に戻らずに移管できるよう、ここにも置く。
-                    編集中は無効にする (隠さないのは、押せない理由を示すため) */}
+                {dialogMode === 'bug' && (
+                  <button
+                    type="button"
+                    onClick={() => setDialogMode('detail')}
+                    className="px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 whitespace-nowrap"
+                  >
+                    ケース詳細に戻る
+                  </button>
+                )}
                 {dialogMode === 'detail' && (
                   transferred[(detail['ケース番号'] || '').trim()] ? (
                     <button
@@ -641,35 +656,37 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     </button>
                   )
                 )}
-                {editing ? (
-                  <>
+                {dialogMode === 'detail' && (
+                  editing ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => { setEditing(false); setDialogError(null); }}
+                        disabled={saving}
+                        className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                      >
+                        キャンセル
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveEdit}
+                        disabled={saving}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
+                      >
+                        {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                        保存
+                      </button>
+                    </>
+                  ) : (
                     <button
                       type="button"
-                      onClick={() => { setEditing(false); setDialogError(null); }}
-                      disabled={saving}
-                      className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                      onClick={startEdit}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
                     >
-                      キャンセル
+                      <Pencil size={14} />
+                      編集
                     </button>
-                    <button
-                      type="button"
-                      onClick={saveEdit}
-                      disabled={saving}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
-                    >
-                      {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                      保存
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={startEdit}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
-                  >
-                    <Pencil size={14} />
-                    編集
-                  </button>
+                  )
                 )}
                 <button
                   type="button"
@@ -688,8 +705,72 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               </div>
             )}
 
-            {/* 本文: 重点項目を左に大きく、その他を右に畳んで横幅を使う */}
             <div className="p-5 space-y-5 overflow-auto">
+              {dialogMode === 'bug' ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <h4 className="text-sm font-bold text-neutral-800">移管済み BUG</h4>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const caseNo = (detail['ケース番号'] || '').trim();
+                          const bug = transferred[caseNo];
+                          if (!bug || !detail) return;
+                          if (!confirm(`BUG #${bug.no} との関連付けを解除しますか？\nテスト結果は変更されません。`)) return;
+                          try {
+                            const res = await fetch(`/api/testcase/${encodeURIComponent(detail.id)}/unlink-bug`, {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ bugId: bug.id }),
+                            });
+                            if (!res.ok) {
+                              const b = await res.json().catch(() => ({}));
+                              throw new Error((b as { error?: string }).error || '解除に失敗しました');
+                            }
+                            setTransferred((prev) => {
+                              const next = { ...prev };
+                              delete next[caseNo];
+                              return next;
+                            });
+                            setDialogMode('detail');
+                          } catch (e) {
+                            alert(e instanceof Error ? e.message : '解除に失敗しました');
+                          }
+                        }}
+                        className="text-[11px] text-red-500 hover:text-red-700"
+                      >
+                        関連付け解除
+                      </button>
+                      <a
+                        href={`https://www.notion.so/${(transferred[(detail['ケース番号'] || '').trim()]?.id ?? '').replace(/-/g, '')}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-800"
+                      >
+                        <ExternalLink size={12} />
+                        Notion で開く（画像の添付や編集はこちら）
+                      </a>
+                    </div>
+                  </div>
+                  <BugSummary bugId={transferred[(detail['ケース番号'] || '').trim()]?.id ?? ''} />
+                </div>
+              ) : dialogMode === 'transfer' ? (
+                <BugTransferForm
+                  caseId={detail.id}
+                  year={year}
+                  onCancel={() => setDialogMode('detail')}
+                  onDone={(bugId, bugNo) => {
+                    const caseNo = (detail['ケース番号'] || '').trim();
+                    setTransferred((prev) => ({ ...prev, [caseNo]: { id: bugId, no: bugNo } }));
+                    const updated = { ...detail, 'テスト結果': 'NG' } as TcRow;
+                    setRows((prev) => prev.map((x) => (x.id === detail.id ? updated : x)));
+                    setDetail(updated);
+                    setDialogMode('bug');
+                  }}
+                />
+              ) : (
+              <>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
                 <div className="lg:col-span-2 space-y-4">
                 {PRIMARY_FIELDS.map((f) => (
@@ -723,7 +804,6 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               </div>
 
               <div className="space-y-4">
-                {/* テスト結果・優先級は目立たせる */}
                 <div className="grid grid-cols-2 gap-3">
                   {HIGHLIGHT_FIELDS.map((f) => (
                     <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
@@ -802,54 +882,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 </button>
                 </div>
               </div>
-
-              {/* BUG は右の狭い欄に入れると長文が細長く潰れるので、
-                  ケース情報の下に区切り線を引いて全幅で並べる。
-                  内部の配置はケース情報と同じ (重要を左に大きく、副次を右に) */}
-              {dialogMode !== 'detail' && (
-                <div className="border-t border-neutral-200 pt-5">
-                  {dialogMode === 'transfer' ? (
-                    <BugTransferForm
-                      caseId={detail.id}
-                      year={year}
-                      onCancel={() => setDialogMode('detail')}
-                      onDone={(bugId, bugNo) => {
-                        // 画面側も更新して、閉じずに結果が見えるようにする
-                        const caseNo = (detail['ケース番号'] || '').trim();
-                        setTransferred((prev) => ({ ...prev, [caseNo]: { id: bugId, no: bugNo } }));
-                        const updated = { ...detail, 'テスト結果': 'NG' } as TcRow;
-                        setRows((prev) => prev.map((x) => (x.id === detail.id ? updated : x)));
-                        setDetail(updated);
-                        setDialogMode('bug');
-                      }}
-                    />
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <h4 className="text-sm font-bold text-neutral-800">移管済み BUG</h4>
-                        <div className="flex items-center gap-3">
-                          <a
-                            href={`https://www.notion.so/${(transferred[(detail['ケース番号'] || '').trim()]?.id ?? '').replace(/-/g, '')}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-800"
-                          >
-                            <ExternalLink size={12} />
-                            Notion で開く（画像の添付や編集はこちら）
-                          </a>
-                          <button
-                            type="button"
-                            onClick={() => setDialogMode('detail')}
-                            className="text-[11px] text-neutral-500 hover:text-neutral-800"
-                          >
-                            閉じる
-                          </button>
-                        </div>
-                      </div>
-                      <BugSummary bugId={transferred[(detail['ケース番号'] || '').trim()]?.id ?? ''} />
-                    </div>
-                  )}
-                </div>
+              </>
               )}
             </div>
           </div>
@@ -857,7 +890,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={() => stepDetail(1)}
-            disabled={editing || detailIndex < 0 || detailIndex >= sorted.length - 1}
+            disabled={editing || detailIndex < 0 || detailIndex >= sorted.length - 1 || dialogMode !== 'detail'}
             title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '次のケース'}
             className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
