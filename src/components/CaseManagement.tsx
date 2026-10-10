@@ -1056,23 +1056,31 @@ function CreateParentForm({ systemOptions, saving, error, onSave, onCancel }: {
   onSave: (system: string, releaseDate: string) => void;
   onCancel: () => void;
 }) {
-  const [system, setSystem] = useState('');
+  const [selectValue, setSelectValue] = useState('');
+  const [customSystem, setCustomSystem] = useState('');
   const [releaseDate, setReleaseDate] = useState('');
+  const system = selectValue === '__custom__' ? customSystem.trim() : selectValue;
   return (
     <div className="space-y-2">
-      <div>
+      <select
+        value={selectValue}
+        onChange={(e) => { setSelectValue(e.target.value); if (e.target.value !== '__custom__') setCustomSystem(''); }}
+        className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
+      >
+        <option value="">System を選択...</option>
+        {systemOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+        <option value="__custom__">その他（手動入力）</option>
+      </select>
+      {selectValue === '__custom__' && (
         <input
           type="text"
-          list="system-options-list"
-          value={system}
-          onChange={(e) => setSystem(e.target.value)}
-          placeholder="System を選択 or 入力..."
-          className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
+          value={customSystem}
+          onChange={(e) => setCustomSystem(e.target.value)}
+          placeholder="システム名を入力..."
+          className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
+          autoFocus
         />
-        <datalist id="system-options-list">
-          {systemOptions.map((o) => <option key={o} value={o} />)}
-        </datalist>
-      </div>
+      )}
       <input
         type={releaseDate ? 'date' : 'text'}
         value={releaseDate}
