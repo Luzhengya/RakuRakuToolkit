@@ -3516,6 +3516,19 @@ app.post("/api/case-management/create-parent", async (req, res) => {
   }
 
   try {
+    // 同 System + 同月次の重複チェック (子行以外)
+    const targetMonth = releaseDate.replace(/-/g, "").slice(0, 6);
+    const allItems = await queryAllProgressItems(databaseId);
+    const childIds = new Set(allItems.flatMap((it) => it.childProjectIds));
+    const duplicate = allItems.find(
+      (it) => !childIds.has(it.id) && it.system === system && it.month === targetMonth,
+    );
+    if (duplicate) {
+      return res.status(409).json({
+        error: `${system} の ${targetMonth} は既に存在します`,
+      });
+    }
+
     const database = await withNotionRetry("databases.retrieve", () =>
       notion!.databases.retrieve({ database_id: databaseId }),
     );
