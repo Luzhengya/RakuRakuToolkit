@@ -3495,7 +3495,10 @@ app.get("/api/case-management/system-options", async (_req, res) => {
     const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
     const prop = ds?.properties?.["System"];
     if (!prop || prop.type !== "select") return res.json({ options: [] });
-    const options: string[] = (prop.select?.options ?? []).map((o: any) => o.name).filter(Boolean);
+    const EXCLUDED_SYSTEMS = new Set(["月次改善タスク", "改善対応", "管理作業", "脆弱性診断", "全体システム"]);
+    const options: string[] = (prop.select?.options ?? [])
+      .map((o: any) => o.name)
+      .filter((n: string) => n && !EXCLUDED_SYSTEMS.has(n));
     return res.json({ options });
   } catch {
     return res.json({ options: [] });
@@ -3526,6 +3529,8 @@ app.post("/api/case-management/create-parent", async (req, res) => {
       "案件名": { title: [{ type: "text", text: { content: `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}` } }] },
       "System": { select: { name: system } },
       "本番日": { date: { start: releaseDate } },
+      "状態": { status: { name: "未着手" } },
+      "進捗": { number: 0 },
     };
 
     const created: any = await withNotionRetry("pages.create", () =>
