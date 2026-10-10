@@ -685,6 +685,7 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
         <input
           type={f.type === 'number' ? 'text' : f.type}
           inputMode={f.type === 'number' ? 'decimal' : undefined}
+          lang={f.type === 'date' ? 'en' : undefined}
           value={draft[f.key]}
           onChange={(e) => set(f.key, e.target.value)}
           className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
