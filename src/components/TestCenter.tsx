@@ -97,6 +97,11 @@ type OverviewItem = {
   projectName: string;
   bugCount: string;
   testTotalCount: string;
+  estimateTotal: string;
+  actualTotal: string;
+  unexpectedNgCount: string;
+  japanNgCount: string;
+  tcNgCount: string;
 };
 
 const OVERVIEW_CACHE_KEY = 'testcenter:overview:v1';
@@ -1862,6 +1867,45 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     return { caseCount, bugTotal, systemCount: systemSet.size, doneCount, inProgressCount, blockedCount, doneRate };
   }, [filteredOverview]);
 
+  const kpiActuals = useMemo(() => {
+    const now = new Date();
+    const curMonth = now.getMonth() + 1;
+    const curYear = now.getFullYear();
+    const isFirst = curMonth >= 2 && curMonth <= 7;
+    const halfMonths = new Set<string>();
+    if (isFirst) {
+      for (const m of [2, 3, 4, 5, 6, 7]) halfMonths.add(`${curYear}${String(m).padStart(2, '0')}`);
+    } else {
+      for (const m of [8, 9, 10, 11, 12]) halfMonths.add(`${curYear}${String(m).padStart(2, '0')}`);
+      halfMonths.add(`${curYear + 1}01`);
+    }
+    let caseCount = 0, testSum = 0, ngSum = 0, unexpectedNgSum = 0, actualSum = 0, estimateSum = 0, japanNgSum = 0, tcNgSum = 0;
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key || !halfMonths.has(key)) continue;
+      caseCount++;
+      testSum += parseNumber(item.testTotalCount);
+      ngSum += parseNumber(item.bugCount);
+      unexpectedNgSum += parseNumber(item.unexpectedNgCount ?? '');
+      actualSum += parseNumber(item.actualTotal ?? '');
+      estimateSum += parseNumber(item.estimateTotal ?? '');
+      japanNgSum += parseNumber(item.japanNgCount ?? '');
+      tcNgSum += parseNumber(item.tcNgCount ?? '');
+    }
+    const fmt = (v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1);
+    const leakDen = tcNgSum + japanNgSum;
+    return new Map<string, string>([
+      ['案件数(総)', String(caseCount)],
+      ['総テスト件数', String(testSum)],
+      ['総NG件数', String(ngSum)],
+      ['NG率(総)', testSum > 0 ? (ngSum / testSum * 100).toFixed(1) + '%' : '-'],
+      ['NG流出率(総)', leakDen > 0 ? (japanNgSum / leakDen * 100).toFixed(1) + '%' : '-'],
+      ['想定外NG数(総)', String(unexpectedNgSum)],
+      ['効率(総)', actualSum > 0 ? (testSum / actualSum).toFixed(2) : '-'],
+      ['見積対実績差分', fmt(actualSum - estimateSum)],
+    ]);
+  }, [overviewItems]);
+
   const monthlyBugSeries = useMemo(() => {
     const buckets = new Map<number, number>();
     for (let m = 1; m <= 12; m++) buckets.set(m, 0);
@@ -2887,7 +2931,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* ダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setBugListOpen(true); }}>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -2932,7 +2976,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               {(() => {
                 const now = new Date();
                 const m = now.getMonth() + 1;
-                const isFirst = m >= 4 && m <= 9;
+                const isFirst = m >= 2 && m <= 7;
                 const targets = isFirst ? kpiTargets.first : kpiTargets.second;
                 const halfLabel = isFirst ? '上期' : '下期';
                 if (targets.length === 0) {
@@ -2942,12 +2986,19 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                   <div className="space-y-1.5 pt-1">
                     <p className="text-[10px] font-semibold text-indigo-500 tracking-wider">{halfLabel}目標</p>
                     <div className="grid grid-cols-2 gap-2">
-                      {targets.map((t) => (
-                        <div key={t.label} className="bg-indigo-50/60 rounded-lg px-2.5 py-2">
-                          <p className="text-[10px] text-indigo-400 font-medium truncate" title={t.label}>{t.label}</p>
-                          <p className="text-sm font-bold text-indigo-900 tabular-nums mt-0.5">{t.value}</p>
-                        </div>
-                      ))}
+                      {targets.map((tgt) => {
+                        const actual = kpiActuals.get(tgt.label);
+                        return (
+                          <div key={tgt.label} className="bg-indigo-50/60 rounded-lg px-2.5 py-2">
+                            <p className="text-[10px] text-indigo-400 font-medium truncate" title={tgt.label}>{tgt.label}</p>
+                            <p className="text-sm font-bold tabular-nums mt-0.5">
+                              <span className="text-indigo-900">{tgt.value}</span>
+                              {actual && <span className="text-neutral-400"> / </span>}
+                              {actual && <span className="text-neutral-600">{actual}</span>}
+                            </p>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
