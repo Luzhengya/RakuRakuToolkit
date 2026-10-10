@@ -342,7 +342,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                   className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-neutral-300 text-neutral-500 text-sm hover:border-neutral-400 hover:text-neutral-700 transition-colors"
                 >
                   <Plus size={14} />
-                  新規親案件
+                  親案件を新規する
                 </button>
               )}
             </div>
@@ -478,14 +478,19 @@ function CreateParentForm({ systemOptions, saving, error, onSave, onCancel }: {
   const [releaseDate, setReleaseDate] = useState('');
   return (
     <div className="space-y-2">
-      <select
-        value={system}
-        onChange={(e) => setSystem(e.target.value)}
-        className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
-      >
-        <option value="">System を選択...</option>
-        {systemOptions.map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
+      <div>
+        <input
+          type="text"
+          list="system-options-list"
+          value={system}
+          onChange={(e) => setSystem(e.target.value)}
+          placeholder="System を選択 or 入力..."
+          className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
+        />
+        <datalist id="system-options-list">
+          {systemOptions.map((o) => <option key={o} value={o} />)}
+        </datalist>
+      </div>
       <input
         type={releaseDate ? 'date' : 'text'}
         value={releaseDate}
