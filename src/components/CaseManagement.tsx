@@ -20,18 +20,37 @@ interface ChildCase {
   projectName: string;
   status: string;
   assignee: string;
+  manager: string;
   month: string;
   system: string;
   estimateTotal: string;
   actualTotal: string;
   testTotalCount: string;
   bugCount: string;
+  testBlockedCount: string;
+  pendingConfirmCount: string;
+  unexpectedNgCount: string;
+  japanCaseCount: string;
+  japanBugCount: string;
   tcStartDate: string;
   tcDesignCompleteDate: string;
   tcExecutionCompleteDate: string;
   actualStartDate: string;
   actualDesignCompleteDate: string;
   actualExecutionCompleteDate: string;
+  developmentEffort: string;
+  designEstimate: string;
+  implementationEstimate: string;
+  executionEstimate: string;
+  reviewEstimate: string;
+  designActual: string;
+  implActual: string;
+  execActual: string;
+  reviewActual: string;
+  releaseDate: string;
+  verificationDate: string;
+  desiredCompleteDate: string;
+  comment: string;
 }
 
 interface ParentNode {
@@ -56,6 +75,51 @@ const STATUS_COLOR: Record<string, string> = {
   '遅延完了': 'bg-amber-50 text-amber-700',
   'ブロック': 'bg-red-50 text-red-700',
 };
+
+type FieldDef = { key: string; label: string; type: 'text' | 'date' | 'number' | 'select' | 'multiselect'; span?: boolean };
+
+const SCHEDULE_FIELDS: FieldDef[] = [
+  { key: 'projectName', label: '案件名', type: 'text', span: true },
+  { key: 'status', label: '状態', type: 'select' },
+  { key: 'assignee', label: '担当者', type: 'multiselect' },
+  { key: 'manager', label: '管理者', type: 'multiselect' },
+  { key: 'releaseDate', label: '本番日', type: 'date' },
+  { key: 'verificationDate', label: '検証日', type: 'date' },
+  { key: 'desiredCompleteDate', label: '完了希望日', type: 'date' },
+  { key: 'tcStartDate', label: 'TC開始予定日', type: 'date' },
+  { key: 'actualStartDate', label: '実際開始日', type: 'date' },
+  { key: 'tcDesignCompleteDate', label: 'TC設計書完了予定日', type: 'date' },
+  { key: 'actualDesignCompleteDate', label: '実際設計書完了日', type: 'date' },
+  { key: 'tcExecutionCompleteDate', label: 'TC実施完了予定日', type: 'date' },
+  { key: 'actualExecutionCompleteDate', label: '実際実施完了日', type: 'date' },
+  { key: 'comment', label: 'コメント', type: 'text', span: true },
+];
+
+const EFFORT_FIELDS: FieldDef[] = [
+  { key: 'estimateTotal', label: '見積総', type: 'number' },
+  { key: 'actualTotal', label: '実績総', type: 'number' },
+  { key: 'developmentEffort', label: '開発工数', type: 'number' },
+  { key: 'designEstimate', label: '工数見積(設計書)', type: 'number' },
+  { key: 'designActual', label: '工数実績(設計書)', type: 'number' },
+  { key: 'implementationEstimate', label: '工数見積(実装)', type: 'number' },
+  { key: 'implActual', label: '工数実績(実装)', type: 'number' },
+  { key: 'executionEstimate', label: '工数見積(実施)', type: 'number' },
+  { key: 'execActual', label: '工数実績(実施)', type: 'number' },
+  { key: 'reviewEstimate', label: 'Review見積工数', type: 'number' },
+  { key: 'reviewActual', label: 'Review実績工数', type: 'number' },
+];
+
+const TEST_FIELDS: FieldDef[] = [
+  { key: 'testTotalCount', label: 'Test総件数', type: 'number' },
+  { key: 'bugCount', label: 'NG数', type: 'number' },
+  { key: 'testBlockedCount', label: 'Test不可', type: 'number' },
+  { key: 'pendingConfirmCount', label: '確認中件数', type: 'number' },
+  { key: 'unexpectedNgCount', label: '想定外NG数', type: 'number' },
+  { key: 'japanCaseCount', label: '日本側case数', type: 'number' },
+  { key: 'japanBugCount', label: '日本側NG数', type: 'number' },
+];
+
+const ALL_EDIT_FIELDS = [...SCHEDULE_FIELDS, ...EFFORT_FIELDS, ...TEST_FIELDS];
 
 function statusBadge(status: string) {
   const cls = STATUS_COLOR[status.trim()] ?? 'bg-neutral-100 text-neutral-600';
@@ -464,7 +528,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                   className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-neutral-300 text-neutral-500 text-sm hover:border-neutral-400 hover:text-neutral-700 transition-colors"
                 >
                   <Plus size={14} />
-                  新規親案件
+                  新規案件追加
                 </button>
               )}
             </div>
@@ -585,6 +649,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
               <EditPanel
                 item={editingCase}
                 statusOptions={statusOptions}
+                memberOptions={memberOptions}
                 saving={saving}
                 error={formError}
                 onSave={(fields) => handleUpdate(editingCase.id, fields)}
@@ -995,20 +1060,27 @@ function CreateParentForm({ systemOptions, saving, error, onSave, onCancel }: {
   const [releaseDate, setReleaseDate] = useState('');
   return (
     <div className="space-y-2">
-      <select
-        value={system}
-        onChange={(e) => setSystem(e.target.value)}
-        className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
-      >
-        <option value="">System を選択...</option>
-        {systemOptions.map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
+      <div>
+        <input
+          type="text"
+          list="system-options-list"
+          value={system}
+          onChange={(e) => setSystem(e.target.value)}
+          placeholder="System を選択 or 入力..."
+          className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
+        />
+        <datalist id="system-options-list">
+          {systemOptions.map((o) => <option key={o} value={o} />)}
+        </datalist>
+      </div>
       <input
-        type="date"
+        type={releaseDate ? 'date' : 'text'}
         value={releaseDate}
+        placeholder="本番予定日"
+        onFocus={(e) => { (e.target as HTMLInputElement).type = 'date'; }}
+        onBlur={(e) => { if (!releaseDate) (e.target as HTMLInputElement).type = 'text'; }}
         onChange={(e) => setReleaseDate(e.target.value)}
         className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
-        placeholder="本番日"
       />
       {error && <p className="text-xs text-red-500">{error}</p>}
       <div className="flex gap-2">
@@ -1064,52 +1136,94 @@ function CreateForm({ saving, error, onSave, onCancel }: {
   );
 }
 
-function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
+function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, onCancel }: {
   item: ChildCase;
   statusOptions: string[];
+  memberOptions: string[];
   saving: boolean;
   error: string | null;
   onSave: (fields: Record<string, string>) => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState({
-    projectName: item.projectName,
-    status: item.status,
-    tcStartDate: item.tcStartDate,
-    tcDesignCompleteDate: item.tcDesignCompleteDate,
-    tcExecutionCompleteDate: item.tcExecutionCompleteDate,
+  const [draft, setDraft] = useState<Record<string, string>>(() => {
+    const d: Record<string, string> = {};
+    for (const f of ALL_EDIT_FIELDS) d[f.key] = (item as any)[f.key] ?? '';
+    return d;
   });
 
   useEffect(() => {
-    setDraft({
-      projectName: item.projectName,
-      status: item.status,
-      tcStartDate: item.tcStartDate,
-      tcDesignCompleteDate: item.tcDesignCompleteDate,
-      tcExecutionCompleteDate: item.tcExecutionCompleteDate,
-    });
+    const d: Record<string, string> = {};
+    for (const f of ALL_EDIT_FIELDS) d[f.key] = (item as any)[f.key] ?? '';
+    setDraft(d);
   }, [item]);
 
   const changed = useMemo(() => {
     const diff: Record<string, string> = {};
-    if (draft.projectName !== item.projectName) diff.projectName = draft.projectName;
-    if (draft.status !== item.status) diff.status = draft.status;
-    if (draft.tcStartDate !== item.tcStartDate) diff.tcStartDate = draft.tcStartDate;
-    if (draft.tcDesignCompleteDate !== item.tcDesignCompleteDate) diff.tcDesignCompleteDate = draft.tcDesignCompleteDate;
-    if (draft.tcExecutionCompleteDate !== item.tcExecutionCompleteDate) diff.tcExecutionCompleteDate = draft.tcExecutionCompleteDate;
+    for (const f of ALL_EDIT_FIELDS) {
+      if (draft[f.key] !== ((item as any)[f.key] ?? '')) diff[f.key] = draft[f.key];
+    }
     return diff;
   }, [draft, item]);
 
-  const FIELDS: { key: keyof typeof draft; label: string; type: 'text' | 'date' | 'select' }[] = [
-    { key: 'projectName', label: '案件名', type: 'text' },
-    { key: 'status', label: '状態', type: 'select' },
-    { key: 'tcStartDate', label: 'TC開始予定日', type: 'date' },
-    { key: 'tcDesignCompleteDate', label: 'TC設計書完了予定日', type: 'date' },
-    { key: 'tcExecutionCompleteDate', label: 'TC実施完了予定日', type: 'date' },
-  ];
+  const set = (key: string, value: string) => setDraft((p) => ({ ...p, [key]: value }));
+
+  const toggleMulti = (key: string, member: string) => {
+    const current = draft[key].split(',').map((s) => s.trim()).filter(Boolean);
+    const next = current.includes(member)
+      ? current.filter((m) => m !== member)
+      : [...current, member];
+    set(key, next.join(', '));
+  };
+
+  const renderField = (f: FieldDef) => (
+    <div key={f.key} className={f.span || f.type === 'multiselect' ? 'md:col-span-2' : ''}>
+      <label className="block text-[11px] font-medium text-neutral-500 mb-1">{f.label}</label>
+      {f.type === 'select' ? (
+        <select
+          value={draft[f.key]}
+          onChange={(e) => set(f.key, e.target.value)}
+          className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
+        >
+          <option value="">-</option>
+          {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : f.type === 'multiselect' ? (
+        <div className="flex flex-wrap gap-2 p-2 border border-neutral-300 rounded-lg bg-white min-h-[36px]">
+          {memberOptions.map((m) => {
+            const selected = draft[f.key].split(',').map((s) => s.trim()).includes(m);
+            return (
+              <label key={m} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
+                selected ? 'bg-neutral-800 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={() => toggleMulti(f.key, m)}
+                  className="sr-only"
+                />
+                {m}
+              </label>
+            );
+          })}
+          {memberOptions.length === 0 && <span className="text-xs text-neutral-400">メンバー未取得</span>}
+        </div>
+      ) : (
+        <input
+          type={f.type === 'number' ? 'text' : f.type}
+          inputMode={f.type === 'number' ? 'decimal' : undefined}
+          value={draft[f.key]}
+          onChange={(e) => set(f.key, e.target.value)}
+          className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
+        />
+      )}
+    </div>
+  );
+
+  const sectionCls = 'space-y-2';
+  const headingCls = 'text-xs font-bold text-neutral-600 border-b border-neutral-100 pb-1';
 
   return (
-    <div className="mt-4 bg-white border border-neutral-200 rounded-xl shadow-sm p-4 space-y-3">
+    <div className="mt-4 bg-white border border-neutral-200 rounded-xl shadow-sm p-4 space-y-4">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-bold text-neutral-800">案件編集</h4>
         <button onClick={onCancel} className="p-1 rounded hover:bg-neutral-100 text-neutral-400">
@@ -1117,29 +1231,19 @@ function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {FIELDS.map((f) => (
-          <div key={f.key} className={f.key === 'projectName' ? 'md:col-span-2' : ''}>
-            <label className="block text-[11px] font-medium text-neutral-500 mb-1">{f.label}</label>
-            {f.type === 'select' ? (
-              <select
-                value={draft[f.key]}
-                onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
-                className="w-full px-3 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
-              >
-                <option value="">-</option>
-                {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            ) : (
-              <input
-                type={f.type}
-                value={draft[f.key]}
-                onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
-                className="w-full px-3 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
-              />
-            )}
-          </div>
-        ))}
+      <div className={sectionCls}>
+        <h5 className={headingCls}>スケジュール</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{SCHEDULE_FIELDS.map(renderField)}</div>
+      </div>
+
+      <div className={sectionCls}>
+        <h5 className={headingCls}>工数</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{EFFORT_FIELDS.map(renderField)}</div>
+      </div>
+
+      <div className={sectionCls}>
+        <h5 className={headingCls}>テスト結果</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{TEST_FIELDS.map(renderField)}</div>
       </div>
 
       {error && (
