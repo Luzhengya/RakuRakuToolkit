@@ -472,13 +472,15 @@ function CreateParentForm({ systemOptions, saving, error, onSave, onCancel }: {
         <option value="">System を選択...</option>
         {systemOptions.map((o) => <option key={o} value={o}>{o}</option>)}
       </select>
-      <input
-        type="date"
-        value={releaseDate}
-        onChange={(e) => setReleaseDate(e.target.value)}
-        className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
-        placeholder="本番日"
-      />
+      <div>
+        <label className="block text-[11px] text-neutral-500 mb-0.5">本番予定日</label>
+        <input
+          type="date"
+          value={releaseDate}
+          onChange={(e) => setReleaseDate(e.target.value)}
+          className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
+        />
+      </div>
       {error && <p className="text-xs text-red-500">{error}</p>}
       <div className="flex gap-2">
         <button

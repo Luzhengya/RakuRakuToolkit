@@ -3276,8 +3276,9 @@ app.get("/api/case-management/tree", async (_req, res) => {
     const allItems = await queryAllProgressItems(databaseId);
     const byId = new Map(allItems.map((it) => [it.id, it]));
 
-    // 親: childProjectIds が空でない行
-    const parents = allItems.filter((it) => it.childProjectIds.length > 0);
+    // 親: 他の行の子でない行 (子を持たない新規親も含む)
+    const childIds = new Set(allItems.flatMap((it) => it.childProjectIds));
+    const parents = allItems.filter((it) => !childIds.has(it.id));
 
     const tree = parents.map((parent) => {
       const children = parent.childProjectIds
