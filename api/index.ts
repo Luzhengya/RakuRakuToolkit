@@ -3541,7 +3541,7 @@ app.post("/api/case-management/create-parent", async (req, res) => {
       "案件名": { title: [{ type: "text", text: { content: `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}` } }] },
       "System": { multi_select: [{ name: system }] },
       "本番日": { date: { start: releaseDate } },
-      "状態": { status: { name: "未着手" } },
+      "状態": { status: { name: "未開始" } },
       "進捗": { number: 0 },
     };
 
