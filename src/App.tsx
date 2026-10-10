@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useCallback, useState, useSyncExternalStore } from 'react';
 import { Grid } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Home from './components/Home';
@@ -24,8 +24,26 @@ type Category = '文档类' | '管理类' | 'データ収集类';
 
 const CATEGORIES: Category[] = ['文档类', '管理类', 'データ収集类'];
 
+const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'data-collection', 'daily-news']);
+
+function hashToView(): View {
+  const raw = location.hash.replace(/^#\/?/, '');
+  return VALID_VIEWS.has(raw) ? (raw as View) : 'home';
+}
+
+function useHashRoute(): [View, (v: View) => void] {
+  const view = useSyncExternalStore(
+    (cb) => { window.addEventListener('hashchange', cb); return () => window.removeEventListener('hashchange', cb); },
+    hashToView,
+  );
+  const navigate = useCallback((v: View) => {
+    location.hash = v === 'home' ? '/' : `/${v}`;
+  }, []);
+  return [view, navigate];
+}
+
 export default function App() {
-  const [view, setView] = useState<View>('home');
+  const [view, setView] = useHashRoute();
   const [category, setCategory] = useState<Category>('文档类');
 
   const switchCategory = (cat: Category) => {
@@ -193,8 +211,8 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-4 flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-neutral-400">
           <p>© 2026 ToolSetLimo. All rights reserved.</p>
           <div className="flex gap-6">
-            <a href="#" className="hover:text-neutral-600">隐私政策</a>
-            <a href="#" className="hover:text-neutral-600">服务条款</a>
+            <span className="hover:text-neutral-600 cursor-default">隐私政策</span>
+            <span className="hover:text-neutral-600 cursor-default">服务条款</span>
           </div>
         </div>
       </footer>
