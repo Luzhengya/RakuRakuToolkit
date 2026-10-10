@@ -3598,6 +3598,124 @@ app.post("/api/case-management/create-parent", async (req, res) => {
   }
 });
 
+// ── 案件管理 チェックリスト (ニーズ管理 DB、分野="checklist" でフィルタ) ──
+
+app.get("/api/case-management/checklist", async (_req, res) => {
+  const databaseId = process.env.NOTION_NEEDS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    const database: any = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = database?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) {
+      return res.status(500).json({ error: "No data source found" });
+    }
+
+    const response: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        page_size: 200,
+        filter: {
+          property: "分野",
+          multi_select: { contains: "週報" },
+        },
+      }),
+    );
+    const items = (response?.results ?? []).map((page: any) => {
+      const props = page.properties ?? {};
+      const statusProp = props["状態"];
+      return {
+        id: page.id,
+        title: propertyToPlainText(props["ニーズ"]),
+        done: statusProp?.status?.name === "対応済",
+        createdTime: props["提出日"]?.created_time ?? page.created_time ?? "",
+      };
+    });
+    return res.json({ items });
+  } catch (error) {
+    console.error("Checklist list error:", error);
+    return res.status(500).json({ error: "Failed to load checklist" });
+  }
+});
+
+app.post("/api/case-management/checklist", async (req, res) => {
+  const databaseId = process.env.NOTION_NEEDS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { title } = req.body ?? {};
+  if (!title || typeof title !== "string" || !title.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
+  try {
+    const database: any = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = database?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) {
+      return res.status(500).json({ error: "No data source found" });
+    }
+
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties: {
+          "ニーズ": { title: [{ type: "text", text: { content: title.trim() } }] },
+          "分野": { multi_select: [{ name: "週報" }] },
+        },
+      } as any),
+    );
+    return res.json({ id: created.id, title: title.trim(), done: false });
+  } catch (error) {
+    console.error("Checklist create error:", error);
+    return res.status(500).json({ error: "Failed to create checklist item" });
+  }
+});
+
+app.post("/api/case-management/checklist/:id/toggle", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { id } = req.params;
+  const { done } = req.body ?? {};
+  if (typeof done !== "boolean") {
+    return res.status(400).json({ error: "done (boolean) is required" });
+  }
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({
+        page_id: id,
+        properties: {
+          "状態": { status: { name: done ? "対応済" : "進行中" } },
+        },
+      }),
+    );
+    return res.json({ id, done });
+  } catch (error) {
+    console.error("Checklist toggle error:", error);
+    return res.status(500).json({ error: "Failed to toggle checklist item" });
+  }
+});
+
+app.delete("/api/case-management/checklist/:id", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { id } = req.params;
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Checklist delete error:", error);
+    return res.status(500).json({ error: "Failed to delete checklist item" });
+  }
+});
+
 app.get("/api/jiji-list", async (_req, res) => {
   const databaseId = process.env.NOTION_JIJI_DATABASE_ID;
   if (!notion || !databaseId) {
