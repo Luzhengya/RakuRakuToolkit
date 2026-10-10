@@ -462,6 +462,8 @@ function propertyToPlainText(property: any): string {
       return "";
     case "date":
       return property.date?.start ?? "";
+    case "email":
+      return property.email ?? "";
     case "people":
       return Array.isArray(property.people)
         ? property.people.map((person: any) => person?.name ?? person?.id).filter(Boolean).join(", ")
@@ -469,6 +471,14 @@ function propertyToPlainText(property: any): string {
     default:
       return "";
   }
+}
+
+function peopleToEmails(property: any): string {
+  if (!property || property.type !== "people" || !Array.isArray(property.people)) return "";
+  return property.people
+    .map((p: any) => p?.person?.email ?? "")
+    .filter(Boolean)
+    .join(", ");
 }
 
 function pickProperty(properties: Record<string, any>, names: string[]): any {
@@ -573,8 +583,8 @@ function parseProgressItem(page: any): ProgressItem {
       findDateProperty(properties, ["実際実施完了日", "実績実施完了日", "実際TC実施完了日", "TC実際実施完了日"])
     ),
     system: propertyToPlainText(properties["System"]),
-    assignee: propertyToPlainText(pickProperty(properties, ["担当者", "担当"])),
-    manager: propertyToPlainText(pickProperty(properties, ["管理者", "管理"])),
+    assignee: peopleToEmails(pickProperty(properties, ["担当者", "担当"])) || propertyToPlainText(pickProperty(properties, ["担当者", "担当"])),
+    manager: peopleToEmails(pickProperty(properties, ["管理者", "管理"])) || propertyToPlainText(pickProperty(properties, ["管理者", "管理"])),
     releaseDate: propertyToPlainText(findDateProperty(properties, ["本番日", "本番予定日"])),
     verificationDate: propertyToPlainText(findDateProperty(properties, ["検証日", "検証予定日"])),
     desiredCompleteDate: propertyToPlainText(findDateProperty(properties, ["完了希望日"])),
@@ -3469,6 +3479,7 @@ app.post("/api/case-management/:id/update", async (req, res) => {
     const properties = page?.properties ?? {};
     const updates: Record<string, any> = {};
 
+    let workspaceUsers: any[] | null = null;
     for (const [key, value] of Object.entries(fields)) {
       const names = FIELD_MAP[key];
       if (!names) continue;
@@ -3480,7 +3491,19 @@ app.post("/api/case-management/:id/update", async (req, res) => {
 
       const propName = names.find((n) => properties[n]) ?? names[0];
       const prop = properties[propName];
-      if (prop) {
+      if (!prop) continue;
+
+      if (prop.type === "people") {
+        if (!workspaceUsers) {
+          const usersRes: any = await withNotionRetry("users.list", () => notion!.users.list({}));
+          workspaceUsers = usersRes?.results ?? [];
+        }
+        const emails = String(value).split(",").map((s: string) => s.trim()).filter(Boolean);
+        const userIds = emails
+          .map((email: string) => workspaceUsers!.find((u: any) => u?.person?.email === email)?.id)
+          .filter(Boolean);
+        updates[propName] = { people: userIds.map((id: string) => ({ id })) };
+      } else {
         updates[propName] = buildUpdatableProperty(prop, String(value), propName);
       }
     }
@@ -3572,17 +3595,16 @@ app.get("/api/case-management/member-options", async (_req, res) => {
     if (!dataSourceId) return res.json({ members: [] });
 
     const response: any = await withNotionRetry("dataSources.query", () =>
-      notion!.dataSources.query({ data_source_id: dataSourceId, page_size: 200 } as any),
+      (notion as any).dataSources.query({ data_source_id: dataSourceId, page_size: 200 }),
     );
     const pages = response?.results ?? [];
-    const mailKeys = ["mail1", "mail2", "mail3", "mail4", "mail5", "mail6", "mail7", "mail8"];
     const set = new Set<string>();
     for (const page of pages) {
       const props = page?.properties ?? {};
-      for (const key of mailKeys) {
-        const val = propertyToPlainText(props[key]).trim();
-        if (val) set.add(val);
-      }
+      const key = propertyToPlainText(props.key).trim();
+      if (!key.startsWith("mail")) continue;
+      const val = propertyToPlainText(props.value).trim();
+      if (val) set.add(val);
     }
     return res.json({ members: Array.from(set).sort() });
   } catch (error) {
