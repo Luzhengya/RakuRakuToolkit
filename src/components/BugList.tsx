@@ -599,7 +599,7 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
                                 </p>
                               ) : childHtml.trim() ? (
                                 <div
-                                  className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white"
+                                  className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white [&_img]:max-w-full [&_img]:max-h-[400px] [&_img]:rounded-lg [&_img]:object-contain [&_img]:my-2"
                                   dangerouslySetInnerHTML={{ __html: childHtml }}
                                 />
                               ) : (
