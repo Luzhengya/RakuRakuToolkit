@@ -136,7 +136,7 @@ export default function CaseSchedule({ caseId }: { caseId: string }) {
           {toInputDate(f.value) || '未入力'}
         </span>
         {!f.editable && f.reason && (
-          <Lock size={11} className="text-neutral-300" title={f.reason} />
+          <span title={f.reason}><Lock size={11} className="text-neutral-300" /></span>
         )}
       </span>
     );

@@ -56,6 +56,8 @@ export default function BugSummary({ bugId }: { bugId: string }) {
   const [item, setItem] = useState<BugItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [childHtml, setChildHtml] = useState('');
+  const [childLoading, setChildLoading] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -72,6 +74,21 @@ export default function BugSummary({ bugId }: { bugId: string }) {
       .then((d) => { if (alive) setItem(d.item); })
       .catch((e) => { if (alive) setError(e instanceof Error ? e.message : '取得に失敗しました'); })
       .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [bugId]);
+
+  useEffect(() => {
+    let alive = true;
+    setChildHtml('');
+    setChildLoading(true);
+    fetch(`/api/test-center/bugs/${encodeURIComponent(bugId)}/children`)
+      .then(async (res) => {
+        if (!res.ok) return;
+        const d = await res.json() as { html?: string };
+        if (alive) setChildHtml(d.html ?? '');
+      })
+      .catch(() => {})
+      .finally(() => { if (alive) setChildLoading(false); });
     return () => { alive = false; };
   }, [bugId]);
 
@@ -105,6 +122,23 @@ export default function BugSummary({ bugId }: { bugId: string }) {
             </p>
           </div>
         ))}
+
+        <div className="space-y-1">
+          <p className="text-xs font-bold text-neutral-700">詳細内容</p>
+          {childLoading ? (
+            <p className="text-sm text-neutral-400 flex items-center gap-2">
+              <Loader2 size={14} className="animate-spin" />
+              読み込み中...
+            </p>
+          ) : childHtml.trim() ? (
+            <div
+              className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white"
+              dangerouslySetInnerHTML={{ __html: childHtml }}
+            />
+          ) : (
+            <p className="text-sm text-neutral-400 border border-neutral-200 rounded-lg p-3 bg-neutral-50">なし</p>
+          )}
+        </div>
       </div>
 
       <div className="space-y-4">
