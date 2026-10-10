@@ -665,6 +665,10 @@ function buildUpdatableProperty(property: any, rawValue: string, fieldName: stri
       const name = rawValue.trim();
       return { select: name ? { name } : null };
     }
+    case "multi_select": {
+      const name = rawValue.trim();
+      return { multi_select: name ? [{ name }] : [] };
+    }
     case "status": {
       const name = rawValue.trim();
       return { status: name ? { name } : null };
@@ -3348,7 +3352,7 @@ app.post("/api/case-management/create", async (req, res) => {
     const props: Record<string, any> = {
       "案件名": { title: [{ type: "text", text: { content: projectName } }] },
     };
-    if (system) props["System"] = { select: { name: system } };
+    if (system) props["System"] = { multi_select: [{ name: system }] };
     if (month) props["月次"] = { select: { name: month } };
 
     const created: any = await withNotionRetry("pages.create", () =>
@@ -3522,7 +3526,7 @@ app.post("/api/case-management/create-parent", async (req, res) => {
 
     const props: Record<string, any> = {
       "案件名": { title: [{ type: "text", text: { content: `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}` } }] },
-      "System": { select: { name: system } },
+      "System": { multi_select: [{ name: system }] },
       "本番日": { date: { start: releaseDate } },
       "状態": { status: { name: "未着手" } },
       "進捗": { number: 0 },
