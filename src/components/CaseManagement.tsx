@@ -18,6 +18,7 @@ interface ChildCase {
   projectName: string;
   status: string;
   assignee: string;
+  manager: string;
   month: string;
   system: string;
   estimateTotal: string;
@@ -44,6 +45,10 @@ interface ChildCase {
   implActual: string;
   execActual: string;
   reviewActual: string;
+  releaseDate: string;
+  verificationDate: string;
+  desiredCompleteDate: string;
+  comment: string;
 }
 
 interface ParentNode {
@@ -80,6 +85,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [systemOptions, setSystemOptions] = useState<string[]>([]);
+  const [memberOptions, setMemberOptions] = useState<string[]>([]);
 
   const [selectedParentId, setSelectedParentId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -118,6 +124,10 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
     fetch('/api/case-management/system-options')
       .then((r) => r.ok ? r.json() : { options: [] })
       .then((d) => setSystemOptions(d.options ?? []))
+      .catch(() => {});
+    fetch('/api/case-management/member-options')
+      .then((r) => r.ok ? r.json() : { members: [] })
+      .then((d) => setMemberOptions(d.members ?? []))
       .catch(() => {});
   }, []);
 
@@ -454,6 +464,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
               <EditPanel
                 item={editingCase}
                 statusOptions={statusOptions}
+                memberOptions={memberOptions}
                 saving={saving}
                 error={formError}
                 onSave={(fields) => handleUpdate(editingCase.id, fields)}
@@ -554,18 +565,23 @@ function CreateForm({ saving, error, onSave, onCancel }: {
   );
 }
 
-type FieldDef = { key: string; label: string; type: 'text' | 'date' | 'number' | 'select'; span?: boolean };
+type FieldDef = { key: string; label: string; type: 'text' | 'date' | 'number' | 'select' | 'multiselect'; span?: boolean };
 
 const SCHEDULE_FIELDS: FieldDef[] = [
   { key: 'projectName', label: '案件名', type: 'text', span: true },
   { key: 'status', label: '状態', type: 'select' },
-  { key: 'assignee', label: '担当者', type: 'text' },
+  { key: 'assignee', label: '担当者', type: 'multiselect' },
+  { key: 'manager', label: '管理者', type: 'multiselect' },
+  { key: 'releaseDate', label: '本番日', type: 'date' },
+  { key: 'verificationDate', label: '検証日', type: 'date' },
+  { key: 'desiredCompleteDate', label: '完了希望日', type: 'date' },
   { key: 'tcStartDate', label: 'TC開始予定日', type: 'date' },
   { key: 'actualStartDate', label: '実際開始日', type: 'date' },
   { key: 'tcDesignCompleteDate', label: 'TC設計書完了予定日', type: 'date' },
   { key: 'actualDesignCompleteDate', label: '実際設計書完了日', type: 'date' },
   { key: 'tcExecutionCompleteDate', label: 'TC実施完了予定日', type: 'date' },
   { key: 'actualExecutionCompleteDate', label: '実際実施完了日', type: 'date' },
+  { key: 'comment', label: 'コメント', type: 'text', span: true },
 ];
 
 const EFFORT_FIELDS: FieldDef[] = [
@@ -594,9 +610,10 @@ const TEST_FIELDS: FieldDef[] = [
 
 const ALL_EDIT_FIELDS = [...SCHEDULE_FIELDS, ...EFFORT_FIELDS, ...TEST_FIELDS];
 
-function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
+function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, onCancel }: {
   item: ChildCase;
   statusOptions: string[];
+  memberOptions: string[];
   saving: boolean;
   error: string | null;
   onSave: (fields: Record<string, string>) => void;
@@ -624,8 +641,16 @@ function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
 
   const set = (key: string, value: string) => setDraft((p) => ({ ...p, [key]: value }));
 
+  const toggleMulti = (key: string, member: string) => {
+    const current = draft[key].split(',').map((s) => s.trim()).filter(Boolean);
+    const next = current.includes(member)
+      ? current.filter((m) => m !== member)
+      : [...current, member];
+    set(key, next.join(', '));
+  };
+
   const renderField = (f: FieldDef) => (
-    <div key={f.key} className={f.span ? 'md:col-span-2' : ''}>
+    <div key={f.key} className={f.span || f.type === 'multiselect' ? 'md:col-span-2' : ''}>
       <label className="block text-[11px] font-medium text-neutral-500 mb-1">{f.label}</label>
       {f.type === 'select' ? (
         <select
@@ -636,6 +661,26 @@ function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
           <option value="">-</option>
           {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
+      ) : f.type === 'multiselect' ? (
+        <div className="flex flex-wrap gap-2 p-2 border border-neutral-300 rounded-lg bg-white min-h-[36px]">
+          {memberOptions.map((m) => {
+            const selected = draft[f.key].split(',').map((s) => s.trim()).includes(m);
+            return (
+              <label key={m} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
+                selected ? 'bg-neutral-800 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+              }`}>
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onChange={() => toggleMulti(f.key, m)}
+                  className="sr-only"
+                />
+                {m}
+              </label>
+            );
+          })}
+          {memberOptions.length === 0 && <span className="text-xs text-neutral-400">メンバー未取得</span>}
+        </div>
       ) : (
         <input
           type={f.type === 'number' ? 'text' : f.type}

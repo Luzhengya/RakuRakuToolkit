@@ -405,6 +405,10 @@ type ProgressItem = {
   system: string;
   assignee: string;
   manager: string;
+  releaseDate: string;
+  verificationDate: string;
+  desiredCompleteDate: string;
+  comment: string;
   designActual: string;
   implActual: string;
   execActual: string;
@@ -571,6 +575,10 @@ function parseProgressItem(page: any): ProgressItem {
     system: propertyToPlainText(properties["System"]),
     assignee: propertyToPlainText(pickProperty(properties, ["担当者", "担当"])),
     manager: propertyToPlainText(pickProperty(properties, ["管理者", "管理"])),
+    releaseDate: propertyToPlainText(findDateProperty(properties, ["本番日", "本番予定日"])),
+    verificationDate: propertyToPlainText(findDateProperty(properties, ["検証日", "検証予定日"])),
+    desiredCompleteDate: propertyToPlainText(findDateProperty(properties, ["完了希望日"])),
+    comment: propertyToPlainText(pickProperty(properties, ["コメント", "備考"])),
     designActual: propertyToPlainText(pickProperty(properties, ["工数実績(設計書)", "工数実績(設計書) ", "工数実績(設計)"])),
     implActual: propertyToPlainText(pickProperty(properties, ["工数実績(実装)", "工数実績(実装) "])),
     execActual: propertyToPlainText(pickProperty(properties, ["工数実績(実施)", "工数実績(実施) "])),
@@ -3289,6 +3297,7 @@ app.get("/api/case-management/tree", async (_req, res) => {
           projectName: c.projectName,
           status: c.status,
           assignee: c.assignee,
+          manager: c.manager,
           month: c.month,
           system: c.system,
           estimateTotal: c.estimateTotal,
@@ -3315,6 +3324,10 @@ app.get("/api/case-management/tree", async (_req, res) => {
           implActual: c.implActual,
           execActual: c.execActual,
           reviewActual: c.reviewActual,
+          releaseDate: c.releaseDate,
+          verificationDate: c.verificationDate,
+          desiredCompleteDate: c.desiredCompleteDate,
+          comment: c.comment,
         }));
       return {
         id: parent.id,
@@ -3418,6 +3431,11 @@ app.post("/api/case-management/:id/update", async (req, res) => {
     system: ["System"],
     month: ["月次"],
     assignee: ["担当者", "担当"],
+    manager: ["管理者", "管理"],
+    releaseDate: ["本番日", "本番予定日"],
+    verificationDate: ["検証日", "検証予定日"],
+    desiredCompleteDate: ["完了希望日"],
+    comment: ["コメント", "備考"],
     tcStartDate: ["TC開始予定日"],
     tcDesignCompleteDate: ["TC設計書完了予定日"],
     tcExecutionCompleteDate: ["TC実施完了予定日"],
@@ -3537,6 +3555,39 @@ app.get("/api/case-management/system-options", async (_req, res) => {
     return res.json({ options: Array.from(set).sort() });
   } catch {
     return res.json({ options: [] });
+  }
+});
+
+// 担当者・管理者候補を test_attribute テーブルの mail1〜mail8 から取得
+app.get("/api/case-management/member-options", async (_req, res) => {
+  const databaseId = process.env.NOTION_TEST_ATTRIBUTE_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ members: [] });
+  }
+  try {
+    const database = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.json({ members: [] });
+
+    const response: any = await withNotionRetry("dataSources.query", () =>
+      notion!.dataSources.query({ data_source_id: dataSourceId, page_size: 200 } as any),
+    );
+    const pages = response?.results ?? [];
+    const mailKeys = ["mail1", "mail2", "mail3", "mail4", "mail5", "mail6", "mail7", "mail8"];
+    const set = new Set<string>();
+    for (const page of pages) {
+      const props = page?.properties ?? {};
+      for (const key of mailKeys) {
+        const val = propertyToPlainText(props[key]).trim();
+        if (val) set.add(val);
+      }
+    }
+    return res.json({ members: Array.from(set).sort() });
+  } catch (error) {
+    console.error("Member options error:", error);
+    return res.json({ members: [] });
   }
 });
 
