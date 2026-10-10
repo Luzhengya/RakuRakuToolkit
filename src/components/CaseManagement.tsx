@@ -24,12 +24,26 @@ interface ChildCase {
   actualTotal: string;
   testTotalCount: string;
   bugCount: string;
+  testBlockedCount: string;
+  pendingConfirmCount: string;
+  unexpectedNgCount: string;
+  japanCaseCount: string;
+  japanBugCount: string;
   tcStartDate: string;
   tcDesignCompleteDate: string;
   tcExecutionCompleteDate: string;
   actualStartDate: string;
   actualDesignCompleteDate: string;
   actualExecutionCompleteDate: string;
+  developmentEffort: string;
+  designEstimate: string;
+  implementationEstimate: string;
+  executionEstimate: string;
+  reviewEstimate: string;
+  designActual: string;
+  implActual: string;
+  execActual: string;
+  reviewActual: string;
 }
 
 interface ParentNode {
@@ -535,6 +549,46 @@ function CreateForm({ saving, error, onSave, onCancel }: {
   );
 }
 
+type FieldDef = { key: string; label: string; type: 'text' | 'date' | 'number' | 'select'; span?: boolean };
+
+const SCHEDULE_FIELDS: FieldDef[] = [
+  { key: 'projectName', label: '案件名', type: 'text', span: true },
+  { key: 'status', label: '状態', type: 'select' },
+  { key: 'assignee', label: '担当者', type: 'text' },
+  { key: 'tcStartDate', label: 'TC開始予定日', type: 'date' },
+  { key: 'actualStartDate', label: '実際開始日', type: 'date' },
+  { key: 'tcDesignCompleteDate', label: 'TC設計書完了予定日', type: 'date' },
+  { key: 'actualDesignCompleteDate', label: '実際設計書完了日', type: 'date' },
+  { key: 'tcExecutionCompleteDate', label: 'TC実施完了予定日', type: 'date' },
+  { key: 'actualExecutionCompleteDate', label: '実際実施完了日', type: 'date' },
+];
+
+const EFFORT_FIELDS: FieldDef[] = [
+  { key: 'estimateTotal', label: '見積総', type: 'number' },
+  { key: 'actualTotal', label: '実績総', type: 'number' },
+  { key: 'developmentEffort', label: '開発工数', type: 'number' },
+  { key: 'designEstimate', label: '工数見積(設計書)', type: 'number' },
+  { key: 'designActual', label: '工数実績(設計書)', type: 'number' },
+  { key: 'implementationEstimate', label: '工数見積(実装)', type: 'number' },
+  { key: 'implActual', label: '工数実績(実装)', type: 'number' },
+  { key: 'executionEstimate', label: '工数見積(実施)', type: 'number' },
+  { key: 'execActual', label: '工数実績(実施)', type: 'number' },
+  { key: 'reviewEstimate', label: 'Review見積工数', type: 'number' },
+  { key: 'reviewActual', label: 'Review実績工数', type: 'number' },
+];
+
+const TEST_FIELDS: FieldDef[] = [
+  { key: 'testTotalCount', label: 'Test総件数', type: 'number' },
+  { key: 'bugCount', label: 'NG数', type: 'number' },
+  { key: 'testBlockedCount', label: 'Test不可', type: 'number' },
+  { key: 'pendingConfirmCount', label: '確認中件数', type: 'number' },
+  { key: 'unexpectedNgCount', label: '想定外NG数', type: 'number' },
+  { key: 'japanCaseCount', label: '日本側case数', type: 'number' },
+  { key: 'japanBugCount', label: '日本側NG数', type: 'number' },
+];
+
+const ALL_EDIT_FIELDS = [...SCHEDULE_FIELDS, ...EFFORT_FIELDS, ...TEST_FIELDS];
+
 function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
   item: ChildCase;
   statusOptions: string[];
@@ -543,44 +597,57 @@ function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
   onSave: (fields: Record<string, string>) => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState({
-    projectName: item.projectName,
-    status: item.status,
-    tcStartDate: item.tcStartDate,
-    tcDesignCompleteDate: item.tcDesignCompleteDate,
-    tcExecutionCompleteDate: item.tcExecutionCompleteDate,
+  const [draft, setDraft] = useState<Record<string, string>>(() => {
+    const d: Record<string, string> = {};
+    for (const f of ALL_EDIT_FIELDS) d[f.key] = (item as any)[f.key] ?? '';
+    return d;
   });
 
   useEffect(() => {
-    setDraft({
-      projectName: item.projectName,
-      status: item.status,
-      tcStartDate: item.tcStartDate,
-      tcDesignCompleteDate: item.tcDesignCompleteDate,
-      tcExecutionCompleteDate: item.tcExecutionCompleteDate,
-    });
+    const d: Record<string, string> = {};
+    for (const f of ALL_EDIT_FIELDS) d[f.key] = (item as any)[f.key] ?? '';
+    setDraft(d);
   }, [item]);
 
   const changed = useMemo(() => {
     const diff: Record<string, string> = {};
-    if (draft.projectName !== item.projectName) diff.projectName = draft.projectName;
-    if (draft.status !== item.status) diff.status = draft.status;
-    if (draft.tcStartDate !== item.tcStartDate) diff.tcStartDate = draft.tcStartDate;
-    if (draft.tcDesignCompleteDate !== item.tcDesignCompleteDate) diff.tcDesignCompleteDate = draft.tcDesignCompleteDate;
-    if (draft.tcExecutionCompleteDate !== item.tcExecutionCompleteDate) diff.tcExecutionCompleteDate = draft.tcExecutionCompleteDate;
+    for (const f of ALL_EDIT_FIELDS) {
+      if (draft[f.key] !== ((item as any)[f.key] ?? '')) diff[f.key] = draft[f.key];
+    }
     return diff;
   }, [draft, item]);
 
-  const FIELDS: { key: keyof typeof draft; label: string; type: 'text' | 'date' | 'select' }[] = [
-    { key: 'projectName', label: '案件名', type: 'text' },
-    { key: 'status', label: '状態', type: 'select' },
-    { key: 'tcStartDate', label: 'TC開始予定日', type: 'date' },
-    { key: 'tcDesignCompleteDate', label: 'TC設計書完了予定日', type: 'date' },
-    { key: 'tcExecutionCompleteDate', label: 'TC実施完了予定日', type: 'date' },
-  ];
+  const set = (key: string, value: string) => setDraft((p) => ({ ...p, [key]: value }));
+
+  const renderField = (f: FieldDef) => (
+    <div key={f.key} className={f.span ? 'md:col-span-2' : ''}>
+      <label className="block text-[11px] font-medium text-neutral-500 mb-1">{f.label}</label>
+      {f.type === 'select' ? (
+        <select
+          value={draft[f.key]}
+          onChange={(e) => set(f.key, e.target.value)}
+          className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
+        >
+          <option value="">-</option>
+          {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : (
+        <input
+          type={f.type === 'number' ? 'text' : f.type}
+          inputMode={f.type === 'number' ? 'decimal' : undefined}
+          value={draft[f.key]}
+          onChange={(e) => set(f.key, e.target.value)}
+          className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
+        />
+      )}
+    </div>
+  );
+
+  const sectionCls = 'space-y-2';
+  const headingCls = 'text-xs font-bold text-neutral-600 border-b border-neutral-100 pb-1';
 
   return (
-    <div className="mt-4 bg-white border border-neutral-200 rounded-xl shadow-sm p-4 space-y-3">
+    <div className="mt-4 bg-white border border-neutral-200 rounded-xl shadow-sm p-4 space-y-4">
       <div className="flex items-center justify-between">
         <h4 className="text-sm font-bold text-neutral-800">案件編集</h4>
         <button onClick={onCancel} className="p-1 rounded hover:bg-neutral-100 text-neutral-400">
@@ -588,29 +655,19 @@ function EditPanel({ item, statusOptions, saving, error, onSave, onCancel }: {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {FIELDS.map((f) => (
-          <div key={f.key} className={f.key === 'projectName' ? 'md:col-span-2' : ''}>
-            <label className="block text-[11px] font-medium text-neutral-500 mb-1">{f.label}</label>
-            {f.type === 'select' ? (
-              <select
-                value={draft[f.key]}
-                onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
-                className="w-full px-3 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
-              >
-                <option value="">-</option>
-                {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
-            ) : (
-              <input
-                type={f.type}
-                value={draft[f.key]}
-                onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
-                className="w-full px-3 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
-              />
-            )}
-          </div>
-        ))}
+      <div className={sectionCls}>
+        <h5 className={headingCls}>スケジュール</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{SCHEDULE_FIELDS.map(renderField)}</div>
+      </div>
+
+      <div className={sectionCls}>
+        <h5 className={headingCls}>工数</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{EFFORT_FIELDS.map(renderField)}</div>
+      </div>
+
+      <div className={sectionCls}>
+        <h5 className={headingCls}>テスト結果</h5>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{TEST_FIELDS.map(renderField)}</div>
       </div>
 
       {error && (
