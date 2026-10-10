@@ -5,6 +5,7 @@ import {
   LayoutGrid,
   FilePen,
   ClipboardList,
+  FolderTree,
   Newspaper,
   Loader2,
   ExternalLink,
@@ -106,6 +107,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <ClipboardList className="text-emerald-600" size={24} />,
       onClick: () => onSelectTool('testcase-library'),
+    },
+    {
+      id: 'case-management',
+      title: '案件管理',
+      description: '案件の新規作成・編集・削除をツリー形式で管理します。',
+      category: '管理类',
+      icon: <FolderTree className="text-orange-600" size={24} />,
+      onClick: () => onSelectTool('case-management'),
     },
     {
       id: 'data-collection',

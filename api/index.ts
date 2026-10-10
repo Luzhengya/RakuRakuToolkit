@@ -3260,6 +3260,289 @@ async function queryAllJijiItems(databaseId: string): Promise<JijiItem[]> {
   return pages.map(parseJijiItem);
 }
 
+// ── 案件管理 (Case Management) ───────────────────────────────────────
+// 進捗管理 DB の親子構造をツリー形式で返し、子案件の CRUD を提供する。
+
+app.get("/api/case-management/tree", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    const allItems = await queryAllProgressItems(databaseId);
+    const byId = new Map(allItems.map((it) => [it.id, it]));
+
+    // 親: childProjectIds が空でない行
+    const parents = allItems.filter((it) => it.childProjectIds.length > 0);
+
+    const tree = parents.map((parent) => {
+      const children = parent.childProjectIds
+        .map((id) => byId.get(id))
+        .filter((c): c is ProgressItem => !!c && c.childProjectIds.length === 0)
+        .map((c) => ({
+          id: c.id,
+          projectName: c.projectName,
+          status: c.status,
+          assignee: c.assignee,
+          month: c.month,
+          system: c.system,
+          estimateTotal: c.estimateTotal,
+          actualTotal: c.actualTotal,
+          testTotalCount: c.testTotalCount,
+          bugCount: c.bugCount,
+          tcStartDate: c.tcStartDate,
+          tcDesignCompleteDate: c.tcDesignCompleteDate,
+          tcExecutionCompleteDate: c.tcExecutionCompleteDate,
+          actualStartDate: c.actualStartDate,
+          actualDesignCompleteDate: c.actualDesignCompleteDate,
+          actualExecutionCompleteDate: c.actualExecutionCompleteDate,
+        }));
+      return {
+        id: parent.id,
+        projectName: parent.projectName,
+        system: parent.system,
+        month: parent.month,
+        status: parent.status,
+        childCount: children.length,
+        children,
+      };
+    });
+
+    // system → month 順でソート
+    tree.sort((a, b) => a.system.localeCompare(b.system) || a.month.localeCompare(b.month));
+
+    return res.json({ tree });
+  } catch (error) {
+    console.error("Case management tree error:", error);
+    return res.status(500).json({ error: "Failed to load case tree" });
+  }
+});
+
+app.post("/api/case-management/create", async (req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { parentId, projectName, system, month } = req.body ?? {};
+  if (!parentId || !projectName) {
+    return res.status(400).json({ error: "parentId and projectName are required" });
+  }
+
+  try {
+    // データソースID取得
+    const database = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) {
+      return res.status(500).json({ error: "No data source found" });
+    }
+
+    // 親の存在確認
+    const parentPage: any = await withNotionRetry("pages.retrieve", () =>
+      notion!.pages.retrieve({ page_id: parentId }),
+    );
+    const parentProps = parentPage?.properties ?? {};
+
+    // 子ページ作成
+    const props: Record<string, any> = {
+      "案件名": { title: [{ type: "text", text: { content: projectName } }] },
+    };
+    if (system) props["System"] = { select: { name: system } };
+    if (month) props["月次"] = { select: { name: month } };
+
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties: props,
+      } as any),
+    );
+
+    // 親の relation に新しい子を追加
+    const existingChildIds = extractChildProjectIds(parentProps);
+    const relationPropName = Object.keys(parentProps).find((k) => {
+      const n = k.toLowerCase();
+      return n.includes("子级") || n.includes("子項目") || n.includes("sub");
+    }) || "子级 项目";
+
+    await withNotionRetry("pages.update (parent relation)", () =>
+      notion!.pages.update({
+        page_id: parentId,
+        properties: {
+          [relationPropName]: {
+            relation: [...existingChildIds.map((id) => ({ id })), { id: created.id }],
+          },
+        } as any,
+      }),
+    );
+
+    invalidateProgressCache();
+    return res.json({ id: created.id, projectName });
+  } catch (error) {
+    console.error("Case management create error:", error);
+    return res.status(500).json({ error: "Failed to create case" });
+  }
+});
+
+app.post("/api/case-management/:id/update", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { fields } = req.body ?? {};
+  if (!fields || typeof fields !== "object" || Object.keys(fields).length === 0) {
+    return res.status(400).json({ error: "fields object is required" });
+  }
+
+  const FIELD_MAP: Record<string, string[]> = {
+    projectName: ["案件名"],
+    status: ["状態"],
+    system: ["System"],
+    month: ["月次"],
+    assignee: ["担当者", "担当"],
+    tcStartDate: ["TC開始予定日"],
+    tcDesignCompleteDate: ["TC設計書完了予定日"],
+    tcExecutionCompleteDate: ["TC実施完了予定日"],
+  };
+
+  try {
+    const page: any = await withNotionRetry("pages.retrieve", () =>
+      notion!.pages.retrieve({ page_id: req.params.id }),
+    );
+    const properties = page?.properties ?? {};
+    const updates: Record<string, any> = {};
+
+    for (const [key, value] of Object.entries(fields)) {
+      const names = FIELD_MAP[key];
+      if (!names) continue;
+
+      if (key === "projectName") {
+        updates["案件名"] = { title: [{ type: "text", text: { content: String(value) } }] };
+        continue;
+      }
+
+      const propName = names.find((n) => properties[n]) ?? names[0];
+      const prop = properties[propName];
+      if (prop) {
+        updates[propName] = buildUpdatableProperty(prop, String(value), propName);
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No valid fields to update" });
+    }
+
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, properties: updates }),
+    );
+    invalidateProgressCache();
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Case management update error:", error);
+    return res.status(500).json({ error: "Failed to update case" });
+  }
+});
+
+app.delete("/api/case-management/:id", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    await withNotionRetry("pages.update (archive)", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    invalidateProgressCache();
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Case management delete error:", error);
+    return res.status(500).json({ error: "Failed to archive case" });
+  }
+});
+
+// 進捗DBの状態選択肢を返す (案件作成/編集ダイアログで利用)
+app.get("/api/case-management/status-options", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ options: [] });
+  }
+  try {
+    const database = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.json({ options: [] });
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const prop = ds?.properties?.["状態"];
+    if (!prop || prop.type !== "status") return res.json({ options: [] });
+    const options: string[] = (prop.status?.options ?? []).map((o: any) => o.name).filter(Boolean);
+    return res.json({ options });
+  } catch {
+    return res.json({ options: [] });
+  }
+});
+
+// System 選択肢を返す (親案件作成で利用)
+app.get("/api/case-management/system-options", async (_req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ options: [] });
+  }
+  try {
+    const database = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.json({ options: [] });
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const prop = ds?.properties?.["System"];
+    if (!prop || prop.type !== "select") return res.json({ options: [] });
+    const options: string[] = (prop.select?.options ?? []).map((o: any) => o.name).filter(Boolean);
+    return res.json({ options });
+  } catch {
+    return res.json({ options: [] });
+  }
+});
+
+// 親案件を新規作成 (System + 本番日)
+app.post("/api/case-management/create-parent", async (req, res) => {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { system, releaseDate } = req.body ?? {};
+  if (!system || !releaseDate) {
+    return res.status(400).json({ error: "system and releaseDate are required" });
+  }
+
+  try {
+    const database = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) {
+      return res.status(500).json({ error: "No data source found" });
+    }
+
+    const props: Record<string, any> = {
+      "案件名": { title: [{ type: "text", text: { content: `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}` } }] },
+      "System": { select: { name: system } },
+      "本番日": { date: { start: releaseDate } },
+    };
+
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties: props,
+      } as any),
+    );
+
+    invalidateProgressCache();
+    return res.json({ id: created.id, system, releaseDate });
+  } catch (error) {
+    console.error("Case management create-parent error:", error);
+    return res.status(500).json({ error: "Failed to create parent case" });
+  }
+});
+
 app.get("/api/jiji-list", async (_req, res) => {
   const databaseId = process.env.NOTION_JIJI_DATABASE_ID;
   if (!notion || !databaseId) {
