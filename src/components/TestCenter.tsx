@@ -38,6 +38,9 @@ import { fetchBugChildrenMap, inlineChildImages } from './bugListPdf';
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  CartesianGrid,
   XAxis,
   YAxis,
   Tooltip,
@@ -94,6 +97,11 @@ type OverviewItem = {
   projectName: string;
   bugCount: string;
   testTotalCount: string;
+  estimateTotal: string;
+  actualTotal: string;
+  unexpectedNgCount: string;
+  japanNgCount: string;
+  tcNgCount: string;
 };
 
 const OVERVIEW_CACHE_KEY = 'testcenter:overview:v1';
@@ -1538,6 +1546,15 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [overviewUpdatedAt, setOverviewUpdatedAt] = useState<number | null>(initialOverview?.updatedAt ?? null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [kpiTargets, setKpiTargets] = useState<{ first: { label: string; value: string }[]; second: { label: string; value: string }[] }>({ first: [], second: [] });
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/config/kpi-targets')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((d) => { if (alive && d) setKpiTargets({ first: d.first ?? [], second: d.second ?? [] }); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const initialAreaUpdatedAtMap = useMemo<Record<string, number>>(() => {
     const map: Record<string, number> = {};
     const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp'];
@@ -1843,12 +1860,51 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const caseCount = filteredOverview.length;
     const bugTotal = filteredOverview.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
     const systemSet = new Set(filteredOverview.map((item) => item.areaId));
-    const doneCount = filteredOverview.filter((item) => item.status.trim() === '完了').length;
+    const doneCount = filteredOverview.filter((item) => isCompletedStatus(item.status.trim())).length;
     const inProgressCount = filteredOverview.filter((item) => item.status.trim() === '進行中').length;
     const blockedCount = filteredOverview.filter((item) => item.status.trim() === 'ブロック').length;
     const doneRate = caseCount > 0 ? Math.round((doneCount / caseCount) * 100) : 0;
     return { caseCount, bugTotal, systemCount: systemSet.size, doneCount, inProgressCount, blockedCount, doneRate };
   }, [filteredOverview]);
+
+  const kpiActuals = useMemo(() => {
+    const now = new Date();
+    const curMonth = now.getMonth() + 1;
+    const curYear = now.getFullYear();
+    const isFirst = curMonth >= 2 && curMonth <= 7;
+    const halfMonths = new Set<string>();
+    if (isFirst) {
+      for (const m of [2, 3, 4, 5, 6, 7]) halfMonths.add(`${curYear}${String(m).padStart(2, '0')}`);
+    } else {
+      for (const m of [8, 9, 10, 11, 12]) halfMonths.add(`${curYear}${String(m).padStart(2, '0')}`);
+      halfMonths.add(`${curYear + 1}01`);
+    }
+    let caseCount = 0, testSum = 0, ngSum = 0, unexpectedNgSum = 0, actualSum = 0, estimateSum = 0, japanNgSum = 0, tcNgSum = 0;
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key || !halfMonths.has(key)) continue;
+      caseCount++;
+      testSum += parseNumber(item.testTotalCount);
+      ngSum += parseNumber(item.bugCount);
+      unexpectedNgSum += parseNumber(item.unexpectedNgCount ?? '');
+      actualSum += parseNumber(item.actualTotal ?? '');
+      estimateSum += parseNumber(item.estimateTotal ?? '');
+      japanNgSum += parseNumber(item.japanNgCount ?? '');
+      tcNgSum += parseNumber(item.tcNgCount ?? '');
+    }
+    const fmt = (v: number) => Number.isInteger(v) ? String(v) : v.toFixed(1);
+    const leakDen = tcNgSum + japanNgSum;
+    return new Map<string, string>([
+      ['案件数(総)', String(caseCount)],
+      ['総テスト件数', String(testSum)],
+      ['総NG件数', String(ngSum)],
+      ['NG率(総)', testSum > 0 ? (ngSum / testSum * 100).toFixed(1) + '%' : '-'],
+      ['NG流出率(総)', leakDen > 0 ? (japanNgSum / leakDen * 100).toFixed(1) + '%' : '-'],
+      ['想定外NG数(総)', String(unexpectedNgSum)],
+      ['効率(総)', actualSum > 0 ? (testSum / actualSum).toFixed(2) : '-'],
+      ['見積対実績差分', fmt(actualSum - estimateSum)],
+    ]);
+  }, [overviewItems]);
 
   const monthlyBugSeries = useMemo(() => {
     const buckets = new Map<number, number>();
@@ -1864,18 +1920,21 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     return Array.from(buckets.entries()).map(([month, bug]) => ({ month, bug }));
   }, [overviewItems, filterYear]);
 
-  const systemDistribution = useMemo(() => {
-    const counts = new Map<AreaId, number>();
-    for (const item of filteredOverview) counts.set(item.areaId, (counts.get(item.areaId) ?? 0) + 1);
-    return AREAS
-      .map((area) => ({
-        areaId: area.id,
-        label: area.title[lang].replace(/エリア$|区域$/, ''),
-        count: counts.get(area.id) ?? 0,
-      }))
-      .filter((row) => row.count > 0)
-      .sort((a, b) => b.count - a.count);
-  }, [filteredOverview, lang]);
+  const monthlyCaseSeries = useMemo(() => {
+    const buckets = new Map<number, { total: number; done: number }>();
+    for (let m = 1; m <= 12; m++) buckets.set(m, { total: 0, done: 0 });
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key) continue;
+      const y = Number(key.slice(0, 4));
+      if (y !== filterYear) continue;
+      const m = Number(key.slice(4, 6));
+      const slot = buckets.get(m)!;
+      slot.total += 1;
+      if (isCompletedStatus(item.status.trim())) slot.done += 1;
+    }
+    return Array.from(buckets.entries()).map(([month, v]) => ({ month: `${month}月`, total: v.total, done: v.done }));
+  }, [overviewItems, filterYear]);
 
   const statusDistribution = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1903,7 +1962,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       if (filterMonth === 'all' || m === filterMonth) {
         slot.caseCount += 1;
         slot.bugTotal += bug;
-        if (item.status.trim() === '完了') slot.doneCount += 1;
+        if (isCompletedStatus(item.status.trim())) slot.doneCount += 1;
       }
       slot.series[m - 1] += 1;
       slot.bugSeries[m - 1] += bug;
@@ -2606,7 +2665,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       <tbody className="divide-y divide-neutral-100">
                         {currentItems.map((item) => {
                           const fmtDate = (d: string) => d ? d.replace(/^\d{4}-/, '').replace('-', '/') : '-';
-                          const statusColor = item.status.trim() === '完了' ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500';
+                          const statusColor = isCompletedStatus(item.status.trim()) ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500';
                           return (
                             <tr key={item.id} className="hover:bg-neutral-50/50">
                               <td className="px-3 py-2.5">
@@ -2645,7 +2704,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     </div>
                     <div>
                       <p className="text-[11px] text-neutral-400 font-medium">完了</p>
-                      <p className="text-xl font-bold text-emerald-600">{currentItems.filter((i) => i.status.trim() === '完了').length}</p>
+                      <p className="text-xl font-bold text-emerald-600">{currentItems.filter((i) => isCompletedStatus(i.status.trim())).length}</p>
                     </div>
                     <div>
                       <p className="text-[11px] text-neutral-400 font-medium">進行中</p>
@@ -2678,7 +2737,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                             className="h-4 w-4 rounded border-neutral-300"
                           />
                           <span className="text-sm font-semibold text-neutral-900 truncate">{item.projectName || '-'}</span>
-                          <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${item.status.trim() === '完了' ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500'}`}>{item.status || '-'}</span>
+                          <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${isCompletedStatus(item.status.trim()) ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500'}`}>{item.status || '-'}</span>
                         </div>
                         <ChevronDown size={16} className={`shrink-0 text-neutral-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       </button>
@@ -2872,7 +2931,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* ダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900">
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setBugListOpen(true); }}>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -2898,29 +2957,52 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={t('chartSystemDist')} iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="ガントチャート">
-              <div className="space-y-2.5 pt-1">
-                {systemDistribution.slice(0, 6).map((row, idx) => {
-                  const max = systemDistribution[0]?.count || 1;
-                  const palette = ['#f97316', '#3b82f6', '#8b5cf6', '#06b6d4', '#0ea5e9', '#ec4899'];
-                  return (
-                    <div key={row.areaId} className="flex items-center gap-2 text-xs">
-                      <span className="w-20 text-neutral-600 truncate" title={row.label}>{row.label}</span>
-                      <div className="flex-1 h-2 bg-neutral-100 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${(row.count / max) * 100}%`, backgroundColor: palette[idx % palette.length] }} />
-                      </div>
-                      <span className="w-7 text-right font-semibold text-neutral-700">{row.count}</span>
-                    </div>
-                  );
-                })}
-                {systemDistribution.length === 0 && (
-                  <p className="text-xs text-neutral-400 py-6 text-center">{t('noData')}</p>
-                )}
+            <DashboardCard title="月別 案件数推移" iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="詳細">
+              <div className="h-40 pt-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={monthlyCaseSeries} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" />
+                    <XAxis dataKey="month" tick={{ fontSize: 10 }} stroke="#a3a3a3" />
+                    <YAxis tick={{ fontSize: 10 }} stroke="#a3a3a3" allowDecimals={false} />
+                    <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                    <Line type="monotone" dataKey="total" name="案件数" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="done" name="完了数" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
             </DashboardCard>
 
-            <DashboardCard title={'案件一覧'} iconColor="bg-emerald-500" onClick={() => setCaseStatsOpen(true)} actionHint="案件一覧を開く">
-              <StatusDonut data={statusDistribution} noDataLabel={t('noData')} caseLabel={t('caseLabel')} />
+            <DashboardCard title="KPI 目標" iconColor="bg-indigo-500" badge={`FY ${filterYear}`} onClick={() => setCaseStatsOpen(true)} actionHint="詳細">
+              {(() => {
+                const now = new Date();
+                const m = now.getMonth() + 1;
+                const isFirst = m >= 2 && m <= 7;
+                const targets = isFirst ? kpiTargets.first : kpiTargets.second;
+                const halfLabel = isFirst ? '上期' : '下期';
+                if (targets.length === 0) {
+                  return <p className="text-xs text-neutral-400 py-6 text-center">{t('noData')}</p>;
+                }
+                return (
+                  <div className="space-y-1.5 pt-1">
+                    <p className="text-[10px] font-semibold text-indigo-500 tracking-wider">{halfLabel}目標</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {targets.map((tgt) => {
+                        const actual = kpiActuals.get(tgt.label);
+                        return (
+                          <div key={tgt.label} className="bg-indigo-50/60 rounded-lg px-2.5 py-2">
+                            <p className="text-[10px] text-indigo-400 font-medium truncate" title={tgt.label}>{tgt.label}</p>
+                            <p className="text-sm font-bold tabular-nums mt-0.5">
+                              <span className="text-indigo-900">{tgt.value}</span>
+                              {actual && <span className="text-neutral-400"> / </span>}
+                              {actual && <span className="text-neutral-600">{actual}</span>}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </DashboardCard>
           </div>
 

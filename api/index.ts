@@ -1507,15 +1507,39 @@ app.get("/api/test-center/overview", async (_req, res) => {
 
   try {
     const leaves = await resolveLeafCases(databaseId);
-    const overviewItems = leaves.map(({ item, areaId }) => ({
-      id: item.id,
-      areaId,
-      month: item.month,
-      status: item.status,
-      projectName: item.projectName,
-      bugCount: item.bugCount,
-      testTotalCount: item.testTotalCount,
-    }));
+
+    const achMap = new Map<string, AchievementItem>();
+    const achievementDbId = process.env.NOTION_ACHIEVEMENT_DATABASE_ID;
+    if (achievementDbId) {
+      try {
+        const achItems = await queryAllAchievementItems(achievementDbId);
+        for (const ach of achItems) {
+          for (const caseId of ach.relatedCaseIds) {
+            if (!achMap.has(caseId)) achMap.set(caseId, ach);
+          }
+        }
+      } catch (e) {
+        console.error("overview achievement join failed:", e);
+      }
+    }
+
+    const overviewItems = leaves.map(({ item, areaId }) => {
+      const ach = achMap.get(item.id);
+      return {
+        id: item.id,
+        areaId,
+        month: item.month,
+        status: item.status,
+        projectName: item.projectName,
+        bugCount: item.bugCount,
+        testTotalCount: item.testTotalCount,
+        estimateTotal: item.estimateTotal,
+        actualTotal: item.actualTotal,
+        unexpectedNgCount: item.unexpectedNgCount,
+        japanNgCount: ach?.japanNgCount ?? "",
+        tcNgCount: ach?.tcNgCount ?? "",
+      };
+    });
     return res.json({ items: overviewItems, total: overviewItems.length });
   } catch (error) {
     console.error("Test center overview error:", error);
