@@ -3577,8 +3577,21 @@ app.post("/api/case-management/create-parent", async (req, res) => {
       return res.status(500).json({ error: "No data source found" });
     }
 
+    const caseName = `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}`;
+
+    const existing: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        page_size: 1,
+        filter: { property: "案件名", title: { equals: caseName } },
+      }),
+    );
+    if ((existing?.results ?? []).length > 0) {
+      return res.status(409).json({ error: `「${caseName}」は既に存在します` });
+    }
+
     const props: Record<string, any> = {
-      "案件名": { title: [{ type: "text", text: { content: `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}` } }] },
+      "案件名": { title: [{ type: "text", text: { content: caseName } }] },
       "System": { select: { name: system } },
       "本番日": { date: { start: releaseDate } },
     };
