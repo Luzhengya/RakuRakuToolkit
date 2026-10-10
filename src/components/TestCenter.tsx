@@ -1541,6 +1541,15 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [overviewUpdatedAt, setOverviewUpdatedAt] = useState<number | null>(initialOverview?.updatedAt ?? null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [kpiTargets, setKpiTargets] = useState<{ first: { label: string; value: string }[]; second: { label: string; value: string }[] }>({ first: [], second: [] });
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/config/kpi-targets')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((d) => { if (alive && d) setKpiTargets({ first: d.first ?? [], second: d.second ?? [] }); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const initialAreaUpdatedAtMap = useMemo<Record<string, number>>(() => {
     const map: Record<string, number> = {};
     const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp'];
@@ -2904,7 +2913,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title="月別 案件数推移" iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="ガントチャート">
+            <DashboardCard title="月別 案件数推移" iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="詳細">
               <div className="h-40 pt-1">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={monthlyCaseSeries} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
@@ -2919,8 +2928,30 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title={'案件一覧'} iconColor="bg-emerald-500" onClick={() => setCaseStatsOpen(true)} actionHint="案件一覧を開く">
-              <StatusDonut data={statusDistribution} noDataLabel={t('noData')} caseLabel={t('caseLabel')} />
+            <DashboardCard title="KPI 目標" iconColor="bg-indigo-500" badge={`FY ${filterYear}`} onClick={() => setCaseStatsOpen(true)} actionHint="詳細">
+              {(() => {
+                const now = new Date();
+                const m = now.getMonth() + 1;
+                const isFirst = m >= 4 && m <= 9;
+                const targets = isFirst ? kpiTargets.first : kpiTargets.second;
+                const halfLabel = isFirst ? '上期' : '下期';
+                if (targets.length === 0) {
+                  return <p className="text-xs text-neutral-400 py-6 text-center">{t('noData')}</p>;
+                }
+                return (
+                  <div className="space-y-1.5 pt-1">
+                    <p className="text-[10px] font-semibold text-indigo-500 tracking-wider">{halfLabel}目標</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {targets.map((t) => (
+                        <div key={t.label} className="bg-indigo-50/60 rounded-lg px-2.5 py-2">
+                          <p className="text-[10px] text-indigo-400 font-medium truncate" title={t.label}>{t.label}</p>
+                          <p className="text-sm font-bold text-indigo-900 tabular-nums mt-0.5">{t.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </DashboardCard>
           </div>
 
