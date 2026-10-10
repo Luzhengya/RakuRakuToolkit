@@ -3480,26 +3480,21 @@ app.get("/api/case-management/status-options", async (_req, res) => {
   }
 });
 
-// System 選択肢を返す (親案件作成で利用)
+// System 選択肢を返す (親案件作成で利用 — 実データから重複排除)
 app.get("/api/case-management/system-options", async (_req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
     return res.json({ options: [] });
   }
   try {
-    const database = await withNotionRetry("databases.retrieve", () =>
-      notion!.databases.retrieve({ database_id: databaseId }),
-    );
-    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
-    if (!dataSourceId) return res.json({ options: [] });
-    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
-    const prop = ds?.properties?.["System"];
-    if (!prop || prop.type !== "select") return res.json({ options: [] });
     const EXCLUDED_SYSTEMS = new Set(["月次改善タスク", "改善対応", "管理作業", "脆弱性診断", "全体システム"]);
-    const options: string[] = (prop.select?.options ?? [])
-      .map((o: any) => o.name)
-      .filter((n: string) => n && !EXCLUDED_SYSTEMS.has(n));
-    return res.json({ options });
+    const items = await queryAllProgressItems(databaseId);
+    const set = new Set<string>();
+    for (const it of items) {
+      const s = (it.system || "").trim();
+      if (s && !EXCLUDED_SYSTEMS.has(s)) set.add(s);
+    }
+    return res.json({ options: Array.from(set).sort() });
   } catch {
     return res.json({ options: [] });
   }
