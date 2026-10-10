@@ -458,6 +458,8 @@ function propertyToPlainText(property: any): string {
       return "";
     case "date":
       return property.date?.start ?? "";
+    case "email":
+      return property.email ?? "";
     case "people":
       return Array.isArray(property.people)
         ? property.people.map((person: any) => person?.name ?? person?.id).filter(Boolean).join(", ")
@@ -465,6 +467,14 @@ function propertyToPlainText(property: any): string {
     default:
       return "";
   }
+}
+
+function peopleToEmails(property: any): string {
+  if (!property || property.type !== "people" || !Array.isArray(property.people)) return "";
+  return property.people
+    .map((p: any) => p?.person?.email ?? "")
+    .filter(Boolean)
+    .join(", ");
 }
 
 function pickProperty(properties: Record<string, any>, names: string[]): any {
@@ -569,8 +579,8 @@ function parseProgressItem(page: any): ProgressItem {
       findDateProperty(properties, ["実際実施完了日", "実績実施完了日", "実際TC実施完了日", "TC実際実施完了日"])
     ),
     system: propertyToPlainText(properties["System"]),
-    assignee: propertyToPlainText(pickProperty(properties, ["担当者", "担当"])),
-    manager: propertyToPlainText(pickProperty(properties, ["管理者", "管理"])),
+    assignee: peopleToEmails(pickProperty(properties, ["担当者", "担当"])) || propertyToPlainText(pickProperty(properties, ["担当者", "担当"])),
+    manager: peopleToEmails(pickProperty(properties, ["管理者", "管理"])) || propertyToPlainText(pickProperty(properties, ["管理者", "管理"])),
     designActual: propertyToPlainText(pickProperty(properties, ["工数実績(設計書)", "工数実績(設計書) ", "工数実績(設計)"])),
     implActual: propertyToPlainText(pickProperty(properties, ["工数実績(実装)", "工数実績(実装) "])),
     execActual: propertyToPlainText(pickProperty(properties, ["工数実績(実施)", "工数実績(実施) "])),
@@ -3411,6 +3421,7 @@ app.post("/api/case-management/:id/update", async (req, res) => {
     const properties = page?.properties ?? {};
     const updates: Record<string, any> = {};
 
+    let workspaceUsers: any[] | null = null;
     for (const [key, value] of Object.entries(fields)) {
       const names = FIELD_MAP[key];
       if (!names) continue;
@@ -3422,7 +3433,19 @@ app.post("/api/case-management/:id/update", async (req, res) => {
 
       const propName = names.find((n) => properties[n]) ?? names[0];
       const prop = properties[propName];
-      if (prop) {
+      if (!prop) continue;
+
+      if (prop.type === "people") {
+        if (!workspaceUsers) {
+          const usersRes: any = await withNotionRetry("users.list", () => notion!.users.list({}));
+          workspaceUsers = usersRes?.results ?? [];
+        }
+        const emails = String(value).split(",").map((s: string) => s.trim()).filter(Boolean);
+        const userIds = emails
+          .map((email: string) => workspaceUsers!.find((u: any) => u?.person?.email === email)?.id)
+          .filter(Boolean);
+        updates[propName] = { people: userIds.map((id: string) => ({ id })) };
+      } else {
         updates[propName] = buildUpdatableProperty(prop, String(value), propName);
       }
     }
@@ -3499,6 +3522,38 @@ app.get("/api/case-management/system-options", async (_req, res) => {
     return res.json({ options });
   } catch {
     return res.json({ options: [] });
+  }
+});
+
+// 担当者・管理者候補を test_attribute テーブルの mail1〜mail8 から取得
+app.get("/api/case-management/member-options", async (_req, res) => {
+  const databaseId = process.env.NOTION_TEST_ATTRIBUTE_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ members: [] });
+  }
+  try {
+    const database = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.json({ members: [] });
+
+    const response: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({ data_source_id: dataSourceId, page_size: 200 }),
+    );
+    const pages = response?.results ?? [];
+    const set = new Set<string>();
+    for (const page of pages) {
+      const props = page?.properties ?? {};
+      const key = propertyToPlainText(props.key).trim();
+      if (!key.startsWith("mail")) continue;
+      const val = propertyToPlainText(props.value).trim();
+      if (val) set.add(val);
+    }
+    return res.json({ members: Array.from(set).sort() });
+  } catch (error) {
+    console.error("Member options error:", error);
+    return res.json({ members: [] });
   }
 });
 
