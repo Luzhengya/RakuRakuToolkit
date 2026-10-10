@@ -464,7 +464,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                   className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-neutral-300 text-neutral-500 text-sm hover:border-neutral-400 hover:text-neutral-700 transition-colors"
                 >
                   <Plus size={14} />
-                  新規親案件
+                  新規案件追加
                 </button>
               )}
             </div>
@@ -992,29 +992,43 @@ function CreateParentForm({ systemOptions, saving, error, onSave, onCancel }: {
   onCancel: () => void;
 }) {
   const [system, setSystem] = useState('');
+  const [customSystem, setCustomSystem] = useState('');
   const [releaseDate, setReleaseDate] = useState('');
+  const effectiveSystem = system === '__custom__' ? customSystem.trim() : system;
   return (
     <div className="space-y-2">
+      <label className="block text-[11px] font-medium text-neutral-500">システム</label>
       <select
         value={system}
-        onChange={(e) => setSystem(e.target.value)}
+        onChange={(e) => { setSystem(e.target.value); if (e.target.value !== '__custom__') setCustomSystem(''); }}
         className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
       >
-        <option value="">System を選択...</option>
+        <option value="">選択...</option>
         {systemOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+        <option value="__custom__">手動入力...</option>
       </select>
+      {system === '__custom__' && (
+        <input
+          type="text"
+          value={customSystem}
+          onChange={(e) => setCustomSystem(e.target.value)}
+          placeholder="システム名を入力..."
+          className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
+          autoFocus
+        />
+      )}
+      <label className="block text-[11px] font-medium text-neutral-500">本番日</label>
       <input
         type="date"
         value={releaseDate}
         onChange={(e) => setReleaseDate(e.target.value)}
         className="w-full px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
-        placeholder="本番日"
       />
       {error && <p className="text-xs text-red-500">{error}</p>}
       <div className="flex gap-2">
         <button
-          onClick={() => onSave(system, releaseDate)}
-          disabled={saving || !system || !releaseDate}
+          onClick={() => onSave(effectiveSystem, releaseDate)}
+          disabled={saving || !effectiveSystem || !releaseDate}
           className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
