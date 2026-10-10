@@ -39,12 +39,20 @@ interface LinkableBug {
 }
 
 interface ScreenshotItem {
+  id: string;
   file: File;
   preview: string;
   dataUrl: string;
   uploading: boolean;
   fileUploadId: string | null;
   error: string | null;
+}
+
+let screenshotSeq = 0;
+
+function safeBlobUrl(url: string): string {
+  if (url.startsWith('blob:') || url.startsWith('data:')) return url;
+  return '';
 }
 
 function pickDefault(options: string[], preferred: string): string {
@@ -162,12 +170,13 @@ export default function BugTransferForm({
 
   const uploadScreenshot = async (file: File, dataUrl?: string) => {
     const preview = URL.createObjectURL(file);
+    const id = `ss-${++screenshotSeq}`;
     const du = dataUrl ?? await new Promise<string>((resolve) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result as string);
       reader.readAsDataURL(file);
     });
-    const item: ScreenshotItem = { file, preview, dataUrl: du, uploading: true, fileUploadId: null, error: null };
+    const item: ScreenshotItem = { id, file, preview, dataUrl: du, uploading: true, fileUploadId: null, error: null };
     setScreenshots((prev) => [...prev, item]);
     try {
       const fd = new FormData();
@@ -177,12 +186,12 @@ export default function BugTransferForm({
       if (!res.ok) throw new Error((body as { error?: string }).error || 'アップロード失敗');
       const fid = (body as { fileUploadId: string }).fileUploadId;
       setScreenshots((prev) =>
-        prev.map((s) => (s.preview === preview ? { ...s, uploading: false, fileUploadId: fid } : s)),
+        prev.map((s) => (s.id === id ? { ...s, uploading: false, fileUploadId: fid } : s)),
       );
     } catch (e) {
       setScreenshots((prev) =>
         prev.map((s) =>
-          s.preview === preview ? { ...s, uploading: false, error: e instanceof Error ? e.message : 'アップロード失敗' } : s,
+          s.id === id ? { ...s, uploading: false, error: e instanceof Error ? e.message : 'アップロード失敗' } : s,
         ),
       );
     }
@@ -194,11 +203,11 @@ export default function BugTransferForm({
     }
   };
 
-  const removeScreenshot = (preview: string) => {
+  const removeScreenshot = (id: string) => {
     setScreenshots((prev) => {
-      const removed = prev.filter((s) => s.preview !== preview);
-      URL.revokeObjectURL(preview);
-      return removed;
+      const target = prev.find((s) => s.id === id);
+      if (target) URL.revokeObjectURL(target.preview);
+      return prev.filter((s) => s.id !== id);
     });
   };
 
@@ -226,16 +235,15 @@ export default function BugTransferForm({
 
   const onEditorDone = (editedDataUrl: string) => {
     if (editingIndex !== null) {
-      // re-edit existing screenshot: replace it
       const old = screenshots[editingIndex];
       URL.revokeObjectURL(old.preview);
       const file = dataUrlToFile(editedDataUrl, `screenshot-${Date.now()}.png`);
       const preview = URL.createObjectURL(file);
-      const item: ScreenshotItem = { file, preview, dataUrl: editedDataUrl, uploading: true, fileUploadId: null, error: null };
-      setScreenshots((prev) => prev.map((s, i) => i === editingIndex ? item : s));
+      const id = old.id;
+      const item: ScreenshotItem = { id, file, preview, dataUrl: editedDataUrl, uploading: true, fileUploadId: null, error: null };
+      setScreenshots((prev) => prev.map((s) => s.id === id ? item : s));
       setEditingIndex(null);
       setEditorImage(null);
-      // upload
       const fd = new FormData();
       fd.append('file', file);
       fetch('/api/testcase/upload-bug-image', { method: 'POST', body: fd })
@@ -243,13 +251,12 @@ export default function BugTransferForm({
           const body = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error((body as { error?: string }).error || 'アップロード失敗');
           const fid = (body as { fileUploadId: string }).fileUploadId;
-          setScreenshots((prev) => prev.map((s) => s.preview === preview ? { ...s, uploading: false, fileUploadId: fid } : s));
+          setScreenshots((prev) => prev.map((s) => s.id === id ? { ...s, uploading: false, fileUploadId: fid } : s));
         })
         .catch((e) => {
-          setScreenshots((prev) => prev.map((s) => s.preview === preview ? { ...s, uploading: false, error: e instanceof Error ? e.message : 'アップロード失敗' } : s));
+          setScreenshots((prev) => prev.map((s) => s.id === id ? { ...s, uploading: false, error: e instanceof Error ? e.message : 'アップロード失敗' } : s));
         });
     } else {
-      // new screenshot from capture
       const file = dataUrlToFile(editedDataUrl, `screenshot-${Date.now()}.png`);
       uploadScreenshot(file, editedDataUrl);
       setEditorImage(null);
@@ -484,9 +491,9 @@ export default function BugTransferForm({
                 {screenshots.length > 0 && (
                   <div className="flex flex-wrap gap-2 pt-1">
                     {screenshots.map((s, idx) => (
-                      <div key={s.preview} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-50 cursor-pointer"
+                      <div key={s.id} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-50 cursor-pointer"
                         onClick={() => !s.uploading && openEditor(idx)}>
-                        <img src={s.preview} alt="" className="w-full h-full object-cover" />
+                        <img src={safeBlobUrl(s.preview)} alt="" className="w-full h-full object-cover" />
                         {s.uploading && (
                           <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
                             <Loader2 size={16} className="animate-spin text-neutral-500" />
@@ -499,7 +506,7 @@ export default function BugTransferForm({
                         )}
                         <button
                           type="button"
-                          onClick={(e) => { e.stopPropagation(); removeScreenshot(s.preview); }}
+                          onClick={(e) => { e.stopPropagation(); removeScreenshot(s.id); }}
                           className="absolute top-0.5 right-0.5 rounded-full bg-black/50 text-white p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
                         >
                           <X size={12} />
