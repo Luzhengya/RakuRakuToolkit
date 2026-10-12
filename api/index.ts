@@ -3282,8 +3282,10 @@ app.get("/api/case-management/tree", async (_req, res) => {
     const allItems = await queryAllProgressItems(databaseId);
     const byId = new Map(allItems.map((it) => [it.id, it]));
 
-    // 親: childProjectIds が空でない行
-    const parents = allItems.filter((it) => it.childProjectIds.length > 0);
+    // 子として参照されている ID を収集
+    const allChildIds = new Set(allItems.flatMap((it) => it.childProjectIds));
+    // 親: 子を持つ行、または他の親の子でない行 (新規作成直後の親含む)
+    const parents = allItems.filter((it) => it.childProjectIds.length > 0 || !allChildIds.has(it.id));
 
     const tree = parents.map((parent) => {
       const children = parent.childProjectIds
@@ -3318,8 +3320,8 @@ app.get("/api/case-management/tree", async (_req, res) => {
       };
     });
 
-    // system → month 順でソート
-    tree.sort((a, b) => a.system.localeCompare(b.system) || a.month.localeCompare(b.month));
+    // system → month 降順でソート (新しい月が先)
+    tree.sort((a, b) => a.system.localeCompare(b.system) || b.projectName.localeCompare(a.projectName));
 
     return res.json({ tree });
   } catch (error) {
@@ -3358,7 +3360,7 @@ app.post("/api/case-management/create", async (req, res) => {
     const props: Record<string, any> = {
       "案件名": { title: [{ type: "text", text: { content: projectName } }] },
     };
-    if (system) props["System"] = { select: { name: system } };
+    if (system) props["System"] = { multi_select: [{ name: system }] };
     if (month) props["月次"] = { select: { name: month } };
 
     const created: any = await withNotionRetry("pages.create", () =>
@@ -3503,52 +3505,42 @@ app.get("/api/case-management/status-options", async (_req, res) => {
   }
 });
 
-// System 選択肢を返す (親案件作成で利用)
+// System 選択肢を返す (親案件作成で利用) — 実データから重複排除して取得
 app.get("/api/case-management/system-options", async (_req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
     return res.json({ options: [] });
   }
   try {
-    const database = await withNotionRetry("databases.retrieve", () =>
-      notion!.databases.retrieve({ database_id: databaseId }),
-    );
-    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
-    if (!dataSourceId) return res.json({ options: [] });
-    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
-    const prop = ds?.properties?.["System"];
-    if (!prop || prop.type !== "select") return res.json({ options: [] });
-    const options: string[] = (prop.select?.options ?? []).map((o: any) => o.name).filter(Boolean);
+    const allItems = await queryAllProgressItems(databaseId);
+    const set = new Set<string>();
+    for (const item of allItems) {
+      if (item.system) set.add(item.system);
+    }
+    const options = Array.from(set).sort();
     return res.json({ options });
   } catch {
     return res.json({ options: [] });
   }
 });
 
-// 担当者・管理者候補を test_attribute テーブルの mail1〜mail8 から取得
+// 担当者・管理者候補を進捗データの実値から重複排除して取得
 app.get("/api/case-management/member-options", async (_req, res) => {
-  const databaseId = process.env.NOTION_TEST_ATTRIBUTE_DATABASE_ID;
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
     return res.json({ members: [] });
   }
   try {
-    const database = await withNotionRetry("databases.retrieve", () =>
-      notion!.databases.retrieve({ database_id: databaseId }),
-    );
-    const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
-    if (!dataSourceId) return res.json({ members: [] });
-
-    const response: any = await withNotionRetry("dataSources.query", () =>
-      (notion as any).dataSources.query({ data_source_id: dataSourceId, page_size: 200 }),
-    );
-    const pages = response?.results ?? [];
+    const allItems = await queryAllProgressItems(databaseId);
     const set = new Set<string>();
-    for (const page of pages) {
-      const props = page?.properties ?? {};
-      const key = propertyToPlainText(props.key).trim();
-      if (!key.startsWith("mail")) continue;
-      const val = propertyToPlainText(props.value).trim();
-      if (val) set.add(val);
+    for (const item of allItems) {
+      for (const field of [item.assignee, item.manager]) {
+        if (!field) continue;
+        for (const v of field.split(",")) {
+          const trimmed = v.trim();
+          if (trimmed) set.add(trimmed);
+        }
+      }
     }
     return res.json({ members: Array.from(set).sort() });
   } catch (error) {
@@ -3577,7 +3569,8 @@ app.post("/api/case-management/create-parent", async (req, res) => {
       return res.status(500).json({ error: "No data source found" });
     }
 
-    const caseName = `${system} ${releaseDate.replace(/-/g, "").slice(0, 6)}`;
+    const [, yy, mm] = releaseDate.match(/^\d{2}(\d{2})-(\d{2})/) ?? [];
+    const caseName = yy && mm ? `[${yy}/${mm}]${system}` : `${system}`;
 
     const existing: any = await withNotionRetry("dataSources.query", () =>
       (notion as any).dataSources.query({
@@ -3592,7 +3585,7 @@ app.post("/api/case-management/create-parent", async (req, res) => {
 
     const props: Record<string, any> = {
       "案件名": { title: [{ type: "text", text: { content: caseName } }] },
-      "System": { select: { name: system } },
+      "System": { multi_select: [{ name: system }] },
       "本番日": { date: { start: releaseDate } },
     };
 
