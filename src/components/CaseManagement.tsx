@@ -76,6 +76,19 @@ const STATUS_COLOR: Record<string, string> = {
   'ブロック': 'bg-red-50 text-red-700',
 };
 
+const EXCLUDED_SYSTEMS = new Set(['改善対応', '管理作業', '全体システム', '月次改善タスク']);
+
+function parseMonthKey(p: { month: string; projectName: string }): number {
+  const src = p.month || p.projectName;
+  // "2025年10月" or "2025/10" or "2025-10"
+  const m1 = src.match(/(\d{4})\D+(\d{1,2})/);
+  if (m1) return parseInt(m1[1], 10) * 100 + parseInt(m1[2], 10);
+  // "202510" (6-digit YYYYMM embedded anywhere)
+  const m2 = src.match(/(\d{4})(\d{2})/);
+  if (m2) return parseInt(m2[1], 10) * 100 + parseInt(m2[2], 10);
+  return 0;
+}
+
 type FieldDef = { key: string; label: string; type: 'text' | 'date' | 'number' | 'select' | 'multiselect'; span?: boolean };
 
 const SCHEDULE_FIELDS: FieldDef[] = [
@@ -187,10 +200,14 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
     const map = new Map<string, ParentNode[]>();
     for (const p of tree) {
       const sys = p.system || '(未設定)';
+      if (EXCLUDED_SYSTEMS.has(sys)) continue;
       if (!map.has(sys)) map.set(sys, []);
       map.get(sys)!.push(p);
     }
-    return Array.from(map.entries()).map(([system, parents]) => ({ system, parents }));
+    return Array.from(map.entries()).map(([system, parents]) => ({
+      system,
+      parents: parents.sort((a, b) => parseMonthKey(b) - parseMonthKey(a)),
+    }));
   }, [tree]);
 
   // 検索フィルタ
@@ -212,7 +229,6 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
 
   // 担当者ビュー用: 全子案件を担当者でグループ化
   type AssigneeCaseItem = ChildCase & { parentName: string; parentSystem: string; parentMonth: string };
-  const EXCLUDED_SYSTEMS = new Set(['改善対応', '管理作業', '全体システム', '月次改善タスク']);
   const assigneeMap = useMemo(() => {
     const map = new Map<string, AssigneeCaseItem[]>();
     for (const parent of tree) {
@@ -279,6 +295,9 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
         throw new Error((b as any).error || '作成に失敗しました');
       }
       setCreatingParent(false);
+      if (!systemOptions.includes(system)) {
+        setSystemOptions((prev) => [...prev, system]);
+      }
       await loadTree();
     } catch (e) {
       setFormError(e instanceof Error ? e.message : '作成に失敗しました');
@@ -528,7 +547,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                   className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-neutral-300 text-neutral-500 text-sm hover:border-neutral-400 hover:text-neutral-700 transition-colors"
                 >
                   <Plus size={14} />
-                  新規案件追加
+                  親案件追加
                 </button>
               )}
             </div>
