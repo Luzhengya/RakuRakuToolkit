@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useSubRoute } from '../hooks/useSubRoute';
 import {
   AlertCircle,
   ArrowLeft,
@@ -146,7 +147,9 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
   const [systemOptions, setSystemOptions] = useState<string[]>([]);
 
-  const [viewMode, setViewMode] = useState<'tree' | 'assignee'>('tree');
+  const [subRoute, setSubRoute] = useSubRoute();
+  const viewMode: 'tree' | 'assignee' = subRoute[0] === 'assignee' ? 'assignee' : 'tree';
+  const setViewMode = (m: 'tree' | 'assignee') => setSubRoute(m === 'tree' ? [] : [m]);
   const [selectedParentId, setSelectedParentId] = useState<string | null>(null);
   const [selectedAssignee, setSelectedAssignee] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
