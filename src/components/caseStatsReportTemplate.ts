@@ -280,16 +280,16 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   // 要確認案件サマリー: 番号付き・案件名/問題原因/理由を各行に (編集可)
   const confirmListHtml = meta.confirmCases.length
     ? `<p><b>【要確認案件 ${meta.confirmCases.length}件】</b></p>
-    <ol class="confirm-list">${meta.confirmCases
+    <div class="confirm-list">${meta.confirmCases
       .map(
-        (c) =>
-          `<li>
-        <div class="cc-name">${esc(c.name)}</div>
+        (c, i) =>
+          `<div class="cc-item">
+        <div class="cc-name">${i + 1}. ${esc(c.name)}</div>
         <div class="cc-line">問題原因: <span class="ng-text">${esc(c.labels.join('、'))}</span></div>
         <div class="cc-line">理由: ${esc(c.comment || '—')}</div>
-      </li>`
+      </div>`
       )
-      .join('')}</ol>`
+      .join('')}</div>`
     : '<p>要確認案件はありません。</p>';
 
   // インシデント対応の入力欄の下に付ける案件一覧。
@@ -451,8 +451,8 @@ export function buildCaseStatsReportHtml(groups: ReportSystemGroup[], meta: Case
   .summary-box { border:1px dashed #cbd5e1; border-radius:10px; background:#fafafa; min-height:80px; padding:14px; font-size:13px; margin-bottom:8px; }
   .summary-box:focus { outline:2px solid #93c5fd; background:#fff; }
   .summary-box p { margin:0 0 6px; }
-  .confirm-list { margin:0; padding-left:22px; }
-  .confirm-list li { padding:0; margin:0 0 14px; line-height:1.6; }
+  .confirm-list { margin:0; padding-left:0; }
+  .confirm-list .cc-item { padding:0; margin:0 0 14px; line-height:1.6; }
   .confirm-list .cc-name { font-weight:600; }
   .confirm-list .cc-line { padding-left:2px; }
   @media print {
