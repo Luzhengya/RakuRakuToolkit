@@ -589,6 +589,25 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     [periodRows, deselected]
   );
 
+  const filteredBugLeak = useMemo(() => {
+    if (!bugLeak) return null;
+    if (deselected.size === 0) return bugLeak;
+    const items = bugLeak.items.filter((b) => !deselected.has(b.system || '(未設定)'));
+    const sysMap = new Map<string, number>();
+    for (const b of items) {
+      const s = b.system || '(未設定)';
+      sysMap.set(s, (sysMap.get(s) ?? 0) + 1);
+    }
+    const bySystem = Array.from(sysMap, ([system, count]) => ({ system, count }));
+    return {
+      ...bugLeak,
+      total: items.length,
+      tcRelated: items.filter((b) => b.responsible).length,
+      bySystem,
+      items,
+    };
+  }, [bugLeak, deselected]);
+
   // 基本 KPI
   const kpi = useMemo(() => {
     const estimateSum = rows.reduce((s, r) => s + r.estimate, 0);
@@ -1340,7 +1359,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
       thresholds: th,
       confirmCases,
       // 入力の参照用。インシデント区画と同じ絞り込み結果をそのまま渡す
-      incidents: (bugLeak?.items ?? []).map((b) => ({
+      incidents: (filteredBugLeak?.items ?? []).map((b) => ({
         system: b.system,
         caseMonth: b.caseMonth,
         cmdb: b.cmdb,
@@ -1905,23 +1924,23 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           </button>
           {incidentOpen && (
           <div className="p-4 space-y-3">
-          {bugLeak ? (
+          {filteredBugLeak ? (
             <>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
                   <p className="text-[10px] text-neutral-400 font-semibold tracking-wider">総数</p>
-                  <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{bugLeak.total}</p>
+                  <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{filteredBugLeak.total}</p>
                 </div>
                 <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5">
                   <p className="text-[10px] text-neutral-400 font-semibold tracking-wider">テストセンター関連</p>
-                  <p className="text-xl font-bold text-red-600 mt-0.5 tabular-nums">{bugLeak.tcRelated}</p>
+                  <p className="text-xl font-bold text-red-600 mt-0.5 tabular-nums">{filteredBugLeak.tcRelated}</p>
                 </div>
               </div>
               <div>
                 <p className="text-xs font-semibold text-neutral-500 mb-1.5">システム別件数</p>
-                {bugLeak.bySystem.length > 0 ? (
+                {filteredBugLeak.bySystem.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
-                    {bugLeak.bySystem.map((s) => (
+                    {filteredBugLeak.bySystem.map((s) => (
                       <span key={s.system} className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-2.5 py-1 text-xs">
                         <span className="text-neutral-600">{s.system}</span>
                         <span className="font-bold text-neutral-900 tabular-nums">{s.count}</span>
@@ -1934,7 +1953,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
               </div>
 
               {/* 詳細テーブル */}
-              {bugLeak.items.length > 0 && (
+              {filteredBugLeak.items.length > 0 && (
                 <div className="overflow-x-auto border border-neutral-200 rounded-lg">
                   <table className="w-full border-collapse">
                     <thead>
@@ -1950,7 +1969,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                       </tr>
                     </thead>
                     <tbody>
-                      {bugLeak.items.map((b, i) => (
+                      {filteredBugLeak.items.map((b, i) => (
                         <tr key={i} className="hover:bg-neutral-50">
                           <td className={td0}>{b.system || '-'}</td>
                           <td className={td0}>{b.caseMonth || '-'}</td>
@@ -1986,10 +2005,10 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           )}
         </div>
 
-        {bugLeak && incidentIndex != null && (
+        {filteredBugLeak && incidentIndex != null && (
           <IncidentDetailDialog
-            rows={bugLeak.items}
-            fields={bugLeak.fields ?? {}}
+            rows={filteredBugLeak.items}
+            fields={filteredBugLeak.fields ?? {}}
             index={incidentIndex}
             onIndex={setIncidentIndex}
             onClose={() => setIncidentIndex(null)}
