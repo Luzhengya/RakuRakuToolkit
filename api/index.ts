@@ -409,6 +409,10 @@ type ProgressItem = {
   implActual: string;
   execActual: string;
   reviewActual: string;
+  releaseDate: string;
+  verificationDate: string;
+  desiredCompleteDate: string;
+  comment: string;
   childProjectIds: string[];
 };
 
@@ -585,6 +589,10 @@ function parseProgressItem(page: any): ProgressItem {
     implActual: propertyToPlainText(pickProperty(properties, ["工数実績(実装)", "工数実績(実装) "])),
     execActual: propertyToPlainText(pickProperty(properties, ["工数実績(実施)", "工数実績(実施) "])),
     reviewActual: propertyToPlainText(pickProperty(properties, ["review実績工数", "Review実績工数", "レビュー実績工数"])),
+    releaseDate: propertyToPlainText(findDateProperty(properties, ["本番日"])),
+    verificationDate: propertyToPlainText(findDateProperty(properties, ["検証日"])),
+    desiredCompleteDate: propertyToPlainText(findDateProperty(properties, ["完了希望日"])),
+    comment: propertyToPlainText(pickProperty(properties, ["コメント", "comment"])),
     childProjectIds,
   };
 }
@@ -3296,18 +3304,37 @@ app.get("/api/case-management/tree", async (_req, res) => {
           projectName: c.projectName,
           status: c.status,
           assignee: c.assignee,
+          manager: c.manager,
           month: c.month,
           system: c.system,
           estimateTotal: c.estimateTotal,
           actualTotal: c.actualTotal,
           testTotalCount: c.testTotalCount,
           bugCount: c.bugCount,
+          testBlockedCount: c.testBlockedCount,
+          pendingConfirmCount: c.pendingConfirmCount,
+          unexpectedNgCount: c.unexpectedNgCount,
+          japanCaseCount: c.japanCaseCount,
+          japanBugCount: c.japanBugCount,
           tcStartDate: c.tcStartDate,
           tcDesignCompleteDate: c.tcDesignCompleteDate,
           tcExecutionCompleteDate: c.tcExecutionCompleteDate,
           actualStartDate: c.actualStartDate,
           actualDesignCompleteDate: c.actualDesignCompleteDate,
           actualExecutionCompleteDate: c.actualExecutionCompleteDate,
+          developmentEffort: c.developmentEffort,
+          designEstimate: c.designEstimate,
+          implementationEstimate: c.implementationEstimate,
+          executionEstimate: c.executionEstimate,
+          reviewEstimate: c.reviewEstimate,
+          designActual: c.designActual,
+          implActual: c.implActual,
+          execActual: c.execActual,
+          reviewActual: c.reviewActual,
+          releaseDate: c.releaseDate,
+          verificationDate: c.verificationDate,
+          desiredCompleteDate: c.desiredCompleteDate,
+          comment: c.comment,
         }));
       return {
         id: parent.id,
