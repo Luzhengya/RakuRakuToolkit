@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSubRoute } from '../hooks/useSubRoute';
 import JijiSokuho from './JijiSokuho';
 
 const TABS = [
@@ -13,7 +14,9 @@ interface DataCollectionProps {
 }
 
 export default function DataCollection({ onBack }: DataCollectionProps) {
-  const [activeTab, setActiveTab] = useState<TabId>('jiji');
+  const [subRoute, setSubRoute] = useSubRoute();
+  const activeTab: TabId = subRoute[0] === 'jiemian' ? 'jiemian' : 'jiji';
+  const setActiveTab = (id: TabId) => setSubRoute(id === 'jiji' ? [] : [id]);
   const [jijiDetail, setJijiDetail] = useState<{ title: string; back: () => void } | null>(null);
 
   const truncate = (s: string, n = 30) => (s.length > n ? `${s.slice(0, n)}…` : s);

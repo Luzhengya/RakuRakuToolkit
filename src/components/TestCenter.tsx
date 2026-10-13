@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useSubRoute } from '../hooks/useSubRoute';
 import {
   AlertCircle,
   Building2,
@@ -1504,7 +1505,14 @@ const AREAS = [
 ];
 
 export default function TestCenter({ onBack }: TestCenterProps) {
-  const [selectedAreaId, setSelectedAreaId] = useState<AreaId | null>(null);
+  const [subRoute, setSubRoute] = useSubRoute();
+  const VALID_AREA_IDS = new Set<string>(['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp']);
+  const selectedAreaId: AreaId | null = VALID_AREA_IDS.has(subRoute[0]) ? (subRoute[0] as AreaId) : null;
+  const caseStatsOpen = subRoute[0] === 'case-stats';
+  const bugListOpen = subRoute[0] === 'bugs';
+  const ganttOpen = subRoute[0] === 'gantt';
+  const areaDetailView: 'summary' | 'detail' | 'history' = (subRoute[1] === 'detail' || subRoute[1] === 'history') ? subRoute[1] : 'summary';
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [items, setItems] = useState<ProgressItem[]>([]);
@@ -1569,14 +1577,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
   // 日本語固定（言語切替は廃止）
   const lang: Lang = 'ja';
-  const [caseStatsOpen, setCaseStatsOpen] = useState(false);
-  const [bugListOpen, setBugListOpen] = useState(false);
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
-  const [ganttOpen, setGanttOpen] = useState(false);
   const t = useMemo(() => createT(lang), [lang]);
   const [areaYear, setAreaYear] = useState<number>(() => new Date().getFullYear());
   const [areaMonth, setAreaMonth] = useState<number>(() => new Date().getMonth() + 1);
-  const [areaDetailView, setAreaDetailView] = useState<'summary' | 'detail' | 'history'>('summary');
+  const setAreaDetailView = (v: 'summary' | 'detail' | 'history') => setSubRoute(v === 'summary' ? [selectedAreaId!] : [selectedAreaId!, v]);
   const targetMonthKeys = useMemo(() => {
     const m = String(areaMonth).padStart(2, '0');
     return [`${areaYear}${m}`];
@@ -1663,7 +1668,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   };
 
   const loadAreaData = async (areaId: AreaId) => {
-    setSelectedAreaId(areaId);
+    setSubRoute([areaId]);
     setError(null);
     setItems([]);
     setActiveMonthTab('');
@@ -2318,7 +2323,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   };
 
   const goToAreaList = () => {
-    setSelectedAreaId(null);
+    setSubRoute([]);
     setItems([]);
     setError(null);
     setActiveMonthTab('');
@@ -2366,7 +2371,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     return (
       <CaseStats
         lang={lang}
-        onBack={() => setCaseStatsOpen(false)}
+        onBack={() => setSubRoute([])}
         onHome={onBack}
         initialYear={filterYear}
         initialMonth={filterMonth}
@@ -2379,7 +2384,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       <BugList
         lang={lang}
         onHome={onBack}
-        onBack={() => { setBugListOpen(false); setBugListInitialMonth(''); }}
+        onBack={() => { setSubRoute([]); setBugListInitialMonth(''); }}
         initialMonth={bugListInitialMonth}
       />
     );
@@ -2389,7 +2394,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     return (
       <GanttView
         lang={lang}
-        onBack={() => setGanttOpen(false)}
+        onBack={() => setSubRoute([])}
         onHome={onBack}
         fetchArea={async (id: AreaId) => {
           const res = await fetch(`/api/test-center?area=${id}`);
@@ -2893,25 +2898,25 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* KPI カード */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <button type="button" onClick={() => setCaseStatsOpen(true)} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            <button type="button" onClick={() => setSubRoute(['case-stats'])} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
               <div className="h-0.5 w-8 rounded bg-neutral-800 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">{t('kpiCaseCount')}</p>
               <p className="text-2xl font-bold text-neutral-900 mt-1">{overviewKpi.caseCount.toLocaleString()}</p>
               <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.systemCount}{t('kpiSystemSuffix')}</p>
             </button>
-            <button type="button" onClick={() => { setBugListInitialMonth(''); setBugListOpen(true); }} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            <button type="button" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
               <div className="h-0.5 w-8 rounded bg-red-500 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">{t('kpiBugTotal')}</p>
               <p className="text-2xl font-bold text-red-600 mt-1">{overviewKpi.bugTotal.toLocaleString()}</p>
               <p className="text-[11px] text-neutral-400 mt-1">{t('bugLabel')}</p>
             </button>
-            <button type="button" onClick={() => setCaseStatsOpen(true)} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            <button type="button" onClick={() => setSubRoute(['case-stats'])} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
               <div className="h-0.5 w-8 rounded bg-emerald-500 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">完了率</p>
               <p className="text-2xl font-bold text-emerald-600 mt-1">{overviewKpi.doneRate}<span className="text-base font-semibold">%</span></p>
               <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.doneCount} / {overviewKpi.caseCount} 完了</p>
             </button>
-            <button type="button" onClick={() => setCaseStatsOpen(true)} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            <button type="button" onClick={() => setSubRoute(['case-stats'])} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
               <div className="h-0.5 w-8 rounded bg-blue-500 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">進行中</p>
               <p className="text-2xl font-bold text-blue-600 mt-1">{overviewKpi.inProgressCount}</p>
@@ -2931,7 +2936,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* ダッシュボードカード */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setBugListOpen(true); }}>
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }}>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -2948,7 +2953,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                         if (data?.month) {
                           const monthStr = `${filterYear}${String(data.month).padStart(2, '0')}`;
                           setBugListInitialMonth(monthStr);
-                          setBugListOpen(true);
+                          setSubRoute(['bugs']);
                         }
                       }}
                     />
@@ -2957,7 +2962,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title="月別 案件数推移" iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setGanttOpen(true)} actionHint="詳細">
+            <DashboardCard title="月別 案件数推移" iconColor="bg-blue-500" badge={`FY ${filterYear}`} onClick={() => setSubRoute(['gantt'])} actionHint="詳細">
               <div className="h-40 pt-1">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={monthlyCaseSeries} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
@@ -2972,7 +2977,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               </div>
             </DashboardCard>
 
-            <DashboardCard title="KPI 目標" iconColor="bg-indigo-500" badge={`FY ${filterYear}`} onClick={() => setCaseStatsOpen(true)} actionHint="詳細">
+            <DashboardCard title="KPI 目標" iconColor="bg-indigo-500" badge={`FY ${filterYear}`} onClick={() => setSubRoute(['case-stats'])} actionHint="詳細">
               {(() => {
                 const now = new Date();
                 const m = now.getMonth() + 1;
