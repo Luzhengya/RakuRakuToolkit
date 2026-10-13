@@ -116,7 +116,7 @@ type Thresholds = {
 
 // 暫定の既定値 (画面で編集可)
 const DEFAULT_TH: Thresholds = {
-  total: { high: 15, mid: 8 },
+  total: { high: 8, mid: 5 },
   design: { high: 15, mid: 8 },
   exec: { high: 30, mid: 15 },
   review: { high: 40, mid: 20 },
