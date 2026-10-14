@@ -749,16 +749,21 @@ function invalidateProgressCache(): void {
   progressCache = null;
 }
 
-async function queryAllProgressItems(databaseId: string): Promise<ProgressItem[]> {
+async function queryAllProgressItems(databaseId: string, forceRefresh = false): Promise<ProgressItem[]> {
   if (!notion) return [];
 
   const now = Date.now();
   if (
+    !forceRefresh &&
     progressCache &&
     progressCache.databaseId === databaseId &&
     now - progressCache.at < PROGRESS_CACHE_TTL_MS
   ) {
     return progressCache.items;
+  }
+  if (forceRefresh) {
+    progressCache = null;
+    progressInFlight = null;
   }
   // 同時に走った分は先行リクエストの結果を待つ (同じ問い合わせを重複させない)
   if (progressInFlight && progressInFlight.databaseId === databaseId) {
@@ -1053,8 +1058,10 @@ app.get("/api/test-center", async (req, res) => {
     });
   }
 
+  const forceRefresh = req.query.refresh === "true";
+
   try {
-    const allItems = await queryAllProgressItems(databaseId);
+    const allItems = await queryAllProgressItems(databaseId, forceRefresh);
     const parentItems = allItems
       .filter((item) => isItemInArea(area, item.system))
       .filter((item) => item.childProjectIds.length > 0);
@@ -1138,9 +1145,9 @@ app.get("/api/test-center", async (req, res) => {
 
 // 親案件のリレーションを辿り、エリア付きの「葉」案件(実データを持つ子案件)を解決する。
 // overview と case-stats で共用。
-async function resolveLeafCases(databaseId: string): Promise<{ item: ProgressItem; areaId: TestCenterArea }[]> {
+async function resolveLeafCases(databaseId: string, forceRefresh = false): Promise<{ item: ProgressItem; areaId: TestCenterArea }[]> {
   const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp"];
-  const allItems = await queryAllProgressItems(databaseId);
+  const allItems = await queryAllProgressItems(databaseId, forceRefresh);
   // 子案件は同じ進捗DBの行なので、全件取得結果から id 引きできる。
   // これにより pages.retrieve の大量発行(=レート制限/遅延)を回避する。
   const byId = new Map(allItems.map((it) => [it.id, it]));
@@ -1514,7 +1521,7 @@ app.get("/api/test-center/alerts", async (_req, res) => {
   }
 });
 
-app.get("/api/test-center/overview", async (_req, res) => {
+app.get("/api/test-center/overview", async (req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
     return res.status(503).json({
@@ -1522,9 +1529,10 @@ app.get("/api/test-center/overview", async (_req, res) => {
       detail: "Please set NOTION_API_KEY and NOTION_PROGRESS_DATABASE_ID",
     });
   }
+  const forceRefresh = req.query.refresh === "true";
 
   try {
-    const leaves = await resolveLeafCases(databaseId);
+    const leaves = await resolveLeafCases(databaseId, forceRefresh);
 
     const achMap = new Map<string, AchievementItem>();
     const achievementDbId = process.env.NOTION_ACHIEVEMENT_DATABASE_ID;
@@ -1566,7 +1574,7 @@ app.get("/api/test-center/overview", async (_req, res) => {
 });
 
 // 案件別統計: 葉案件 + 実績表(関連案件 relation で 1:1 join)
-app.get("/api/test-center/case-stats", async (_req, res) => {
+app.get("/api/test-center/case-stats", async (req, res) => {
   const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
   if (!notion || !databaseId) {
     return res.status(503).json({
@@ -1574,9 +1582,10 @@ app.get("/api/test-center/case-stats", async (_req, res) => {
       detail: "Please set NOTION_API_KEY and NOTION_PROGRESS_DATABASE_ID",
     });
   }
+  const forceRefresh = req.query.refresh === "true";
 
   try {
-    const leaves = await resolveLeafCases(databaseId);
+    const leaves = await resolveLeafCases(databaseId, forceRefresh);
 
     // 実績表を case id で引ける map に (関連案件 relation, 1:1 想定)
     const achMap = new Map<string, AchievementItem>();
@@ -2093,16 +2102,21 @@ async function fetchAllBugItems(databaseId: string): Promise<BugItem[]> {
   return pages.map((pg) => parseBugItem(pg, relMap));
 }
 
-async function queryAllBugItems(databaseId: string): Promise<BugItem[]> {
+async function queryAllBugItems(databaseId: string, forceRefresh = false): Promise<BugItem[]> {
   if (!notion) return [];
 
   const now = Date.now();
   if (
+    !forceRefresh &&
     bugCache &&
     bugCache.databaseId === databaseId &&
     now - bugCache.at < BUG_CACHE_TTL_MS
   ) {
     return bugCache.items;
+  }
+  if (forceRefresh) {
+    bugCache = null;
+    bugInFlight = null;
   }
   if (bugInFlight && bugInFlight.databaseId === databaseId) {
     return bugInFlight.promise;
@@ -2293,7 +2307,7 @@ async function renderBlocksToHtml(blockId: string, depth = 0): Promise<string> {
   return html;
 }
 
-app.get("/api/test-center/bugs", async (_req, res) => {
+app.get("/api/test-center/bugs", async (req, res) => {
   const databaseId = process.env.NOTION_BUG_DATABASE_ID;
   if (!notion || !databaseId) {
     return res.status(503).json({
@@ -2301,8 +2315,9 @@ app.get("/api/test-center/bugs", async (_req, res) => {
       detail: "Please set NOTION_API_KEY and NOTION_BUG_DATABASE_ID",
     });
   }
+  const forceRefresh = req.query.refresh === "true";
   try {
-    const items = await queryAllBugItems(databaseId);
+    const items = await queryAllBugItems(databaseId, forceRefresh);
     return res.json({ items, total: items.length });
   } catch (error) {
     console.error("Bug list query error:", error);

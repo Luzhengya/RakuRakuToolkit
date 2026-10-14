@@ -950,7 +950,7 @@ type GanttViewProps = {
   lang: Lang;
   onBack: () => void;
   onHome: () => void;
-  fetchArea: (id: AreaId) => Promise<ProgressItem[]>;
+  fetchArea: (id: AreaId, refresh?: boolean) => Promise<ProgressItem[]>;
   filterYear: number;
   initialMonth?: number;
 };
@@ -993,11 +993,11 @@ function GanttView({ lang, onBack, onHome, fetchArea, filterYear, initialMonth }
   const [scrollLeft, setScrollLeft] = useState(0);
   const [containerWidth, setContainerWidth] = useState(0);
 
-  const loadAll = useCallback(async (useCache: boolean) => {
+  const loadAll = useCallback(async (refresh: boolean) => {
     const results: GanttRow[] = [];
     await Promise.all(AREAS.map(async (area) => {
       try {
-        const fetched = await fetchArea(area.id);
+        const fetched = await fetchArea(area.id, refresh);
         const label = area.title[lang].replace(/エリア$|区域$/, '');
         for (const it of fetched) results.push({ ...it, _areaId: area.id, _areaLabel: label });
       } catch { /* ignore */ }
@@ -1645,11 +1645,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     fetchEnvVersions();
   }, [fetchEnvVersions]);
 
-  const fetchAreaFromNotion = async (areaId: AreaId) => {
+  const fetchAreaFromNotion = async (areaId: AreaId, refresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/test-center?area=${areaId}`);
+      const response = await fetch(`/api/test-center?area=${areaId}${refresh ? '&refresh=true' : ''}`);
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || t('fetchFailed'));
@@ -1698,7 +1698,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const reloadAreaData = async () => {
     if (!selectedAreaId) return;
     setResultDraftMap({});
-    await Promise.all([fetchAreaFromNotion(selectedAreaId), fetchEnvVersions()]);
+    await Promise.all([fetchAreaFromNotion(selectedAreaId, true), fetchEnvVersions()]);
   };
 
   const renderField = (label: string, value: string) => (
@@ -1748,11 +1748,11 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     });
   }, [currentItems]);
 
-  const fetchOverview = async () => {
+  const fetchOverview = async (refresh = false) => {
     setOverviewLoading(true);
     setOverviewError(null);
     try {
-      const response = await fetch('/api/test-center/overview');
+      const response = await fetch(`/api/test-center/overview${refresh ? '?refresh=true' : ''}`);
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.error || `${t('requestFailed')} (${response.status})`);
@@ -2397,8 +2397,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         lang={lang}
         onBack={() => setSubRoute([])}
         onHome={onBack}
-        fetchArea={async (id: AreaId) => {
-          const res = await fetch(`/api/test-center?area=${id}`);
+        fetchArea={async (id: AreaId, refresh?: boolean) => {
+          const res = await fetch(`/api/test-center?area=${id}${refresh ? '&refresh=true' : ''}`);
           if (!res.ok) throw new Error('Failed to fetch');
           const data = (await res.json()) as ApiResponse;
           return data.items ?? [];
@@ -2882,7 +2882,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
             </div>
             <button
               type="button"
-              onClick={fetchOverview}
+              onClick={() => fetchOverview(true)}
               disabled={overviewLoading}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               title={overviewUpdatedAt ? `${t('lastUpdated')}：${formatUpdatedAt(overviewUpdatedAt)}` : 'Notionから最新データを取得'}

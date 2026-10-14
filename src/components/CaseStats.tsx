@@ -433,11 +433,11 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     }
   };
 
-  const fetchStats = async () => {
+  const fetchStats = async (refresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/test-center/case-stats');
+      const res = await fetch(`/api/test-center/case-stats${refresh ? '?refresh=true' : ''}`);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error((data as { error?: string }).error || ('取得失敗'));
@@ -1512,7 +1512,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           )}
           <button
             type="button"
-            onClick={fetchStats}
+            onClick={() => fetchStats(true)}
             disabled={loading}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
           >
