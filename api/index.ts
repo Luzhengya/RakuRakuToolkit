@@ -605,13 +605,13 @@ function extractRelationIds(property: any): string[] {
 }
 
 function extractChildProjectIds(properties: Record<string, any>): string[] {
-  const directProperty = properties["子级 项目"];
+  const directProperty = properties["子案件"];
   if (directProperty) return extractRelationIds(directProperty);
 
   const fallbackEntry = Object.entries(properties).find(([name, value]) => {
     if (value?.type !== "relation") return false;
     const normalized = name.trim().toLowerCase();
-    return normalized.includes("子级") || normalized.includes("子項目") || normalized.includes("sub");
+    return normalized.includes("子案件") || normalized.includes("子级") || normalized.includes("sub");
   });
   if (!fallbackEntry) return [];
   return extractRelationIds(fallbackEntry[1]);
@@ -3401,8 +3401,8 @@ app.post("/api/case-management/create", async (req, res) => {
     const existingChildIds = extractChildProjectIds(parentProps);
     const relationPropName = Object.keys(parentProps).find((k) => {
       const n = k.toLowerCase();
-      return n.includes("子级") || n.includes("子項目") || n.includes("sub");
-    }) || "子级 项目";
+      return n.includes("子案件") || n.includes("子级") || n.includes("sub");
+    }) || "子案件";
 
     await withNotionRetry("pages.update (parent relation)", () =>
       notion!.pages.update({
