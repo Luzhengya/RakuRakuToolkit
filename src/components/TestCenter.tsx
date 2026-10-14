@@ -2898,30 +2898,30 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
           {/* KPI カード */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <button type="button" onClick={() => setSubRoute(['case-stats'])} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            <div className="bg-white border border-neutral-200 rounded-xl p-4">
               <div className="h-0.5 w-8 rounded bg-neutral-800 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">{t('kpiCaseCount')}</p>
               <p className="text-2xl font-bold text-neutral-900 mt-1">{overviewKpi.caseCount.toLocaleString()}</p>
               <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.systemCount}{t('kpiSystemSuffix')}</p>
-            </button>
-            <button type="button" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            </div>
+            <div className="bg-white border border-neutral-200 rounded-xl p-4">
               <div className="h-0.5 w-8 rounded bg-red-500 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">{t('kpiBugTotal')}</p>
               <p className="text-2xl font-bold text-red-600 mt-1">{overviewKpi.bugTotal.toLocaleString()}</p>
               <p className="text-[11px] text-neutral-400 mt-1">{t('bugLabel')}</p>
-            </button>
-            <button type="button" onClick={() => setSubRoute(['case-stats'])} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            </div>
+            <div className="bg-white border border-neutral-200 rounded-xl p-4">
               <div className="h-0.5 w-8 rounded bg-emerald-500 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">完了率</p>
               <p className="text-2xl font-bold text-emerald-600 mt-1">{overviewKpi.doneRate}<span className="text-base font-semibold">%</span></p>
               <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.doneCount} / {overviewKpi.caseCount} 完了</p>
-            </button>
-            <button type="button" onClick={() => setSubRoute(['case-stats'])} className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-300 hover:shadow-sm transition-all">
+            </div>
+            <div className="bg-white border border-neutral-200 rounded-xl p-4">
               <div className="h-0.5 w-8 rounded bg-blue-500 mb-3" />
               <p className="text-xs text-neutral-500 font-medium">進行中</p>
               <p className="text-2xl font-bold text-blue-600 mt-1">{overviewKpi.inProgressCount}</p>
               <p className="text-[11px] text-neutral-400 mt-1">{overviewKpi.blockedCount > 0 ? `ブロック ${overviewKpi.blockedCount}` : 'ブロックなし'}</p>
-            </button>
+            </div>
           </div>
 
           {overviewError && (
