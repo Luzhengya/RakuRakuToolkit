@@ -29,7 +29,8 @@ const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-
 
 function hashToView(): View {
   const raw = location.hash.replace(/^#\/?/, '');
-  return VALID_VIEWS.has(raw) ? (raw as View) : 'home';
+  const first = raw.split('/')[0] || '';
+  return VALID_VIEWS.has(first) ? (first as View) : 'home';
 }
 
 function useHashRoute(): [View, (v: View) => void] {
