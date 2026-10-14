@@ -5,16 +5,27 @@ import {
   ArrowLeft,
   Check,
   ChevronRight,
+  FileText,
   FolderTree,
   Loader2,
+  MessageCircle,
   Pencil,
   Plus,
   Save,
   Search,
   Trash2,
+  TriangleAlert,
   User,
   X,
 } from 'lucide-react';
+import {
+  NoteBadges,
+  NoteCategoryDialog,
+  NoteHoverButtons,
+  PendingNoteRow,
+  useNoteCounts,
+} from './shared/NoteWidgets';
+import type { EntityNote } from './shared/NoteWidgets';
 
 interface ChildCase {
   id: string;
@@ -155,6 +166,22 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedSystems, setExpandedSystems] = useState<Set<string>>(new Set());
   const [memberOptions, setMemberOptions] = useState<string[]>([]);
+
+  // ノート
+  const { counts: noteCounts, reloadCounts } = useNoteCounts();
+  const [pendingNoteCounts, setPendingNoteCounts] = useState<Record<string, number>>({});
+  useEffect(() => {
+    fetch('/api/notes/by-assignee')
+      .then((r) => r.json())
+      .then((d) => {
+        const counts: Record<string, number> = {};
+        for (const [email, notes] of Object.entries(d.byAssignee ?? {})) {
+          counts[email] = (notes as any[]).length;
+        }
+        setPendingNoteCounts(counts);
+      })
+      .catch(() => {});
+  }, []);
 
   // 行展開
   const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
@@ -455,7 +482,14 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                             <span className={`text-sm truncate ${selectedAssignee === email ? 'text-orange-700 font-medium' : 'text-neutral-700'}`}>
                               {email.split('@')[0]}
                             </span>
-                            <span className="text-[10px] text-neutral-400 shrink-0">{cases.length} 件</span>
+                            <span className="flex items-center gap-1.5 shrink-0">
+                              {(pendingNoteCounts[email] ?? 0) > 0 && (
+                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA">
+                                  <AlertCircle size={10} />{pendingNoteCounts[email]}
+                                </span>
+                              )}
+                              <span className="text-[10px] text-neutral-400">{cases.length} 件</span>
+                            </span>
                           </div>
                           {inProgress > 0 && (
                             <span className="text-[10px] text-blue-500 mt-0.5 block">{inProgress} 件進行中</span>
@@ -477,6 +511,9 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                   <AssigneePanel
                     email={selectedAssignee}
                     cases={selectedAssigneeCases}
+                    memberOptions={memberOptions}
+                    noteCounts={noteCounts}
+                    onNoteCountChange={reloadCounts}
                   />
                 )}
               </section>
@@ -610,15 +647,20 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                           <td colSpan={6} className="px-4 py-8 text-center text-neutral-400 text-xs">子案件がありません</td>
                         </tr>
                       ) : (
-                        selectedParent.children.map((c) => (
+                        selectedParent.children.map((c) => {
+                          const nc = noteCounts[c.id];
+                          return (
                           <Fragment key={c.id}>
                           <tr
-                            className={`hover:bg-neutral-50/50 cursor-pointer ${expandedCaseId === c.id ? 'bg-neutral-50' : ''}`}
+                            className={`group/row hover:bg-neutral-50/50 cursor-pointer ${expandedCaseId === c.id ? 'bg-neutral-50' : ''}`}
                             onClick={() => setExpandedCaseId(expandedCaseId === c.id ? null : c.id)}
                           >
-                            <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[200px] truncate">
-                              <ChevronRight size={12} className={`inline mr-1 transition-transform ${expandedCaseId === c.id ? 'rotate-90' : ''}`} />
-                              {c.projectName}
+                            <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[200px]">
+                              <div className="flex items-center gap-1.5">
+                                <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedCaseId === c.id ? 'rotate-90' : ''}`} />
+                                <span className="truncate">{c.projectName}</span>
+                                {nc && <NoteBadges entityId={c.id} counts={nc} memberOptions={memberOptions} onCountChange={reloadCounts} />}
+                              </div>
                             </td>
                             <td className="px-3 py-2.5">{statusBadge(c.status)}</td>
                             <td className="px-3 py-2.5 text-neutral-600">{c.assignee ? c.assignee.split('@')[0] : '-'}</td>
@@ -626,6 +668,12 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                             <td className="px-3 py-2.5 text-right tabular-nums text-neutral-600">{c.bugCount || '-'}</td>
                             <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
+                                <NoteHoverButtons
+                                  entityId={c.id}
+                                  entityType="case"
+                                  memberOptions={memberOptions}
+                                  onNoteCreated={reloadCounts}
+                                />
                                 <button
                                   onClick={() => { setEditingCase(c); setCreating(false); setFormError(null); setDeleteConfirm(null); }}
                                   className="p-1.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"
@@ -643,9 +691,10 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                               </div>
                             </td>
                           </tr>
-                          {expandedCaseId === c.id && <CaseDetailRow c={c} colSpan={6} />}
+                          {expandedCaseId === c.id && <CaseDetailRow c={c} colSpan={6} memberOptions={memberOptions} />}
                           </Fragment>
-                        ))
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -866,12 +915,37 @@ function ChecklistPanel() {
   );
 }
 
-function AssigneePanel({ email, cases }: {
+function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountChange }: {
   email: string;
   cases: (ChildCase & { parentName: string; parentSystem: string; parentMonth: string })[];
+  memberOptions: string[];
+  noteCounts: Record<string, { qa: number; note: number; issue: number }>;
+  onNoteCountChange: () => void;
 }) {
   const [monthFilter, setMonthFilter] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [noteDialogCaseId, setNoteDialogCaseId] = useState<string | null>(null);
+  const [pendingNotes, setPendingNotes] = useState<EntityNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesKey, setNotesKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setNotesLoading(true);
+    fetch('/api/notes/by-assignee')
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const mine: EntityNote[] = data.byAssignee?.[email] ?? [];
+        setPendingNotes(mine.filter((n) => n.status !== '対応済'));
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setNotesLoading(false); });
+    return () => { cancelled = true; };
+  }, [email, notesKey]);
+
+  const pendingQA = useMemo(() => pendingNotes.filter((n) => n.category === 'QA'), [pendingNotes]);
+  const pendingIssues = useMemo(() => pendingNotes.filter((n) => n.category === '指摘'), [pendingNotes]);
 
   const allMonths = useMemo(() => {
     const set = new Set<string>();
@@ -884,6 +958,8 @@ function AssigneePanel({ email, cases }: {
     return cases.filter((c) => c.parentMonth === monthFilter);
   }, [cases, monthFilter]);
 
+  const STATUS_ORDER = ['予定通り完了', '遅延完了', '進行中', '未着手'] as const;
+
   const statusCount = useMemo(() => {
     const map: Record<string, number> = {};
     for (const c of filtered) {
@@ -893,18 +969,32 @@ function AssigneePanel({ email, cases }: {
     return map;
   }, [filtered]);
 
+  const nearDeadlineCount = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    let count = 0;
+    for (const c of filtered) {
+      if (c.status === '予定通り完了' || c.status === '遅延完了') continue;
+      const dateStr = c.tcExecutionCompleteDate;
+      if (!dateStr) continue;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) continue;
+      d.setHours(0, 0, 0, 0);
+      if (d <= tomorrow && d >= today) count++;
+    }
+    return count;
+  }, [filtered]);
+
   const totals = useMemo(() => {
-    let testTotal = 0;
-    let bugTotal = 0;
     let estTotal = 0;
     let actTotal = 0;
     for (const c of filtered) {
-      testTotal += Number(c.testTotalCount) || 0;
-      bugTotal += Number(c.bugCount) || 0;
       estTotal += Number(c.estimateTotal) || 0;
       actTotal += Number(c.actualTotal) || 0;
     }
-    return { testTotal, bugTotal, estTotal: round2(estTotal), actTotal: round2(actTotal) };
+    return { estTotal: round2(estTotal), actTotal: round2(actTotal) };
   }, [filtered]);
 
   const byMonth = useMemo(() => {
@@ -934,25 +1024,64 @@ function AssigneePanel({ email, cases }: {
             {allMonths.map((m) => <option key={m} value={m}>{formatMonth(m)}</option>)}
           </select>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <StatCard label="担当案件数" value={filtered.length} />
-          <StatCard label="テスト総件数" value={totals.testTotal} />
-          <StatCard label="NG数" value={totals.bugTotal} accent={totals.bugTotal > 0 ? 'red' : undefined} />
+          <StatCard label="期限間近" value={nearDeadlineCount} accent={nearDeadlineCount > 0 ? 'amber' : undefined} />
+          <StatCard label="QA確認待" value={pendingQA.length} accent={pendingQA.length > 0 ? 'green' : undefined} />
+          <StatCard label="指摘確認待" value={pendingIssues.length} accent={pendingIssues.length > 0 ? 'amber' : undefined} />
           <StatCard label="工数（見積/実績）" value={`${totals.estTotal} / ${totals.actTotal}`} />
         </div>
-        {Object.keys(statusCount).length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-3">
-            {Object.entries(statusCount).map(([status, count]) => (
-              <span key={status} className="inline-flex items-center gap-1">
-                {statusBadge(status)}
-                <span className="text-[11px] text-neutral-500 tabular-nums">{count}</span>
-              </span>
+        <div className="flex flex-wrap gap-1.5 mt-3">
+          {STATUS_ORDER.map((status) => (
+            <span key={status} className="inline-flex items-center gap-1">
+              {statusBadge(status)}
+              <span className="text-[11px] text-neutral-500 tabular-nums">{statusCount[status] ?? 0}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* 指摘セクション */}
+      <div className="bg-white border border-orange-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-orange-100 bg-orange-50/60 flex items-center gap-2">
+          <TriangleAlert size={13} className="text-orange-500" />
+          <span className="text-xs font-bold text-orange-700">指摘</span>
+          <span className="text-[10px] text-orange-500 ml-1">{pendingIssues.length} 件</span>
+        </div>
+        {notesLoading ? (
+          <div className="text-xs text-neutral-400 text-center py-4">読み込み中...</div>
+        ) : pendingIssues.length === 0 ? (
+          <div className="text-xs text-neutral-400 text-center py-4">未処理の指摘はありません</div>
+        ) : (
+          <div className="divide-y divide-neutral-100">
+            {pendingIssues.map((note) => (
+              <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
             ))}
           </div>
         )}
       </div>
 
-      {/* 月別案件リスト（新しい順） */}
+      {/* QAセクション */}
+      <div className="bg-white border border-emerald-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-emerald-100 bg-emerald-50/60 flex items-center gap-2">
+          <MessageCircle size={13} className="text-emerald-500" />
+          <span className="text-xs font-bold text-emerald-700">QA</span>
+          <span className="text-[10px] text-emerald-500 ml-1">{pendingQA.length} 件</span>
+        </div>
+        {notesLoading ? (
+          <div className="text-xs text-neutral-400 text-center py-4">読み込み中...</div>
+        ) : pendingQA.length === 0 ? (
+          <div className="text-xs text-neutral-400 text-center py-4">未処理のQAはありません</div>
+        ) : (
+          <div className="divide-y divide-neutral-100">
+            {pendingQA.map((note) => (
+              <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 案件セクション（月別、新しい順） */}
       {byMonth.map(([month, monthCases]) => (
         <div key={month} className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
           <div className="px-4 py-2.5 border-b border-neutral-100 bg-neutral-50/50">
@@ -979,9 +1108,20 @@ function AssigneePanel({ email, cases }: {
                     className={`hover:bg-neutral-50/50 cursor-pointer ${expandedId === c.id ? 'bg-neutral-50' : ''}`}
                     onClick={() => setExpandedId(expandedId === c.id ? null : c.id)}
                   >
-                    <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[180px] truncate">
-                      <ChevronRight size={12} className={`inline mr-1 transition-transform ${expandedId === c.id ? 'rotate-90' : ''}`} />
-                      {c.projectName}
+                    <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[220px]">
+                      <div className="flex items-center gap-1.5">
+                        <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedId === c.id ? 'rotate-90' : ''}`} />
+                        <span className="truncate">{c.projectName}</span>
+                        {(noteCounts[c.id]?.note ?? 0) > 0 && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setNoteDialogCaseId(c.id); }}
+                            className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold hover:opacity-80 transition-opacity"
+                            title="追加説明"
+                          >
+                            <FileText size={10} />{noteCounts[c.id].note}
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2.5 text-neutral-500 text-xs">{c.parentSystem}</td>
                     <td className="px-3 py-2.5">{statusBadge(c.status)}</td>
@@ -994,7 +1134,7 @@ function AssigneePanel({ email, cases }: {
                       {c.actualExecutionCompleteDate ? <><span className="text-neutral-800">{c.actualExecutionCompleteDate}</span></> : c.tcExecutionCompleteDate ? <><span className="text-neutral-400">{c.tcExecutionCompleteDate}</span> <span className="text-[9px] text-neutral-300">予</span></> : '-'}
                     </td>
                   </tr>
-                  {expandedId === c.id && <CaseDetailRow c={c} colSpan={7} />}
+                  {expandedId === c.id && <CaseDetailRow c={c} colSpan={7} memberOptions={memberOptions} />}
                   </Fragment>
                 ))}
               </tbody>
@@ -1002,6 +1142,16 @@ function AssigneePanel({ email, cases }: {
           </div>
         </div>
       ))}
+
+      {noteDialogCaseId && (
+        <NoteCategoryDialog
+          category="追加説明"
+          entityId={noteDialogCaseId}
+          memberOptions={memberOptions}
+          onClose={() => setNoteDialogCaseId(null)}
+          onCountChange={onNoteCountChange}
+        />
+      )}
     </div>
   );
 }
@@ -1010,16 +1160,17 @@ function round2(n: number): string {
   return n === 0 ? '0' : (Math.round(n * 100) / 100).toFixed(2).replace(/\.?0+$/, '') || '0';
 }
 
-function StatCard({ label, value, accent }: { label: string; value: number | string; accent?: 'red' }) {
+function StatCard({ label, value, accent }: { label: string; value: number | string; accent?: 'red' | 'amber' | 'green' }) {
+  const colorCls = accent === 'red' ? 'text-red-600' : accent === 'amber' ? 'text-amber-600' : accent === 'green' ? 'text-emerald-600' : 'text-neutral-800';
   return (
     <div className="rounded-lg bg-neutral-50 p-3">
       <p className="text-[11px] text-neutral-500 mb-0.5">{label}</p>
-      <p className={`text-lg font-bold tabular-nums ${accent === 'red' ? 'text-red-600' : 'text-neutral-800'}`}>{value}</p>
+      <p className={`text-lg font-bold tabular-nums ${colorCls}`}>{value}</p>
     </div>
   );
 }
 
-function CaseDetailRow({ c, colSpan }: { c: ChildCase; colSpan: number }) {
+function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: number; memberOptions: string[] }) {
   const schedule = [
     { label: 'TC開始', planned: c.tcStartDate, actual: c.actualStartDate },
     { label: '設計書完了', planned: c.tcDesignCompleteDate, actual: c.actualDesignCompleteDate },

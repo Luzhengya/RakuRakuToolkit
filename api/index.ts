@@ -5516,6 +5516,422 @@ app.get("/api/testcase-library/list", async (req, res) => {
   }
 });
 
+// ── ノート (ニーズ管理 DB: 分野=追加説明/指摘/QA) ──
+// entityType: case (関連案件), bug/testcase (将来対応)
+
+type EntityNote = {
+  id: string;
+  title: string;
+  category: "追加説明" | "指摘" | "QA";
+  status: string;
+  priority: string;
+  assignee: string;
+  requester: string;
+  entityId: string;
+  createdTime: string;
+  screenshots?: string[];
+};
+
+const NOTE_CATEGORIES = ["追加説明", "指摘", "QA"] as const;
+
+async function resolveNeedsDataSource(): Promise<string> {
+  const databaseId = process.env.NOTION_NEEDS_DATABASE_ID;
+  if (!notion || !databaseId) throw new Error("Notion API credentials not configured");
+  const database: any = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
+  const dataSourceId = database?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) throw new Error("No data source found in NOTION_NEEDS_DATABASE_ID");
+  return dataSourceId;
+}
+
+function parseEntityNote(page: any): EntityNote {
+  const p = page?.properties ?? {};
+  const categories = (p["分野"]?.multi_select ?? []).map((o: any) => o.name);
+  const category = NOTE_CATEGORIES.find((c) => categories.includes(c)) ?? "追加説明";
+  return {
+    id: page.id,
+    title: propertyToPlainText(p["ニーズ"]),
+    category,
+    status: p["状態"]?.status?.name ?? "",
+    priority: p["優先度"]?.select?.name ?? "",
+    assignee: peopleToEmails(p["アサイン"]),
+    requester: peopleToEmails(p["請求者"]),
+    entityId: extractRelationIds(p["関連案件"])[0] ?? "",
+    createdTime: p["提出日"]?.created_time ?? page.created_time ?? "",
+  };
+}
+
+async function queryNotesByEntityIds(entityIds?: string[]): Promise<EntityNote[]> {
+  const dataSourceId = await resolveNeedsDataSource();
+  const allNotes: EntityNote[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+
+  while (hasMore) {
+    const response: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+        filter: {
+          or: NOTE_CATEGORIES.map((cat) => ({
+            property: "分野",
+            multi_select: { contains: cat },
+          })),
+        },
+      }),
+    );
+    for (const page of response?.results ?? []) {
+      const note = parseEntityNote(page);
+      if (!entityIds || entityIds.includes(note.entityId)) {
+        allNotes.push(note);
+      }
+    }
+    hasMore = !!response?.has_more;
+    cursor = response?.next_cursor ?? undefined;
+  }
+  return allNotes;
+}
+
+function splitBase64ToRichText(dataUri: string): { type: "text"; text: { content: string } }[] {
+  const chunks: { type: "text"; text: { content: string } }[] = [];
+  for (let i = 0; i < dataUri.length; i += 2000) {
+    chunks.push({ type: "text", text: { content: dataUri.slice(i, i + 2000) } });
+  }
+  return chunks;
+}
+
+function buildScreenshotBlocks(screenshots: string[]): any[] {
+  const RICH_TEXT_LIMIT = 100;
+  const blocks: any[] = [];
+  for (const dataUri of screenshots) {
+    if (!dataUri.startsWith("data:image/")) continue;
+    const allChunks = splitBase64ToRichText(dataUri);
+    for (let i = 0; i < allChunks.length; i += RICH_TEXT_LIMIT) {
+      blocks.push({
+        object: "block",
+        type: "code",
+        code: {
+          language: "plain text",
+          caption: [{ type: "text", text: { content: i === 0 ? "screenshot" : "screenshot-cont" } }],
+          rich_text: allChunks.slice(i, i + RICH_TEXT_LIMIT),
+        },
+      });
+    }
+  }
+  return blocks;
+}
+
+async function appendScreenshots(pageId: string, screenshots: string[]): Promise<void> {
+  if (!notion || screenshots.length === 0) return;
+  const blocks = buildScreenshotBlocks(screenshots);
+  for (const block of blocks) {
+    await withNotionRetry("blocks.children.append", () =>
+      notion!.blocks.children.append({ block_id: pageId, children: [block] } as any),
+    );
+  }
+}
+
+async function readScreenshotsFromPage(pageId: string): Promise<string[]> {
+  if (!notion) return [];
+  const screenshots: string[] = [];
+  let cursor: string | undefined = undefined;
+  let hasMore = true;
+  while (hasMore) {
+    const r: any = await withNotionRetry("blocks.children.list", () =>
+      notion!.blocks.children.list({ block_id: pageId, start_cursor: cursor, page_size: 100 }),
+    );
+    for (const b of r.results ?? []) {
+      if (b.type === "code") {
+        const caption = (b.code?.caption ?? []).map((t: any) => t.plain_text ?? "").join("");
+        const text = (b.code?.rich_text ?? []).map((t: any) => t.plain_text ?? "").join("");
+        if (caption === "screenshot") {
+          if (text.startsWith("data:image/")) screenshots.push(text);
+        } else if (caption === "screenshot-cont" && screenshots.length > 0) {
+          screenshots[screenshots.length - 1] += text;
+        }
+      }
+    }
+    hasMore = !!r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  return screenshots;
+}
+
+app.get("/api/notes", async (req, res) => {
+  const entityId = (req.query.entityId ?? req.query.caseId) as string | undefined;
+  if (!entityId) {
+    return res.status(400).json({ error: "entityId is required" });
+  }
+  try {
+    const notes = await queryNotesByEntityIds([entityId]);
+    return res.json({ items: notes });
+  } catch (error) {
+    console.error("Notes list error:", error);
+    return res.status(500).json({ error: "Failed to load notes" });
+  }
+});
+
+app.get("/api/notes/counts", async (_req, res) => {
+  try {
+    const notes = await queryNotesByEntityIds();
+    const counts: Record<string, { qa: number; note: number; issue: number }> = {};
+    for (const note of notes) {
+      if (!note.entityId) continue;
+      if (!counts[note.entityId]) counts[note.entityId] = { qa: 0, note: 0, issue: 0 };
+      if (note.category === "QA" && note.status !== "対応済") {
+        counts[note.entityId].qa++;
+      } else if (note.category === "指摘" && note.status !== "対応済") {
+        counts[note.entityId].issue++;
+      } else if (note.category === "追加説明") {
+        counts[note.entityId].note++;
+      }
+    }
+    return res.json({ counts });
+  } catch (error) {
+    console.error("Notes counts error:", error);
+    return res.status(500).json({ error: "Failed to load notes counts" });
+  }
+});
+
+app.get("/api/notes/by-assignee", async (_req, res) => {
+  try {
+    const notes = await queryNotesByEntityIds();
+    const pending = notes.filter(
+      (n) => (n.category === "指摘" || n.category === "QA") && n.status !== "対応済",
+    );
+    const byAssignee: Record<string, EntityNote[]> = {};
+    for (const note of pending) {
+      const emails = note.assignee.split(",").map((s) => s.trim()).filter(Boolean);
+      for (const email of emails) {
+        if (!byAssignee[email]) byAssignee[email] = [];
+        byAssignee[email].push(note);
+      }
+    }
+    return res.json({ byAssignee });
+  } catch (error) {
+    console.error("Notes by-assignee error:", error);
+    return res.status(500).json({ error: "Failed to load notes by assignee" });
+  }
+});
+
+app.post("/api/notes", async (req, res) => {
+  const { title, category, entityId, entityType, assignee, requester, priority, screenshots } = req.body ?? {};
+  const resolvedEntityId = entityId ?? req.body?.caseId;
+  if (!title || typeof title !== "string" || !title.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
+  if (!category || !NOTE_CATEGORIES.includes(category)) {
+    return res.status(400).json({ error: "category must be one of: 追加説明, 指摘, QA" });
+  }
+  if (!resolvedEntityId) {
+    return res.status(400).json({ error: "entityId is required" });
+  }
+  const type = entityType ?? "case";
+  if (type !== "case") {
+    return res.status(400).json({ error: `entityType '${type}' is not yet supported` });
+  }
+
+  try {
+    const dataSourceId = await resolveNeedsDataSource();
+
+    const properties: Record<string, any> = {
+      "ニーズ": { title: [{ type: "text", text: { content: title.trim() } }] },
+      "分野": { multi_select: [{ name: category }] },
+      "関連案件": { relation: [{ id: resolvedEntityId }] },
+    };
+
+    if (category === "指摘" || category === "QA") {
+      properties["状態"] = { status: { name: "新" } };
+    }
+
+    if (priority && ["高", "中", "低"].includes(priority)) {
+      properties["優先度"] = { select: { name: priority } };
+    }
+
+    let workspaceUsers: any[] | null = null;
+    const resolveEmails = async (emails: string) => {
+      if (!workspaceUsers) {
+        workspaceUsers = [];
+        let cursor: string | undefined = undefined;
+        let hasMore = true;
+        while (hasMore) {
+          const usersRes: any = await withNotionRetry("users.list", () =>
+            notion!.users.list({ start_cursor: cursor, page_size: 100 } as any),
+          );
+          workspaceUsers.push(...(usersRes?.results ?? []));
+          hasMore = usersRes?.has_more ?? false;
+          cursor = usersRes?.next_cursor ?? undefined;
+        }
+      }
+      const targets = emails.split(",").map((s) => s.trim()).filter(Boolean);
+      const resolved = targets
+        .map((email) => workspaceUsers!.find((u: any) => u?.person?.email === email)?.id)
+        .filter(Boolean)
+        .map((id) => ({ id }));
+      if (resolved.length < targets.length) {
+        const missing = targets.filter((e) => !workspaceUsers!.some((u: any) => u?.person?.email === e));
+        console.warn("resolveEmails: no Notion user found for:", missing.join(", "));
+      }
+      return resolved;
+    };
+
+    if (assignee) {
+      const people = await resolveEmails(assignee);
+      if (people.length > 0) properties["アサイン"] = { people };
+    }
+    if (requester) {
+      const people = await resolveEmails(requester);
+      if (people.length > 0) properties["請求者"] = { people };
+    }
+
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+
+    let screenshotError: string | undefined;
+    if (Array.isArray(screenshots) && screenshots.length > 0) {
+      try {
+        await appendScreenshots(created.id, screenshots);
+      } catch (e: any) {
+        console.error("Screenshot append error (note created):", e?.message ?? e);
+        screenshotError = "Note created but screenshots failed to attach";
+      }
+    }
+
+    const result = parseEntityNote(created);
+    result.screenshots = Array.isArray(screenshots) ? screenshots : undefined;
+    return res.json({ ...result, ...(screenshotError ? { screenshotError } : {}) });
+  } catch (error) {
+    console.error("Note create error:", error);
+    return res.status(500).json({ error: "Failed to create note" });
+  }
+});
+
+app.get("/api/notes/:id/screenshots", async (req, res) => {
+  try {
+    const screenshots = await readScreenshotsFromPage(req.params.id);
+    return res.json({ screenshots });
+  } catch (error) {
+    console.error("Note screenshots error:", error);
+    return res.status(500).json({ error: "Failed to load screenshots" });
+  }
+});
+
+app.post("/api/notes/:id/toggle", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { done } = req.body ?? {};
+  if (typeof done !== "boolean") {
+    return res.status(400).json({ error: "done (boolean) is required" });
+  }
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({
+        page_id: req.params.id,
+        properties: {
+          "状態": { status: { name: done ? "対応済" : "新" } },
+        },
+      }),
+    );
+    return res.json({ id: req.params.id, done });
+  } catch (error) {
+    console.error("Note toggle error:", error);
+    return res.status(500).json({ error: "Failed to toggle note" });
+  }
+});
+
+app.get("/api/notes/:id/replies", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    const blocks: any[] = [];
+    let cursor: string | undefined = undefined;
+    let hasMore = true;
+    while (hasMore) {
+      const r: any = await withNotionRetry("blocks.children.list", () =>
+        notion!.blocks.children.list({
+          block_id: req.params.id,
+          start_cursor: cursor,
+          page_size: 100,
+        }),
+      );
+      for (const b of r.results ?? []) {
+        if (b.type === "paragraph" || b.type === "callout" || b.type === "quote") {
+          const richText = b[b.type]?.rich_text ?? [];
+          const text = richText.map((t: any) => t.plain_text ?? "").join("");
+          if (text.trim()) {
+            blocks.push({
+              id: b.id,
+              text,
+              createdTime: b.created_time ?? "",
+              type: b.type,
+            });
+          }
+        } else if (b.type === "code") {
+          const caption = (b.code?.caption ?? []).map((t: any) => t.plain_text ?? "").join("");
+          if (caption === "screenshot") {
+            const dataUri = (b.code?.rich_text ?? []).map((t: any) => t.plain_text ?? "").join("");
+            if (dataUri.startsWith("data:image/")) {
+              blocks.push({
+                id: b.id,
+                text: "",
+                screenshot: dataUri,
+                createdTime: b.created_time ?? "",
+                type: "screenshot",
+              });
+            }
+          }
+        }
+      }
+      hasMore = !!r.has_more;
+      cursor = r.next_cursor ?? undefined;
+    }
+    return res.json({ replies: blocks });
+  } catch (error) {
+    console.error("Note replies error:", error);
+    return res.status(500).json({ error: "Failed to load replies" });
+  }
+});
+
+app.post("/api/notes/:id/reply", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { text, author, screenshots } = req.body ?? {};
+  if ((!text || typeof text !== "string" || !text.trim()) && !(Array.isArray(screenshots) && screenshots.length > 0)) {
+    return res.status(400).json({ error: "text or screenshots required" });
+  }
+  const authorLabel = author ? `[${author}] ` : "";
+  const now = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
+  const content = text?.trim() ? `${authorLabel}${now} — ${text.trim()}` : `${authorLabel}${now} — (画像)`;
+  try {
+    await withNotionRetry("blocks.children.append", () =>
+      notion!.blocks.children.append({
+        block_id: req.params.id,
+        children: [{
+          object: "block",
+          type: "paragraph",
+          paragraph: { rich_text: [{ type: "text", text: { content } }] },
+        }],
+      } as any),
+    );
+    if (Array.isArray(screenshots) && screenshots.length > 0) {
+      await appendScreenshots(req.params.id, screenshots);
+    }
+    return res.json({ ok: true, content });
+  } catch (error) {
+    console.error("Note reply error:", error);
+    return res.status(500).json({ error: "Failed to add reply" });
+  }
+});
+
 // 未知の /api/* は 404 の JSON で返す。
 // これが無いと dev の Vite / 本番の SPA フォールバックが index.html を
 // 200 で返してしまい、クライアントでは res.ok が true になった後の

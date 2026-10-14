@@ -28,6 +28,7 @@ import {
   Check,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
+import { NoteBadges } from './shared/NoteWidgets';
 import BugList from './BugList';
 import ProgressAlerts from './ProgressAlerts';
 import CaseStats from './CaseStats';
@@ -1576,6 +1577,21 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [areaUpdatedAtMap, setAreaUpdatedAtMap] = useState<Record<string, number>>(initialAreaUpdatedAtMap);
   const [filterYear, setFilterYear] = useState<number>(() => new Date().getFullYear());
   const [filterMonth, setFilterMonth] = useState<'all' | number>(() => new Date().getMonth() + 1);
+  const [noteCounts, setNoteCounts] = useState<Record<string, { qa: number; note: number; issue: number }>>({});
+  const [tcMemberOptions, setTcMemberOptions] = useState<string[]>([]);
+  const loadNoteCounts = useCallback(() => {
+    fetch('/api/notes/counts')
+      .then((r) => r.json())
+      .then((d) => { if (d.counts) setNoteCounts(d.counts); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    loadNoteCounts();
+    fetch('/api/case-management/member-options')
+      .then((r) => r.ok ? r.json() : { members: [] })
+      .then((d) => setTcMemberOptions(d.members ?? []))
+      .catch(() => {});
+  }, [loadNoteCounts]);
   // 日本語固定（言語切替は廃止）
   const lang: Lang = 'ja';
   const [bugListInitialMonth, setBugListInitialMonth] = useState('');
@@ -2682,7 +2698,14 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                                   className="h-3.5 w-3.5 rounded border-neutral-300"
                                 />
                               </td>
-                              <td className="px-3 py-2.5 text-sm text-neutral-900 break-all">{item.projectName || '-'}</td>
+                              <td className="px-3 py-2.5 text-sm text-neutral-900 break-all">
+                                <span className="inline-flex items-center gap-1.5">
+                                  {item.projectName || '-'}
+                                  {noteCounts[item.id] && (
+                                    <NoteBadges entityId={item.id} counts={noteCounts[item.id]} memberOptions={tcMemberOptions} onCountChange={loadNoteCounts} />
+                                  )}
+                                </span>
+                              </td>
                               <td className="px-3 py-2.5 text-center">
                                 <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${statusColor}`}>{item.status || '-'}</span>
                               </td>
@@ -2743,6 +2766,9 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                             className="h-4 w-4 rounded border-neutral-300"
                           />
                           <span className="text-sm font-semibold text-neutral-900 truncate">{item.projectName || '-'}</span>
+                          {noteCounts[item.id] && (
+                            <NoteBadges entityId={item.id} counts={noteCounts[item.id]} memberOptions={tcMemberOptions} onCountChange={loadNoteCounts} />
+                          )}
                           <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${isCompletedStatus(item.status.trim()) ? 'bg-emerald-50 text-emerald-700' : item.status.trim() === '進行中' ? 'bg-blue-50 text-blue-700' : item.status.trim() === 'ブロック' ? 'bg-red-50 text-red-700' : 'bg-neutral-100 text-neutral-500'}`}>{item.status || '-'}</span>
                         </div>
                         <ChevronDown size={16} className={`shrink-0 text-neutral-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />

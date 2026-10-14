@@ -398,6 +398,20 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   };
 
   // 備考(実績表コメント)のインライン編集。フォーカスアウトで自動保存
+  const [pendingNoteCounts, setPendingNoteCounts] = useState<Record<string, number>>({});
+  useEffect(() => {
+    fetch('/api/notes/by-assignee')
+      .then((r) => r.json())
+      .then((d) => {
+        const counts: Record<string, number> = {};
+        for (const [email, notes] of Object.entries(d.byAssignee ?? {})) {
+          counts[email] = (notes as any[]).length;
+        }
+        setPendingNoteCounts(counts);
+      })
+      .catch(() => {});
+  }, []);
+
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({});
   const [commentSavingId, setCommentSavingId] = useState<string | null>(null);
   const [commentSavedId, setCommentSavedId] = useState<string | null>(null);
@@ -1845,6 +1859,11 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                       >
                         {open ? <ChevronDown size={16} className="shrink-0" /> : <ChevronRight size={16} className="shrink-0" />}
                         <span className="text-sm font-bold text-neutral-800 truncate">{a.assignee}</span>
+                        {(pendingNoteCounts[a.assignee] ?? 0) > 0 && (
+                          <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA">
+                            <FileText size={10} />{pendingNoteCounts[a.assignee]}
+                          </span>
+                        )}
                         <div className="w-24 shrink-0 hidden sm:block" title={`安全${safe} / 注意${cautionCount} / 確認要${a.confirmCount}`}><HealthBar high={safe} mid={cautionCount} low={a.confirmCount} /></div>
                         <span className="text-xs text-neutral-500 shrink-0">総効率 <b className="text-neutral-900 tabular-nums">{fmtEff(a.totalEff)}</b></span>
                         <span className="ml-auto flex items-center gap-2 shrink-0">
