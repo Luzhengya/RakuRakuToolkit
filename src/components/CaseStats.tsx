@@ -339,7 +339,7 @@ function PieCard({
       <PieChart>
         <Tooltip contentStyle={CHART_TIP_STYLE} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
-        <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%" labelLine={false} label={(e: any) => (e.percent >= 0.05 ? `${(e.percent * 100).toFixed(0)}%` : '')}>
+        <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius="70%" labelLine={false} isAnimationActive={false} label={(e: any) => (e.percent >= 0.05 ? `${(e.percent * 100).toFixed(0)}%` : '')}>
           {data.map((_, i) => (
             <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
           ))}
@@ -2183,7 +2183,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
                 <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={axisTick} />
                 <Tooltip contentStyle={tipStyle} labelFormatter={monthLabel} />
-                <Bar dataKey="caseCount" name="案件数" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="caseCount" name="案件数" fill="#6366f1" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
               </BarChart>
             </ChartCard>
 
@@ -2193,7 +2193,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
                 <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={axisTick} />
                 <Tooltip contentStyle={tipStyle} labelFormatter={monthLabel} />
-                <Bar dataKey="testSum" name="テスト件数" fill="#06b6d4" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="testSum" name="テスト件数" fill="#06b6d4" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
               </BarChart>
             </ChartCard>
 
@@ -2203,7 +2203,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
                 <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={axisTick} />
                 <Tooltip contentStyle={tipStyle} labelFormatter={monthLabel} />
-                <Bar dataKey="ngSum" name="NG件数" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                <Bar dataKey="ngSum" name="NG件数" fill="#f97316" radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
               </BarChart>
             </ChartCard>
 
@@ -2213,7 +2213,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
                 <YAxis axisLine={false} tickLine={false} tick={axisTick} unit="%" />
                 <Tooltip contentStyle={tipStyle} labelFormatter={monthLabel} formatter={(v: any) => (v === null ? '-' : `${v}%`)} />
-                <Line type="monotone" dataKey="ngLeakRate" name="NG流出率" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+                <Line type="monotone" dataKey="ngLeakRate" name="NG流出率" stroke="#ef4444" strokeWidth={2} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
               </LineChart>
             </ChartCard>
 
@@ -2223,7 +2223,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                 <XAxis dataKey="label" interval={0} axisLine={false} tickLine={false} tick={axisTick} />
                 <YAxis axisLine={false} tickLine={false} tick={axisTick} />
                 <Tooltip contentStyle={tipStyle} labelFormatter={monthLabel} formatter={(v: any) => (v === null ? '-' : v)} />
-                <Line type="monotone" dataKey="totalEff" name="総効率" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} connectNulls />
+                <Line type="monotone" dataKey="totalEff" name="総効率" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
               </LineChart>
             </ChartCard>
 

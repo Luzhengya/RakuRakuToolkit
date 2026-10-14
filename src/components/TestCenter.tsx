@@ -918,6 +918,7 @@ function StatusDonut({ data, noDataLabel, caseLabel }: { data: { status: string;
               paddingAngle={2}
               startAngle={90}
               endAngle={-270}
+              isAnimationActive={false}
             >
               {data.map((row, idx) => (
                 <Cell key={row.status} fill={getStatusColor(row.status, idx)} />
@@ -2949,6 +2950,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       radius={[4, 4, 0, 0]}
                       maxBarSize={22}
                       cursor="pointer"
+                      isAnimationActive={false}
                       onClick={(data: any) => {
                         if (data?.month) {
                           const monthStr = `${filterYear}${String(data.month).padStart(2, '0')}`;
@@ -2970,8 +2972,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     <XAxis dataKey="month" tick={{ fontSize: 10 }} stroke="#a3a3a3" />
                     <YAxis tick={{ fontSize: 10 }} stroke="#a3a3a3" allowDecimals={false} />
                     <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
-                    <Line type="monotone" dataKey="total" name="案件数" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
-                    <Line type="monotone" dataKey="done" name="完了数" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+                    <Line type="monotone" dataKey="total" name="案件数" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
+                    <Line type="monotone" dataKey="done" name="完了数" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>

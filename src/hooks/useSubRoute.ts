@@ -1,9 +1,18 @@
 import { useCallback, useSyncExternalStore } from 'react';
 
+let cached: string[] = [];
+let cachedKey = '';
+
 function getSubSegments(): string[] {
   const raw = location.hash.replace(/^#\/?/, '');
   const parts = raw.split('/').filter(Boolean);
-  return parts.slice(1);
+  const sub = parts.slice(1);
+  const key = sub.join('/');
+  if (key !== cachedKey) {
+    cachedKey = key;
+    cached = sub;
+  }
+  return cached;
 }
 
 export function useSubRoute(): [string[], (segments: string[]) => void] {
