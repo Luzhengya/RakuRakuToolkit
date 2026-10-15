@@ -48,6 +48,7 @@ interface BugLeakItem {
   status: string;
   improvable: string;
   checklist: string;
+  checklistIds: string[];
 }
 
 interface FieldInfo {
@@ -385,21 +386,303 @@ function NeedsListPage() {
 
 const PAGE_SIZE = 10;
 
+// Month Calendar (TestCenter style)
+function MonthCalendar({ year, month, onSelect }: { year: number; month: number | null; onSelect: (y: number, m: number | null) => void }) {
+  const [calYear, setCalYear] = useState(year);
+  return (
+    <div className="bg-white border border-neutral-200 rounded-xl p-3 shadow-sm w-48">
+      <div className="flex items-center justify-between mb-2">
+        <button onClick={() => setCalYear((y) => y - 1)} className="text-neutral-400 hover:text-neutral-700 text-sm">&larr;</button>
+        <span className="text-sm font-bold">{calYear}</span>
+        <button onClick={() => setCalYear((y) => y + 1)} className="text-neutral-400 hover:text-neutral-700 text-sm">&rarr;</button>
+      </div>
+      <div className="grid grid-cols-4 gap-1">
+        {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+          <button
+            key={m}
+            onClick={() => onSelect(calYear, calYear === year && m === month ? null : m)}
+            className={`w-full py-1.5 text-xs rounded transition-colors ${
+              calYear === year && m === month
+                ? 'bg-neutral-900 text-white font-bold'
+                : 'hover:bg-neutral-100 text-neutral-600'
+            }`}
+          >
+            {m}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// BugLeak Detail Dialog (read-only, left-right layout)
+function BugLeakDetailDialog({ item, onClose }: { item: BugLeakItem; onClose: () => void }) {
+  const [checklistTitles, setChecklistTitles] = useState<string[]>([]);
+
+  useEffect(() => {
+    if ((item.checklistIds ?? []).length > 0) {
+      fetch(`/api/stats/bugleak/${item.id}/checklist-title`)
+        .then((r) => r.ok ? r.json() : { titles: [] })
+        .then((d) => setChecklistTitles(d.titles ?? []))
+        .catch(() => {});
+    }
+  }, [item.id, item.checklistIds]);
+
+  const longField = (label: string, value: string) => (
+    <div>
+      <h4 className="text-xs font-semibold text-neutral-500 mb-1">{label}</h4>
+      <div className="bg-neutral-50 rounded-lg p-3 text-sm text-neutral-700 min-h-[60px] whitespace-pre-wrap">
+        {value || <span className="text-neutral-300">—</span>}
+      </div>
+    </div>
+  );
+
+  const propRow = (label: string, value: string) => (
+    <div className="flex justify-between text-xs py-1.5 border-b border-neutral-100">
+      <span className="text-neutral-400">{label}</span>
+      <span className="text-neutral-700 font-medium text-right max-w-[120px] truncate">{value || '—'}</span>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h3 className="text-base font-bold">{item.feature || '(機能名なし)'}</h3>
+            <p className="text-xs text-neutral-500">{item.system}</p>
+          </div>
+          <button onClick={onClose} className="p-1 text-neutral-400 hover:text-neutral-700"><X size={18} /></button>
+        </div>
+
+        <div className="flex gap-5">
+          {/* Left: main content */}
+          <div className="flex-1 space-y-3 min-w-0">
+            {longField('障害内容', item.defect)}
+            {longField('TestCenter確認結果', item.tcResult)}
+            <div>
+              <h4 className="text-xs font-semibold text-neutral-500 mb-1">チェックリスト</h4>
+              <div className="bg-neutral-50 rounded-lg p-3 text-sm text-neutral-700 min-h-[40px]">
+                {item.checklist ? item.checklist : checklistTitles.length > 0 ? checklistTitles.join(', ') : <span className="text-neutral-300">—</span>}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <span className="text-xs text-neutral-400">指摘工程</span>
+                <p className="text-sm">{item.process || '—'}</p>
+              </div>
+              <div>
+                <span className="text-xs text-neutral-400">指摘分類</span>
+                <p className="text-sm">{item.category || '—'}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: properties sidebar */}
+          <div className="w-48 flex-shrink-0 space-y-0">
+            {propRow('案件別', item.caseMonth)}
+            {propRow('CMDB', item.cmdb)}
+            {propRow('原因区分', item.cause)}
+            {propRow('リリース時期', item.releaseTime)}
+            {propRow('状態', item.status)}
+            {propRow('改善可/不可', item.improvable)}
+            <div className="flex justify-between text-xs py-1.5">
+              <span className="text-neutral-400">責任</span>
+              <span>{item.responsible ? <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" /> : '—'}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// BugLeak Complete Dialog
+function BugLeakCompleteDialog({
+  item,
+  fields,
+  saving,
+  onSave,
+  onClose,
+}: {
+  item: BugLeakItem;
+  fields: Record<string, FieldInfo>;
+  saving: boolean;
+  onSave: (form: { tcResult: string; improvable: string; checklistTitle: string }) => void;
+  onClose: () => void;
+}) {
+  const [tcResult, setTcResult] = useState(item.tcResult);
+  const [improvable, setImprovable] = useState(item.improvable);
+  const [checklistTitle, setChecklistTitle] = useState('');
+  const [showChecklistInput, setShowChecklistInput] = useState(false);
+  const [checklistTitles, setChecklistTitles] = useState<string[]>([]);
+
+  const improvableOptions = fields.improvable?.options ?? [];
+  const hasChecklist = (item.checklistIds ?? []).length > 0 || !!item.checklist;
+
+  useEffect(() => {
+    if ((item.checklistIds ?? []).length > 0) {
+      fetch(`/api/stats/bugleak/${item.id}/checklist-title`)
+        .then((r) => r.ok ? r.json() : { titles: [] })
+        .then((d) => setChecklistTitles(d.titles ?? []))
+        .catch(() => {});
+    }
+  }, [item.id, item.checklistIds]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-base font-bold">確認完了</h3>
+        <p className="text-xs text-neutral-500">{item.feature} — {item.system}</p>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-neutral-500 block mb-1">TestCenter確認結果</label>
+            <textarea value={tcResult} onChange={(e) => setTcResult(e.target.value)} rows={3} className="w-full px-3 py-2 text-sm border border-neutral-200 rounded-lg resize-none" />
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500 block mb-1">改善可/不可</label>
+            <select value={improvable} onChange={(e) => setImprovable(e.target.value)} className="w-full text-sm border border-neutral-200 rounded-lg px-3 py-2">
+              <option value="">--</option>
+              {improvableOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-neutral-500 block mb-1">チェックリスト</label>
+            {hasChecklist ? (
+              <div className="bg-neutral-50 rounded-lg p-2 text-sm text-neutral-700">
+                {item.checklist || checklistTitles.join(', ') || '(関連あり)'}
+              </div>
+            ) : showChecklistInput ? (
+              <input value={checklistTitle} onChange={(e) => setChecklistTitle(e.target.value)} placeholder="チェックリスト名を入力" className="w-full px-3 py-2 text-sm border border-neutral-200 rounded-lg" autoFocus />
+            ) : (
+              <button onClick={() => setShowChecklistInput(true)} className="inline-flex items-center gap-1 px-3 py-1.5 text-xs text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50">
+                <Plus size={12} />追加
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-neutral-500 hover:text-neutral-700">キャンセル</button>
+          <button onClick={() => onSave({ tcResult, improvable, checklistTitle })} disabled={saving} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+            {saving ? '保存中...' : '確認完了にする'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// BugLeak Service Table
+function BugLeakServiceTable({
+  service,
+  items,
+  onRowClick,
+  onDelete,
+  onComplete,
+}: {
+  service: string;
+  items: BugLeakItem[];
+  onRowClick: (item: BugLeakItem) => void;
+  onDelete: (id: string) => void;
+  onComplete: (item: BugLeakItem) => void;
+}) {
+  const [showCount, setShowCount] = useState(LOAD_SIZE);
+  const sorted = useMemo(() => [...items].sort((a, b) => {
+    const aDone = a.status === '確認完了' ? 1 : 0;
+    const bDone = b.status === '確認完了' ? 1 : 0;
+    if (aDone !== bDone) return aDone - bDone;
+    return (b.caseMonth || '').localeCompare(a.caseMonth || '');
+  }), [items]);
+  const visible = sorted.slice(0, showCount);
+  const hasMore = showCount < sorted.length;
+  const pending = items.filter((i) => i.status !== '確認完了').length;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-3">
+        <h3 className="text-sm font-bold">{service}</h3>
+        <span className="text-xs px-2 py-0.5 rounded font-medium bg-red-100 text-red-700">{items.length}件</span>
+        {pending > 0 && <span className="text-xs px-2 py-0.5 rounded font-medium bg-amber-100 text-amber-700">未確認 {pending}件</span>}
+      </div>
+
+      <div className="overflow-x-auto bg-white border border-neutral-200 rounded-xl shadow-sm">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-neutral-200 text-left text-neutral-500">
+              <th className="py-2.5 px-3 font-medium">CMDB</th>
+              <th className="py-2.5 px-3 font-medium">障害内容</th>
+              <th className="py-2.5 px-3 font-medium">状態</th>
+              <th className="py-2.5 px-3 font-medium">改善可/不可</th>
+              <th className="py-2.5 px-3 font-medium">責任</th>
+              <th className="py-2.5 px-3 font-medium w-28">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((item) => {
+              const done = item.status === '確認完了';
+              return (
+                <tr key={item.id} className={`border-b border-neutral-100 cursor-pointer ${done ? 'opacity-40' : 'hover:bg-neutral-50'}`} onClick={() => onRowClick(item)}>
+                  <td className="py-2 px-3">{item.cmdb}</td>
+                  <td className="py-2 px-3 max-w-[220px] truncate">{item.defect}</td>
+                  <td className="py-2 px-3">
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                      done ? 'bg-emerald-100 text-emerald-700' :
+                      item.status === '確認中' ? 'bg-blue-100 text-blue-700' :
+                      'bg-amber-100 text-amber-700'
+                    }`}>{item.status || '—'}</span>
+                  </td>
+                  <td className="py-2 px-3">{item.improvable || '—'}</td>
+                  <td className="py-2 px-3">{item.responsible ? <span className="inline-block w-2 h-2 rounded-full bg-red-500" /> : '—'}</td>
+                  <td className="py-2 px-3" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex gap-1">
+                      <button onClick={() => onDelete(item.id)} title="削除" className="p-1 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={13} /></button>
+                      <button onClick={() => openNotionPage(item.id)} title="Notionで編集" className="p-1 text-neutral-400 hover:text-blue-600 hover:bg-blue-50 rounded"><ExternalLink size={13} /></button>
+                      <button onClick={() => !done && onComplete(item)} disabled={done} title="完了" className={`p-1 rounded ${done ? 'text-emerald-300 cursor-not-allowed' : 'text-neutral-400 hover:text-emerald-600 hover:bg-emerald-50'}`}><Check size={13} /></button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {items.length === 0 && <tr><td colSpan={6} className="text-center py-6 text-neutral-400">データなし</td></tr>}
+          </tbody>
+        </table>
+        {hasMore && (
+          <div className="flex justify-center py-2 border-t border-neutral-100">
+            <button onClick={() => setShowCount((c) => c + LOAD_SIZE)} className="text-xs text-blue-600 hover:text-blue-800 hover:underline px-3 py-1.5">
+              もっと見る（残り {sorted.length - showCount}件）
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// BugLeak Page (main)
 function BugLeakPage() {
   const [items, setItems] = useState<BugLeakItem[]>([]);
   const [fields, setFields] = useState<Record<string, FieldInfo>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<Record<string, string>>({});
-  const [creating, setCreating] = useState(false);
-  const [createForm, setCreateForm] = useState<Record<string, string>>({});
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
+  const [filterMonth, setFilterMonth] = useState<number | null>(null);
+  const [detailItem, setDetailItem] = useState<BugLeakItem | null>(null);
+  const [completeItem, setCompleteItem] = useState<BugLeakItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (filterMonth !== null) {
+      params.set('year', String(filterYear));
+      params.set('month', String(filterMonth));
+    } else {
+      params.set('all', 'true');
+    }
     try {
-      const res = await fetch('/api/test-center/bug-leak');
+      const res = await fetch(`/api/test-center/bug-leak?${params}`);
       if (!res.ok) throw new Error();
       const data = await res.json();
       setItems(data.items ?? []);
@@ -409,51 +692,28 @@ function BugLeakPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filterYear, filterMonth]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { setLoading(true); load(); }, [load]);
 
-  const stats = useMemo(() => {
-    const total = items.length;
-    const responsible = items.filter((i) => i.responsible).length;
-    const pending = items.filter((i) => !i.status || !['完了', '対応済', 'クローズ'].includes(i.status)).length;
-    return { total, responsible, pending };
+  const byService = useMemo(() => {
+    const map = new Map<string, BugLeakItem[]>();
+    for (const item of items) {
+      const s = item.system || '(未設定)';
+      if (!map.has(s)) map.set(s, []);
+      map.get(s)!.push(item);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1].length - a[1].length);
   }, [items]);
 
-  const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
-  const pagedItems = useMemo(() => items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [items, page]);
-
-  const displayFields: { key: keyof BugLeakItem; label: string }[] = [
-    { key: 'system', label: 'サービス' },
-    { key: 'caseMonth', label: '案件別' },
-    { key: 'cmdb', label: 'CMDB' },
-    { key: 'feature', label: '機能' },
-    { key: 'defect', label: '障害内容' },
-    { key: 'status', label: '状態' },
-    { key: 'improvable', label: '改善可/不可' },
-  ];
-
-  const handleCreate = async () => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      const res = await fetch('/api/stats/bugleak/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(createForm) });
-      if (!res.ok) throw new Error();
-      setCreating(false); setCreateForm({}); await load();
-    } catch { setError('作成に失敗しました'); } finally { setSaving(false); }
-  };
-
-  const handleUpdate = async (id: string) => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/test-center/bug-leak/${id}/update`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editForm) });
-      if (!res.ok) throw new Error();
-      setEditingId(null); await load();
-    } catch { setError('更新に失敗しました'); } finally { setSaving(false); }
-  };
+  const stats = useMemo(() => ({
+    total: items.length,
+    responsible: items.filter((i) => i.responsible).length,
+    pending: items.filter((i) => i.status !== '確認完了').length,
+  }), [items]);
 
   const handleDelete = async (id: string) => {
+    setDeleteTarget(null);
     try {
       const res = await fetch(`/api/stats/bugleak/${id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error();
@@ -461,93 +721,65 @@ function BugLeakPage() {
     } catch { setError('削除に失敗しました'); }
   };
 
+  const handleComplete = async (form: { tcResult: string; improvable: string; checklistTitle: string }) => {
+    if (!completeItem || saving) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/stats/bugleak/${completeItem.id}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, system: completeItem.system }),
+      });
+      if (!res.ok) throw new Error();
+      setItems((prev) => prev.map((i) => i.id === completeItem.id ? { ...i, status: '確認完了', tcResult: form.tcResult, improvable: form.improvable } : i));
+      setCompleteItem(null);
+    } catch { setError('更新に失敗しました'); } finally { setSaving(false); }
+  };
+
+  const handleMonthSelect = (y: number, m: number | null) => {
+    setFilterYear(y);
+    setFilterMonth(m);
+  };
+
   if (loading) return <div className="flex items-center justify-center py-20 text-neutral-400"><Loader2 size={20} className="animate-spin mr-2" />読み込み中...</div>;
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-2 text-red-600 text-xs flex items-center gap-1.5">
           <AlertCircle size={14} />{error}<button onClick={() => setError(null)} className="ml-auto"><X size={12} /></button>
         </div>
       )}
-      <div className="flex gap-3 items-center">
-        <StatCard label="総数" value={stats.total} color="bg-blue-50 text-blue-700" />
-        <StatCard label="責任案件" value={stats.responsible} color="bg-red-50 text-red-700" />
-        <StatCard label="待確認" value={stats.pending} color="bg-amber-50 text-amber-700" />
-        <div className="ml-auto">
-          {!creating && <button onClick={() => setCreating(true)} className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"><Plus size={14} />新規</button>}
+
+      <div className="flex items-start gap-4">
+        <div className="flex gap-3 flex-wrap flex-1">
+          <StatCard label="総数" value={stats.total} color="bg-red-50 text-red-700" />
+          <StatCard label="責任案件" value={stats.responsible} color="bg-amber-50 text-amber-700" />
+          <StatCard label="未確認" value={stats.pending} color="bg-blue-50 text-blue-700" />
         </div>
+        <MonthCalendar year={filterYear} month={filterMonth} onSelect={handleMonthSelect} />
       </div>
 
-      {creating && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-2">
-          <div className="grid grid-cols-3 gap-2">
-            {Object.entries(fields).filter(([, f]) => f.writable).slice(0, 6).map(([key, f]) => (
-              <div key={key}>
-                <label className="text-[10px] text-neutral-500">{key}</label>
-                {f.options.length > 0 ? (
-                  <select value={createForm[key] ?? ''} onChange={(e) => setCreateForm((p) => ({ ...p, [key]: e.target.value }))} className="w-full text-xs border rounded px-1.5 py-1"><option value="">--</option>{f.options.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-                ) : (
-                  <input value={createForm[key] ?? ''} onChange={(e) => setCreateForm((p) => ({ ...p, [key]: e.target.value }))} className="w-full text-xs border rounded px-1.5 py-1" />
-                )}
-              </div>
-            ))}
-          </div>
-          <div className="flex justify-end gap-1.5">
-            <button onClick={handleCreate} disabled={saving} className="inline-flex items-center gap-1 px-2.5 py-1 text-xs bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"><Save size={12} />{saving ? '保存中...' : '保存'}</button>
-            <button onClick={() => { setCreating(false); setCreateForm({}); }} className="px-2 py-1 text-xs text-neutral-500 hover:text-neutral-700"><X size={14} /></button>
-          </div>
+      {byService.map(([service, serviceItems]) => (
+        <BugLeakServiceTable
+          key={service}
+          service={service}
+          items={serviceItems}
+          onRowClick={setDetailItem}
+          onDelete={setDeleteTarget}
+          onComplete={setCompleteItem}
+        />
+      ))}
+
+      {items.length === 0 && !loading && (
+        <div className="text-center py-12 text-neutral-400 text-sm">
+          {filterMonth !== null ? `${filterYear}年${filterMonth}月のデータはありません` : 'データなし'}
         </div>
       )}
 
-      <div className="overflow-x-auto bg-white border border-neutral-200 rounded-xl shadow-sm">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b border-neutral-200 text-left text-neutral-500">
-              {displayFields.map((f) => <th key={f.key} className="py-2.5 px-3 font-medium">{f.label}</th>)}
-              <th className="py-2.5 px-3 font-medium">責任</th>
-              <th className="py-2.5 px-3 font-medium w-16"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {pagedItems.map((item) => (
-              editingId === item.id ? (
-                <tr key={item.id} className="border-b border-neutral-100 bg-blue-50/50">
-                  {displayFields.map((f) => (
-                    <td key={f.key} className="py-1.5 px-3">
-                      {fields[f.key]?.options?.length ? (
-                        <select value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="text-xs border rounded px-1 py-1"><option value="">--</option>{fields[f.key].options.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-                      ) : (
-                        <input value={editForm[f.key] ?? ''} onChange={(e) => setEditForm((p) => ({ ...p, [f.key]: e.target.value }))} className="w-full px-1.5 py-1 text-xs border rounded" />
-                      )}
-                    </td>
-                  ))}
-                  <td className="py-1.5 px-3"><input type="checkbox" checked={editForm.responsible === 'true'} onChange={(e) => setEditForm((p) => ({ ...p, responsible: String(e.target.checked) }))} /></td>
-                  <td className="py-1.5 px-3">
-                    <div className="flex gap-1">
-                      <button onClick={() => handleUpdate(item.id)} disabled={saving} className="p-1 text-blue-600 hover:bg-blue-100 rounded"><Save size={13} /></button>
-                      <button onClick={() => setEditingId(null)} className="p-1 text-neutral-400 hover:bg-neutral-100 rounded"><X size={13} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                <tr key={item.id} className="border-b border-neutral-100 hover:bg-neutral-50 group">
-                  {displayFields.map((f) => <td key={f.key} className="py-2 px-3 max-w-[140px] truncate">{String(item[f.key] ?? '')}</td>)}
-                  <td className="py-2 px-3">{item.responsible && <span className="inline-block w-2 h-2 rounded-full bg-red-500" />}</td>
-                  <td className="py-2 px-3">
-                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => { setEditingId(item.id); const form: Record<string, string> = {}; for (const f of displayFields) form[f.key] = String(item[f.key] ?? ''); form.responsible = String(item.responsible); setEditForm(form); }} className="p-1 text-neutral-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Pencil size={13} /></button>
-                      <button onClick={() => handleDelete(item.id)} className="p-1 text-neutral-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={13} /></button>
-                    </div>
-                  </td>
-                </tr>
-              )
-            ))}
-            {items.length === 0 && <tr><td colSpan={displayFields.length + 2} className="text-center py-8 text-neutral-400">データなし</td></tr>}
-          </tbody>
-        </table>
-        <Pagination page={page} totalPages={totalPages} onPageChange={setPage} />
-      </div>
+      {detailItem && <BugLeakDetailDialog item={detailItem} onClose={() => setDetailItem(null)} />}
+      {completeItem && <BugLeakCompleteDialog item={completeItem} fields={fields} saving={saving} onSave={handleComplete} onClose={() => setCompleteItem(null)} />}
+      {deleteTarget && <ConfirmDialog message="この案件を削除しますか？この操作は取り消せません。" onConfirm={() => handleDelete(deleteTarget)} onCancel={() => setDeleteTarget(null)} />}
     </div>
   );
 }

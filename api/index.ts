@@ -1741,11 +1741,16 @@ type BugLeakItem = {
   status: string;
   improvable: string;
   checklist: string;
+  checklistIds: string[];
 };
 
 function parseBugLeakItem(page: any): BugLeakItem {
   const p = page?.properties ?? {};
   const resp = p["責任"];
+  const clProp = p["チェックリスト"];
+  const checklistIds = clProp?.type === "relation"
+    ? (clProp.relation ?? []).map((r: any) => r.id as string)
+    : [];
   return {
     id: page?.id ?? "",
     system: propertyToPlainText(p["サービス"]),
@@ -1761,7 +1766,8 @@ function parseBugLeakItem(page: any): BugLeakItem {
     tcResult: propertyToPlainText(p["TestCenter確認結果"]),
     status: propertyToPlainText(p["状態"]),
     improvable: propertyToPlainText(p["改善可/不可"]),
-    checklist: propertyToPlainText(p["チェックリスト"]),
+    checklist: clProp?.type === "relation" ? "" : propertyToPlainText(clProp),
+    checklistIds,
   };
 }
 
@@ -1858,9 +1864,10 @@ app.get("/api/test-center/bug-leak", async (req, res) => {
   }
   const year = req.query.year ? Number(req.query.year) : null;
   const month = req.query.month ? Number(req.query.month) : null;
+  const showAll = req.query.all === "true";
   try {
     const items = await queryAllBugLeakItems(databaseId);
-    const filtered = items.filter((it) => {
+    const filtered = showAll && year === null && month === null ? items : items.filter((it) => {
       const m = (it.caseMonth || "").match(/^(\d{4})(\d{2})$/);
       if (!m) return false;
       if (year !== null && Number(m[1]) !== year) return false;
@@ -4068,6 +4075,122 @@ app.delete("/api/stats/bugleak/:id", async (req, res) => {
   } catch (error) {
     console.error("Stats bugleak delete error:", error);
     return res.status(500).json({ error: "Failed to delete bugleak item" });
+  }
+});
+
+// POST /api/stats/bugleak/:id/complete — 確認完了: tcResult + improvable + status + optional checklist
+app.post("/api/stats/bugleak/:id/complete", async (req, res) => {
+  const databaseId = process.env.NOTION_BUGLEAK_DATABASE_ID;
+  if (!notion || !databaseId) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  const { tcResult, improvable, checklistTitle, system } = req.body ?? {};
+  try {
+    const dataSourceId = await resolveBugLeakDataSource(databaseId);
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const props: Record<string, any> = {};
+
+    // tcResult → rich_text
+    const tcName = pickSchemaName(schema, ["TestCenter確認結果"]);
+    if (tcName && tcResult !== undefined) {
+      const built = buildBugProperty(schema[tcName], String(tcResult));
+      if (built) props[tcName] = built;
+    }
+    // improvable → select
+    const impName = pickSchemaName(schema, ["改善可/不可"]);
+    if (impName && improvable !== undefined) {
+      const built = buildBugProperty(schema[impName], String(improvable));
+      if (built) props[impName] = built;
+    }
+    // status → 確認完了
+    const stName = pickSchemaName(schema, ["状態"]);
+    if (stName) {
+      const built = buildBugProperty(schema[stName], "確認完了");
+      if (built) props[stName] = built;
+    }
+    // Create checklist item if title provided
+    let checklistId: string | null = null;
+    if (checklistTitle && String(checklistTitle).trim()) {
+      try {
+        const clDataSourceId = await resolveChecklistDataSource();
+        const clDs: any = await (notion as any).dataSources.retrieve({ data_source_id: clDataSourceId });
+        const clSchema: Record<string, any> = clDs?.properties ?? {};
+        const clProps: Record<string, any> = {};
+        // find title property
+        for (const [name, prop] of Object.entries(clSchema) as [string, any][]) {
+          if (prop.type === "title") {
+            clProps[name] = { title: [{ type: "text", text: { content: String(checklistTitle).trim() } }] };
+            break;
+          }
+        }
+        // find システム property
+        for (const [name, prop] of Object.entries(clSchema) as [string, any][]) {
+          if (name.includes("システム") || name.includes("サービス")) {
+            const built = buildBugProperty(prop, String(system ?? ""));
+            if (built) clProps[name] = built;
+            break;
+          }
+        }
+        const created: any = await withNotionRetry("pages.create", () =>
+          notion!.pages.create({
+            parent: { type: "data_source_id", data_source_id: clDataSourceId } as any,
+            properties: clProps,
+          } as any),
+        );
+        checklistId = created?.id ?? null;
+      } catch (e) {
+        console.error("Failed to create checklist item:", e);
+      }
+    }
+    // Link checklist if created
+    if (checklistId) {
+      const clName = pickSchemaName(schema, ["チェックリスト"]);
+      if (clName) {
+        const built = buildBugProperty(schema[clName], checklistId);
+        if (built) props[clName] = built;
+      }
+    }
+
+    await notion.pages.update({ page_id: pageId, properties: props } as any);
+    return res.json({ ok: true, checklistId });
+  } catch (error) {
+    console.error("Stats bugleak complete error:", error);
+    return res.status(500).json({ error: "Failed to complete bugleak item" });
+  }
+});
+
+// GET /api/stats/bugleak/:id/checklist-title — resolve checklist relation titles
+app.get("/api/stats/bugleak/:id/checklist-title", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion not configured" });
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    const page: any = await withNotionRetry("pages.retrieve", () =>
+      notion!.pages.retrieve({ page_id: pageId }),
+    );
+    const clProp = page?.properties?.["チェックリスト"];
+    if (clProp?.type !== "relation" || !clProp.relation?.length) {
+      return res.json({ titles: [] });
+    }
+    const titles: string[] = [];
+    for (const rel of clProp.relation) {
+      try {
+        const linked: any = await withNotionRetry("pages.retrieve", () =>
+          notion!.pages.retrieve({ page_id: rel.id }),
+        );
+        const lp = linked?.properties ?? {};
+        let title = "";
+        for (const val of Object.values(lp) as any[]) {
+          if (val?.type === "title") { title = propertyToPlainText(val); break; }
+        }
+        titles.push(title || rel.id);
+      } catch { titles.push(rel.id); }
+    }
+    return res.json({ titles });
+  } catch (error) {
+    console.error("Checklist title error:", error);
+    return res.status(500).json({ error: "Failed to fetch checklist titles" });
   }
 });
 
