@@ -5608,7 +5608,7 @@ function parseEntityNote(page: any): EntityNote {
     category,
     status: p["状態"]?.status?.name ?? "",
     priority: p["優先度"]?.select?.name ?? "",
-    assignee: peopleToEmails(p["アサイン"]),
+    assignee: peopleToEmails(p["割当"]),
     requester: peopleToEmails(p["請求者"]),
     entityId: extractRelationIds(p["関連案件"])[0] ?? "",
     createdTime: p["提出日"]?.created_time ?? page.created_time ?? "",
@@ -5805,7 +5805,7 @@ app.post("/api/notes", async (req, res) => {
 
     if (assignee) {
       const people = await resolveEmailsToNotionPeople(assignee);
-      if (people.length > 0) properties["アサイン"] = { people };
+      if (people.length > 0) properties["割当"] = { people };
     }
     if (requester) {
       const people = await resolveEmailsToNotionPeople(requester);
@@ -5884,10 +5884,10 @@ app.post("/api/notes/:id/update", async (req, res) => {
   }
   if (typeof assignee === "string") {
     if (assignee === "") {
-      properties["アサイン"] = { people: [] };
+      properties["割当"] = { people: [] };
     } else {
       const people = await resolveEmailsToNotionPeople(assignee);
-      if (people.length > 0) properties["アサイン"] = { people };
+      if (people.length > 0) properties["割当"] = { people };
     }
   }
   if (typeof requester === "string") {
