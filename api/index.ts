@@ -5872,6 +5872,56 @@ app.post("/api/notes/:id/toggle", async (req, res) => {
   }
 });
 
+app.post("/api/notes/:id/update", async (req, res) => {
+  if (!notion) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { title, assignee, requester, priority } = req.body ?? {};
+  const properties: Record<string, any> = {};
+
+  if (typeof title === "string" && title.trim()) {
+    properties["ニーズ"] = { title: [{ type: "text", text: { content: title.trim() } }] };
+  }
+  if (typeof assignee === "string") {
+    if (assignee === "") {
+      properties["アサイン"] = { people: [] };
+    } else {
+      const people = await resolveEmailsToNotionPeople(assignee);
+      if (people.length > 0) properties["アサイン"] = { people };
+    }
+  }
+  if (typeof requester === "string") {
+    if (requester === "") {
+      properties["請求者"] = { people: [] };
+    } else {
+      const people = await resolveEmailsToNotionPeople(requester);
+      if (people.length > 0) properties["請求者"] = { people };
+    }
+  }
+  if (typeof priority === "string") {
+    if (priority === "") {
+      properties["優先度"] = { select: null };
+    } else if (["高", "中", "低"].includes(priority)) {
+      properties["優先度"] = { select: { name: priority } };
+    }
+  }
+
+  if (Object.keys(properties).length === 0) {
+    return res.status(400).json({ error: "No fields to update" });
+  }
+
+  try {
+    const updated: any = await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, properties }),
+    );
+    const result = parseEntityNote(updated);
+    return res.json(result);
+  } catch (error) {
+    console.error("Note update error:", error);
+    return res.status(500).json({ error: "Failed to update note" });
+  }
+});
+
 app.get("/api/notes/:id/replies", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });

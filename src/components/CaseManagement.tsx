@@ -659,7 +659,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                               <div className="flex items-center gap-1.5">
                                 <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedCaseId === c.id ? 'rotate-90' : ''}`} />
                                 <span className="truncate">{c.projectName}</span>
-                                {nc && <NoteBadges entityId={c.id} counts={nc} memberOptions={memberOptions} onCountChange={reloadCounts} />}
+                                {nc && <NoteBadges entityId={c.id} counts={nc} memberOptions={memberOptions} onCountChange={reloadCounts} editable />}
                               </div>
                             </td>
                             <td className="px-3 py-2.5">{statusBadge(c.status)}</td>

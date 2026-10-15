@@ -1556,6 +1556,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [overviewUpdatedAt, setOverviewUpdatedAt] = useState<number | null>(initialOverview?.updatedAt ?? null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [bugChartItems, setBugChartItems] = useState<{ judgment: string; month: string }[]>([]);
   const [kpiTargets, setKpiTargets] = useState<{ first: { label: string; value: string }[]; second: { label: string; value: string }[] }>({ first: [], second: [] });
   useEffect(() => {
     let alive = true;
@@ -1764,11 +1765,25 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     });
   }, [currentItems]);
 
+  const fetchBugChartData = async (refresh = false) => {
+    try {
+      const res = await fetch(`/api/test-center/bugs${refresh ? '?refresh=true' : ''}`);
+      if (res.ok) {
+        const data = await res.json();
+        const items: { judgment: string; month: string }[] = (data.items ?? []).map((b: any) => ({ judgment: b.judgment ?? '', month: b.month ?? '' }));
+        setBugChartItems(items);
+      }
+    } catch { /* */ }
+  };
+
   const fetchOverview = async (refresh = false) => {
     setOverviewLoading(true);
     setOverviewError(null);
     try {
-      const response = await fetch(`/api/test-center/overview${refresh ? '?refresh=true' : ''}`);
+      const [response] = await Promise.all([
+        fetch(`/api/test-center/overview${refresh ? '?refresh=true' : ''}`),
+        fetchBugChartData(refresh),
+      ]);
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new Error(body?.error || `${t('requestFailed')} (${response.status})`);
@@ -1931,16 +1946,17 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const monthlyBugSeries = useMemo(() => {
     const buckets = new Map<number, number>();
     for (let m = 1; m <= 12; m++) buckets.set(m, 0);
-    for (const item of overviewItems) {
-      const key = toMonthKey(item.month);
+    for (const bug of bugChartItems) {
+      if (bug.judgment === '確認OK') continue;
+      const key = toMonthKey(bug.month);
       if (!key) continue;
       const y = Number(key.slice(0, 4));
       if (y !== filterYear) continue;
       const m = Number(key.slice(4, 6));
-      buckets.set(m, (buckets.get(m) ?? 0) + parseNumber(item.bugCount));
+      buckets.set(m, (buckets.get(m) ?? 0) + 1);
     }
     return Array.from(buckets.entries()).map(([month, bug]) => ({ month, bug }));
-  }, [overviewItems, filterYear]);
+  }, [bugChartItems, filterYear]);
 
   const monthlyCaseSeries = useMemo(() => {
     const buckets = new Map<number, { total: number; done: number }>();

@@ -8,7 +8,9 @@ import {
   ImagePlus,
   Loader2,
   MessageCircle,
+  Pencil,
   Plus,
+  Save,
   Send,
   TriangleAlert,
   X,
@@ -294,7 +296,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
             )}
             {needsAssignee && (
               <div className="relative">
-                <label className="text-xs text-neutral-500 font-medium mb-1 block">アサイン</label>
+                <label className="text-xs text-neutral-500 font-medium mb-1 block">割当</label>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {assignees.map((email) => (
                     <span key={email} className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
@@ -313,7 +315,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
                   )}
                 </div>
                 {showAssigneeDropdown && (
-                  <div className="absolute z-10 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[160px]">
+                  <div className="absolute z-10 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[160px] max-h-[200px] overflow-y-auto">
                     {memberOptions.filter((m) => !assignees.includes(m)).map((m) => (
                       <button key={m} type="button"
                         onClick={() => { setAssignees([...assignees, m]); setShowAssigneeDropdown(false); }}
@@ -486,11 +488,12 @@ export function QaThread({ noteId, memberOptions }: { noteId: string; memberOpti
 
 // ── NoteList (per entity) ──
 
-export function NoteList({ entityId, entityType = 'case', memberOptions, refreshKey = 0 }: {
+export function NoteList({ entityId, entityType = 'case', memberOptions, refreshKey = 0, editable = false }: {
   entityId: string;
   entityType?: EntityType;
   memberOptions: string[];
   refreshKey?: number;
+  editable?: boolean;
 }) {
   const [notes, setNotes] = useState<EntityNote[]>([]);
   const [loading, setLoading] = useState(true);
@@ -498,6 +501,7 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [viewerImages, setViewerImages] = useState<string[] | null>(null);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -531,6 +535,11 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
     }
   };
 
+  const handleUpdate = (updated: EntityNote) => {
+    setNotes((prev) => prev.map((n) => n.id === updated.id ? { ...n, ...updated } : n));
+    setEditingId(null);
+  };
+
   if (loading) return <div className="py-2 text-center"><Loader2 size={14} className="animate-spin mx-auto text-neutral-400" /></div>;
   if (notes.length === 0) return null;
 
@@ -553,8 +562,14 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
             <div className="space-y-1">
               {items.map((n) => {
                 const isDone = n.status === '対応済';
+                if (editingId === n.id) {
+                  return (
+                    <NoteInlineEdit key={n.id} note={n} memberOptions={memberOptions}
+                      onSaved={handleUpdate} onCancel={() => setEditingId(null)} />
+                  );
+                }
                 return (
-                  <div key={n.id} className="rounded-lg bg-white border border-neutral-100 px-3 py-2">
+                  <div key={n.id} className="rounded-lg bg-white border border-neutral-100 px-3 py-2 group/note">
                     <div className="flex items-start gap-2">
                       {cat !== '追加説明' && (
                         <button
@@ -576,19 +591,28 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
                         )}
                         <div className="flex flex-wrap gap-2 mt-1 text-[10px] text-neutral-400">
                           {n.requester && <span>提出: {n.requester.split('@')[0]}</span>}
-                          {n.assignee && <span>&rarr; {n.assignee.split('@')[0]}</span>}
+                          {n.assignee && <span>割当: {n.assignee.split(',').map((e) => e.trim().split('@')[0]).join(', ')}</span>}
                           {n.priority && <span className={n.priority === '高' ? 'text-red-500 font-medium' : ''}>{n.priority}</span>}
                           <span>{new Date(n.createdTime).toLocaleDateString('ja-JP')}</span>
                         </div>
                       </div>
-                      {cat === 'QA' && (
-                        <button
-                          onClick={() => setExpandedQaId(expandedQaId === n.id ? null : n.id)}
-                          className="text-[10px] text-emerald-600 hover:underline shrink-0"
-                        >
-                          {expandedQaId === n.id ? '閉じる' : '対話'}
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {editable && (
+                          <button onClick={() => setEditingId(n.id)}
+                            className="p-1 rounded hover:bg-neutral-100 text-neutral-300 opacity-0 group-hover/note:opacity-100 transition-opacity"
+                            title="編集">
+                            <Pencil size={12} />
+                          </button>
+                        )}
+                        {cat === 'QA' && (
+                          <button
+                            onClick={() => setExpandedQaId(expandedQaId === n.id ? null : n.id)}
+                            className="text-[10px] text-emerald-600 hover:underline"
+                          >
+                            {expandedQaId === n.id ? '閉じる' : '対話'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {cat === 'QA' && expandedQaId === n.id && (
                       <QaThread noteId={n.id} memberOptions={memberOptions} />
@@ -603,6 +627,117 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
       {viewerImages && (
         <ScreenshotViewer images={viewerImages} startIndex={viewerIndex} onClose={() => setViewerImages(null)} />
       )}
+    </div>
+  );
+}
+
+function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
+  note: EntityNote;
+  memberOptions: string[];
+  onSaved: (n: EntityNote) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(note.title);
+  const [assignees, setAssignees] = useState<string[]>(note.assignee ? note.assignee.split(',').map((s) => s.trim()).filter(Boolean) : []);
+  const [requester, setRequester] = useState(note.requester ?? '');
+  const [priority, setPriority] = useState(note.priority ?? '');
+  const [saving, setSaving] = useState(false);
+  const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
+  const needsAssignee = note.category === '指摘' || note.category === 'QA';
+
+  const handleSave = async () => {
+    if (!title.trim() || saving) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/notes/${encodeURIComponent(note.id)}/update`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          ...(needsAssignee ? { assignee: assignees.join(',') } : {}),
+          ...(note.category !== '追加説明' ? { requester } : {}),
+          ...(note.category === '指摘' ? { priority } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error();
+      const updated = await res.json();
+      onSaved({ ...note, ...updated });
+    } catch { /* */ }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="rounded-lg bg-blue-50/50 border border-blue-200 px-3 py-2.5 space-y-2.5">
+      <div>
+        <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">内容</label>
+        <textarea value={title} onChange={(e) => setTitle(e.target.value)}
+          className="w-full px-2 py-1 text-xs border border-neutral-200 rounded-lg focus:border-blue-400 focus:outline-none resize-none bg-white"
+          rows={2} autoFocus />
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-2">
+        {note.category !== '追加説明' && (
+          <div>
+            <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">請求者</label>
+            <select value={requester} onChange={(e) => setRequester(e.target.value)}
+              className="px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:border-blue-400 focus:outline-none min-w-[120px]">
+              <option value="">選択...</option>
+              {memberOptions.map((m) => <option key={m} value={m}>{m.split('@')[0]}</option>)}
+            </select>
+          </div>
+        )}
+        {needsAssignee && (
+          <div className="relative">
+            <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">割当</label>
+            <div className="flex flex-wrap items-center gap-1">
+              {assignees.map((email) => (
+                <span key={email} className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] bg-blue-100 text-blue-700 border border-blue-200 rounded-full">
+                  {email.split('@')[0]}
+                  <button type="button" onClick={() => setAssignees(assignees.filter((e) => e !== email))} className="hover:text-red-500"><X size={8} /></button>
+                </span>
+              ))}
+              {memberOptions.filter((m) => !assignees.includes(m)).length > 0 && (
+                <button type="button" onClick={() => setShowAssigneeDropdown(!showAssigneeDropdown)}
+                  className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-dashed border-neutral-300 text-neutral-400 hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50 transition-colors">
+                  <Plus size={10} />
+                </button>
+              )}
+            </div>
+            {showAssigneeDropdown && (
+              <div className="absolute z-10 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[140px] max-h-[160px] overflow-y-auto">
+                {memberOptions.filter((m) => !assignees.includes(m)).map((m) => (
+                  <button key={m} type="button"
+                    onClick={() => { setAssignees([...assignees, m]); setShowAssigneeDropdown(false); }}
+                    className="block w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 text-neutral-700">
+                    {m.split('@')[0]}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        {note.category === '指摘' && (
+          <div>
+            <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">優先度</label>
+            <select value={priority} onChange={(e) => setPriority(e.target.value)}
+              className="px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:border-blue-400 focus:outline-none min-w-[80px]">
+              <option value="">-</option>
+              <option value="高">高</option>
+              <option value="中">中</option>
+              <option value="低">低</option>
+            </select>
+          </div>
+        )}
+      </div>
+      <div className="flex justify-end gap-2">
+        <button onClick={onCancel} className="px-3 py-1 text-[11px] rounded-lg border border-neutral-300 hover:bg-white text-neutral-600">
+          キャンセル
+        </button>
+        <button onClick={handleSave} disabled={saving || !title.trim()}
+          className="inline-flex items-center gap-1 px-3 py-1 text-[11px] rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+          {saving ? <Loader2 size={10} className="animate-spin" /> : <Save size={10} />}
+          保存
+        </button>
+      </div>
     </div>
   );
 }
@@ -784,13 +919,14 @@ export function PendingNotesSection({ email, memberOptions }: {
 
 // ── NoteCategoryDialog (modal showing notes of one category for an entity) ──
 
-export function NoteCategoryDialog({ category, entityId, entityType = 'case', memberOptions, onClose, onCountChange }: {
+export function NoteCategoryDialog({ category, entityId, entityType = 'case', memberOptions, onClose, onCountChange, editable = false }: {
   category: NoteCategory;
   entityId: string;
   entityType?: EntityType;
   memberOptions: string[];
   onClose: () => void;
   onCountChange?: () => void;
+  editable?: boolean;
 }) {
   const [notes, setNotes] = useState<EntityNote[]>([]);
   const [loading, setLoading] = useState(true);
@@ -800,6 +936,7 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
   const [expandedQaId, setExpandedQaId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -892,8 +1029,15 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
             <div className="space-y-2">
               {notes.map((n) => {
                 const isDone = n.status === '対応済';
+                if (editingId === n.id) {
+                  return (
+                    <NoteInlineEdit key={n.id} note={n} memberOptions={memberOptions}
+                      onSaved={(updated) => { setNotes((prev) => prev.map((x) => x.id === updated.id ? { ...x, ...updated } : x)); setEditingId(null); }}
+                      onCancel={() => setEditingId(null)} />
+                  );
+                }
                 return (
-                  <div key={n.id} className="rounded-lg border border-neutral-100 px-3 py-2">
+                  <div key={n.id} className="rounded-lg border border-neutral-100 px-3 py-2 group/note">
                     <div className="flex items-start gap-2">
                       {category !== '追加説明' && (
                         <button
@@ -915,19 +1059,28 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
                         )}
                         <div className="flex flex-wrap gap-2 mt-1 text-[10px] text-neutral-400">
                           {n.requester && <span>提出: {n.requester.split('@')[0]}</span>}
-                          {n.assignee && <span>&rarr; {n.assignee.split('@')[0]}</span>}
+                          {n.assignee && <span>割当: {n.assignee.split(',').map((e) => e.trim().split('@')[0]).join(', ')}</span>}
                           {n.priority && <span className={n.priority === '高' ? 'text-red-500 font-medium' : ''}>{n.priority}</span>}
                           <span>{new Date(n.createdTime).toLocaleDateString('ja-JP')}</span>
                         </div>
                       </div>
-                      {category === 'QA' && (
-                        <button
-                          onClick={() => setExpandedQaId(expandedQaId === n.id ? null : n.id)}
-                          className="text-[10px] text-emerald-600 hover:underline shrink-0"
-                        >
-                          {expandedQaId === n.id ? '閉じる' : '対話'}
-                        </button>
-                      )}
+                      <div className="flex items-center gap-1 shrink-0">
+                        {editable && (
+                          <button onClick={() => setEditingId(n.id)}
+                            className="p-1 rounded hover:bg-neutral-100 text-neutral-300 opacity-0 group-hover/note:opacity-100 transition-opacity"
+                            title="編集">
+                            <Pencil size={12} />
+                          </button>
+                        )}
+                        {category === 'QA' && (
+                          <button
+                            onClick={() => setExpandedQaId(expandedQaId === n.id ? null : n.id)}
+                            className="text-[10px] text-emerald-600 hover:underline"
+                          >
+                            {expandedQaId === n.id ? '閉じる' : '対話'}
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {category === 'QA' && expandedQaId === n.id && (
                       <QaThread noteId={n.id} memberOptions={memberOptions} />
@@ -954,12 +1107,13 @@ const BADGE_STYLES: Record<NoteCategory, { bg: string; text: string }> = {
   'QA': { bg: 'bg-emerald-100', text: 'text-emerald-700' },
 };
 
-export function NoteBadges({ entityId, entityType = 'case', counts, memberOptions, onCountChange }: {
+export function NoteBadges({ entityId, entityType = 'case', counts, memberOptions, onCountChange, editable = false }: {
   entityId: string;
   entityType?: EntityType;
   counts: { qa: number; note: number; issue: number };
   memberOptions: string[];
   onCountChange?: () => void;
+  editable?: boolean;
 }) {
   const [activeCategory, setActiveCategory] = useState<NoteCategory | null>(null);
 
@@ -997,6 +1151,7 @@ export function NoteBadges({ entityId, entityType = 'case', counts, memberOption
           memberOptions={memberOptions}
           onClose={() => setActiveCategory(null)}
           onCountChange={onCountChange}
+          editable={editable}
         />
       )}
     </>
