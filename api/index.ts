@@ -749,6 +749,67 @@ function invalidateProgressCache(): void {
   progressCache = null;
 }
 
+let emailToUserIdCache: Map<string, string> | null = null;
+let emailCacheAt = 0;
+
+async function buildEmailToUserIdMap(): Promise<Map<string, string>> {
+  const now = Date.now();
+  if (emailToUserIdCache && now - emailCacheAt < PROGRESS_CACHE_TTL_MS) {
+    return emailToUserIdCache;
+  }
+
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) return new Map();
+
+  const database: any = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
+  const dataSourceId = (database as any)?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) return new Map();
+
+  const map = new Map<string, string>();
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+
+  while (hasMore) {
+    const c = cursor;
+    const response: any = await withNotionRetry("dataSources.query", () =>
+      notion!.dataSources.query({ data_source_id: dataSourceId, start_cursor: c, page_size: 100 }),
+    );
+    for (const page of response?.results ?? []) {
+      const props = page?.properties ?? {};
+      for (const prop of Object.values(props) as any[]) {
+        if (prop?.type !== "people" || !Array.isArray(prop.people)) continue;
+        for (const p of prop.people) {
+          const email = p?.person?.email;
+          const id = p?.id;
+          if (email && id) map.set(email, id);
+        }
+      }
+    }
+    hasMore = response?.has_more ?? false;
+    cursor = response?.next_cursor ?? undefined;
+  }
+
+  emailToUserIdCache = map;
+  emailCacheAt = now;
+  return map;
+}
+
+async function resolveEmailsToNotionPeople(emails: string): Promise<{ id: string }[]> {
+  const emailMap = await buildEmailToUserIdMap();
+  const targets = emails.split(",").map((s) => s.trim()).filter(Boolean);
+  const resolved = targets
+    .map((email) => emailMap.get(email))
+    .filter(Boolean)
+    .map((id) => ({ id: id! }));
+  if (resolved.length < targets.length) {
+    const missing = targets.filter((e) => !emailMap.has(e));
+    console.warn("resolveEmailsToNotionPeople: no user ID found for:", missing.join(", "));
+  }
+  return resolved;
+}
+
 async function queryAllProgressItems(databaseId: string, forceRefresh = false): Promise<ProgressItem[]> {
   if (!notion) return [];
 
@@ -3491,7 +3552,6 @@ app.post("/api/case-management/:id/update", async (req, res) => {
     const properties = page?.properties ?? {};
     const updates: Record<string, any> = {};
 
-    let workspaceUsers: any[] | null = null;
     for (const [key, value] of Object.entries(fields)) {
       const names = FIELD_MAP[key];
       if (!names) continue;
@@ -3506,15 +3566,8 @@ app.post("/api/case-management/:id/update", async (req, res) => {
       if (!prop) continue;
 
       if (prop.type === "people") {
-        if (!workspaceUsers) {
-          const usersRes: any = await withNotionRetry("users.list", () => notion!.users.list({}));
-          workspaceUsers = usersRes?.results ?? [];
-        }
-        const emails = String(value).split(",").map((s: string) => s.trim()).filter(Boolean);
-        const userIds = emails
-          .map((email: string) => workspaceUsers!.find((u: any) => u?.person?.email === email)?.id)
-          .filter(Boolean);
-        updates[propName] = { people: userIds.map((id: string) => ({ id })) };
+        const people = await resolveEmailsToNotionPeople(String(value));
+        updates[propName] = { people };
       } else {
         updates[propName] = buildUpdatableProperty(prop, String(value), propName);
       }
@@ -5750,39 +5803,12 @@ app.post("/api/notes", async (req, res) => {
       properties["優先度"] = { select: { name: priority } };
     }
 
-    let workspaceUsers: any[] | null = null;
-    const resolveEmails = async (emails: string) => {
-      if (!workspaceUsers) {
-        workspaceUsers = [];
-        let cursor: string | undefined = undefined;
-        let hasMore = true;
-        while (hasMore) {
-          const usersRes: any = await withNotionRetry("users.list", () =>
-            notion!.users.list({ start_cursor: cursor, page_size: 100 } as any),
-          );
-          workspaceUsers.push(...(usersRes?.results ?? []));
-          hasMore = usersRes?.has_more ?? false;
-          cursor = usersRes?.next_cursor ?? undefined;
-        }
-      }
-      const targets = emails.split(",").map((s) => s.trim()).filter(Boolean);
-      const resolved = targets
-        .map((email) => workspaceUsers!.find((u: any) => u?.person?.email === email)?.id)
-        .filter(Boolean)
-        .map((id) => ({ id }));
-      if (resolved.length < targets.length) {
-        const missing = targets.filter((e) => !workspaceUsers!.some((u: any) => u?.person?.email === e));
-        console.warn("resolveEmails: no Notion user found for:", missing.join(", "));
-      }
-      return resolved;
-    };
-
     if (assignee) {
-      const people = await resolveEmails(assignee);
+      const people = await resolveEmailsToNotionPeople(assignee);
       if (people.length > 0) properties["アサイン"] = { people };
     }
     if (requester) {
-      const people = await resolveEmails(requester);
+      const people = await resolveEmailsToNotionPeople(requester);
       if (people.length > 0) properties["請求者"] = { people };
     }
 

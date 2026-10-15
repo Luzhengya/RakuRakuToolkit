@@ -122,7 +122,8 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
   onCancel: () => void;
 }) {
   const [title, setTitle] = useState('');
-  const [assignee, setAssignee] = useState('');
+  const [assignees, setAssignees] = useState<string[]>([]);
+  const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
   const [requester, setRequester] = useState('');
   const [priority, setPriority] = useState('');
   const [screenshots, setScreenshots] = useState<string[]>([]);
@@ -138,7 +139,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: title.trim(), category, entityId, entityType,
-          assignee: assignee || undefined,
+          assignee: assignees.length > 0 ? assignees.join(',') : undefined,
           requester: requester || undefined,
           priority: priority || undefined,
           screenshots: screenshots.length > 0 ? screenshots : undefined,
@@ -292,13 +293,36 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
               </div>
             )}
             {needsAssignee && (
-              <div>
+              <div className="relative">
                 <label className="text-xs text-neutral-500 font-medium mb-1 block">アサイン</label>
-                <select value={assignee} onChange={(e) => setAssignee(e.target.value)}
-                  className="px-2.5 py-1.5 text-xs border border-neutral-200 rounded-lg bg-white focus:border-neutral-400 focus:outline-none min-w-[140px]">
-                  <option value="">選択...</option>
-                  {memberOptions.map((m) => <option key={m} value={m}>{m.split('@')[0]}</option>)}
-                </select>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {assignees.map((email) => (
+                    <span key={email} className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 text-blue-700 border border-blue-200 rounded-full">
+                      {email.split('@')[0]}
+                      <button type="button" onClick={() => setAssignees(assignees.filter((e) => e !== email))}
+                        className="hover:text-red-500">
+                        <X size={10} />
+                      </button>
+                    </span>
+                  ))}
+                  {memberOptions.filter((m) => !assignees.includes(m)).length > 0 && (
+                    <button type="button" onClick={() => setShowAssigneeDropdown(!showAssigneeDropdown)}
+                      className="inline-flex items-center justify-center w-6 h-6 rounded-full border border-dashed border-neutral-300 text-neutral-400 hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50 transition-colors">
+                      <Plus size={12} />
+                    </button>
+                  )}
+                </div>
+                {showAssigneeDropdown && (
+                  <div className="absolute z-10 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[160px]">
+                    {memberOptions.filter((m) => !assignees.includes(m)).map((m) => (
+                      <button key={m} type="button"
+                        onClick={() => { setAssignees([...assignees, m]); setShowAssigneeDropdown(false); }}
+                        className="block w-full text-left px-3 py-1.5 text-xs hover:bg-neutral-50 text-neutral-700">
+                        {m.split('@')[0]}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
             {category === '指摘' && (
