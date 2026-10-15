@@ -5751,17 +5751,42 @@ app.get("/api/notes/counts", async (_req, res) => {
 app.get("/api/notes/by-assignee", async (_req, res) => {
   try {
     const notes = await queryNotesByEntityIds();
-    const pending = notes.filter(
+    const byAssignee: Record<string, EntityNote[]> = {};
+
+    const pendingIssueQa = notes.filter(
       (n) => (n.category === "指摘" || n.category === "QA") && n.status !== "対応済",
     );
-    const byAssignee: Record<string, EntityNote[]> = {};
-    for (const note of pending) {
+    for (const note of pendingIssueQa) {
       const emails = note.assignee.split(",").map((s) => s.trim()).filter(Boolean);
       for (const email of emails) {
         if (!byAssignee[email]) byAssignee[email] = [];
         byAssignee[email].push(note);
       }
     }
+
+    const pendingExplanations = notes.filter(
+      (n) => n.category === "追加説明" && n.status !== "対応済",
+    );
+    if (pendingExplanations.length > 0) {
+      const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+      if (databaseId) {
+        const allItems = await queryAllProgressItems(databaseId);
+        const caseAssigneeMap = new Map<string, string>();
+        for (const item of allItems) {
+          if (item.assignee) caseAssigneeMap.set(item.id, item.assignee);
+        }
+        for (const note of pendingExplanations) {
+          const caseAssignee = caseAssigneeMap.get(note.entityId);
+          if (!caseAssignee) continue;
+          const emails = caseAssignee.split(",").map((s) => s.trim()).filter(Boolean);
+          for (const email of emails) {
+            if (!byAssignee[email]) byAssignee[email] = [];
+            byAssignee[email].push(note);
+          }
+        }
+      }
+    }
+
     return res.json({ byAssignee });
   } catch (error) {
     console.error("Notes by-assignee error:", error);
@@ -5795,9 +5820,7 @@ app.post("/api/notes", async (req, res) => {
       "関連案件": { relation: [{ id: resolvedEntityId }] },
     };
 
-    if (category === "指摘" || category === "QA") {
-      properties["状態"] = { status: { name: "新" } };
-    }
+    properties["状態"] = { status: { name: "新" } };
 
     if (priority && ["高", "中", "低"].includes(priority)) {
       properties["優先度"] = { select: { name: priority } };

@@ -571,15 +571,13 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
                 return (
                   <div key={n.id} className="rounded-lg bg-white border border-neutral-100 px-3 py-2 group/note">
                     <div className="flex items-start gap-2">
-                      {cat !== '追加説明' && (
-                        <button
-                          onClick={() => handleToggle(n.id, !isDone)}
-                          disabled={togglingId === n.id}
-                          className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${isDone ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-neutral-300 hover:border-neutral-400'}`}
-                        >
-                          {isDone && <Check size={10} />}
-                        </button>
-                      )}
+                      <button
+                        onClick={() => handleToggle(n.id, !isDone)}
+                        disabled={togglingId === n.id}
+                        className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${isDone ? (cat === '追加説明' ? 'bg-blue-500 border-blue-500 text-white' : 'bg-emerald-500 border-emerald-500 text-white') : 'border-neutral-300 hover:border-neutral-400'}`}
+                      >
+                        {isDone && <Check size={10} />}
+                      </button>
                       <div className="flex-1 min-w-0">
                         <p className={`text-xs ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{n.title}</p>
                         {n.screenshots && n.screenshots.length > 0 && (
@@ -801,6 +799,12 @@ export function PendingNoteRow({ note, memberOptions, onUpdated }: {
             <button onClick={handleToggle} disabled={toggling}
               className="px-2 py-1 text-[10px] rounded bg-amber-50 text-amber-600 hover:bg-amber-100 disabled:opacity-50">
               対応済にする
+            </button>
+          )}
+          {note.category === '追加説明' && (
+            <button onClick={handleToggle} disabled={toggling}
+              className="px-2 py-1 text-[10px] rounded bg-blue-50 text-blue-600 hover:bg-blue-100 disabled:opacity-50">
+              閲覧済にする
             </button>
           )}
         </div>
@@ -1039,15 +1043,13 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
                 return (
                   <div key={n.id} className="rounded-lg border border-neutral-100 px-3 py-2 group/note">
                     <div className="flex items-start gap-2">
-                      {category !== '追加説明' && (
-                        <button
-                          onClick={() => handleToggle(n.id, !isDone)}
-                          disabled={togglingId === n.id}
-                          className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${isDone ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-neutral-300 hover:border-neutral-400'}`}
-                        >
-                          {isDone && <Check size={10} />}
-                        </button>
-                      )}
+                      <button
+                        onClick={() => handleToggle(n.id, !isDone)}
+                        disabled={togglingId === n.id}
+                        className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${isDone ? (category === '追加説明' ? 'bg-blue-500 border-blue-500 text-white' : 'bg-emerald-500 border-emerald-500 text-white') : 'border-neutral-300 hover:border-neutral-400'}`}
+                      >
+                        {isDone && <Check size={10} />}
+                      </button>
                       <div className="flex-1 min-w-0">
                         <p className={`text-xs ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{n.title}</p>
                         {n.screenshots && n.screenshots.length > 0 && (

@@ -484,7 +484,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                             </span>
                             <span className="flex items-center gap-1.5 shrink-0">
                               {(pendingNoteCounts[email] ?? 0) > 0 && (
-                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA">
+                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA・追加説明">
                                   <AlertCircle size={10} />{pendingNoteCounts[email]}
                                 </span>
                               )}
@@ -946,6 +946,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
 
   const pendingQA = useMemo(() => pendingNotes.filter((n) => n.category === 'QA'), [pendingNotes]);
   const pendingIssues = useMemo(() => pendingNotes.filter((n) => n.category === '指摘'), [pendingNotes]);
+  const pendingExplanations = useMemo(() => pendingNotes.filter((n) => n.category === '追加説明'), [pendingNotes]);
 
   const allMonths = useMemo(() => {
     const set = new Set<string>();
@@ -1075,6 +1076,26 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
         ) : (
           <div className="divide-y divide-neutral-100">
             {pendingQA.map((note) => (
+              <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* 追加説明セクション */}
+      <div className="bg-white border border-blue-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-4 py-2.5 border-b border-blue-100 bg-blue-50/60 flex items-center gap-2">
+          <FileText size={13} className="text-blue-500" />
+          <span className="text-xs font-bold text-blue-700">追加説明</span>
+          <span className="text-[10px] text-blue-500 ml-1">{pendingExplanations.length} 件</span>
+        </div>
+        {notesLoading ? (
+          <div className="text-xs text-neutral-400 text-center py-4">読み込み中...</div>
+        ) : pendingExplanations.length === 0 ? (
+          <div className="text-xs text-neutral-400 text-center py-4">未読の追加説明はありません</div>
+        ) : (
+          <div className="divide-y divide-neutral-100">
+            {pendingExplanations.map((note) => (
               <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
             ))}
           </div>
