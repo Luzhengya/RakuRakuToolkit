@@ -19,13 +19,14 @@ import TestCaseLibrary from './components/TestCaseLibrary';
 import CaseManagement from './components/CaseManagement';
 import DataCollection from './components/DataCollection';
 import DailyNews from './components/DailyNews';
+import DataStatsPanel from './components/DataStatsPanel';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'data-collection' | 'daily-news';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'data-stats' | 'data-collection' | 'daily-news';
 type Category = '文档类' | '管理类' | 'データ収集类';
 
 const CATEGORIES: Category[] = ['文档类', '管理类', 'データ収集类'];
 
-const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-collection', 'daily-news']);
+const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-stats', 'data-collection', 'daily-news']);
 
 function hashToView(): View {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -185,6 +186,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <CaseManagement onBack={() => setView('home')} />
+            </motion.div>
+          ) : view === 'data-stats' ? (
+            <motion.div
+              key="data-stats"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <DataStatsPanel onBack={() => setView('home')} />
             </motion.div>
           ) : view === 'data-collection' ? (
             <motion.div

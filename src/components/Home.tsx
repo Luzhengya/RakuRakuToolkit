@@ -1,4 +1,5 @@
 import {
+  BarChart3,
   FileSpreadsheet,
   FileText as FilePdf,
   Layers,
@@ -115,6 +116,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <FolderTree className="text-orange-600" size={24} />,
       onClick: () => onSelectTool('case-management'),
+    },
+    {
+      id: 'data-stats',
+      title: 'データ統計',
+      description: '需求池・品質問題・Checklist・AI実績などのデータ統計を管理します。',
+      category: '管理类',
+      icon: <BarChart3 className="text-violet-600" size={24} />,
+      onClick: () => onSelectTool('data-stats'),
     },
     {
       id: 'data-collection',

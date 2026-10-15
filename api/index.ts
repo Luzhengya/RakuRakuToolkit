@@ -3843,6 +3843,415 @@ app.delete("/api/case-management/checklist/:id", async (req, res) => {
   }
 });
 
+// ── データ統計パネル API ──────────────────────────────────
+
+type NeedsItem = {
+  id: string;
+  title: string;
+  category: string;
+  status: string;
+  priority: string;
+  assignee: string;
+  requester: string;
+  createdTime: string;
+};
+
+function parseNeedsItem(page: any): NeedsItem {
+  const p = page?.properties ?? {};
+  return {
+    id: page?.id ?? "",
+    title: propertyToPlainText(p["ニーズ"]),
+    category: propertyToPlainText(p["分野"]),
+    status: propertyToPlainText(p["状態"]),
+    priority: propertyToPlainText(p["優先度"]),
+    assignee: peopleToEmails(p["割当"]),
+    requester: peopleToEmails(p["請求者"]),
+    createdTime: p["提出日"]?.created_time ?? page?.created_time ?? "",
+  };
+}
+
+const NEEDS_FIELDS: { key: string; names: string[] }[] = [
+  { key: "title", names: ["ニーズ"] },
+  { key: "category", names: ["分野"] },
+  { key: "status", names: ["状態"] },
+  { key: "priority", names: ["優先度"] },
+  { key: "assignee", names: ["割当"] },
+  { key: "requester", names: ["請求者"] },
+];
+
+async function queryAllNeedsItems(): Promise<NeedsItem[]> {
+  const dataSourceId = await resolveNeedsDataSource();
+  const pages: any[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+  while (hasMore) {
+    const r: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+      }),
+    );
+    pages.push(...r.results);
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  return pages.map(parseNeedsItem);
+}
+
+async function getNeedsFields(): Promise<Record<string, { type: string; options: string[]; writable: boolean }>> {
+  const dataSourceId = await resolveNeedsDataSource();
+  const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+  const schema: Record<string, any> = ds?.properties ?? {};
+  const out: Record<string, { type: string; options: string[]; writable: boolean }> = {};
+  for (const f of NEEDS_FIELDS) {
+    const name = pickSchemaName(schema, f.names);
+    if (!name) { out[f.key] = { type: "missing", options: [], writable: false }; continue; }
+    const prop = schema[name];
+    const opts: string[] =
+      prop.type === "select" ? (prop.select?.options ?? []).map((o: any) => o.name)
+      : prop.type === "status" ? (prop.status?.options ?? []).map((o: any) => o.name)
+      : prop.type === "multi_select" ? (prop.multi_select?.options ?? []).map((o: any) => o.name)
+      : [];
+    out[f.key] = { type: prop.type, options: opts, writable: buildBugProperty(prop, "") !== null };
+  }
+  return out;
+}
+
+// GET /api/stats/needs — 全件取得 + 統計 + スキーマ
+app.get("/api/stats/needs", async (_req, res) => {
+  if (!notion || !process.env.NOTION_NEEDS_DATABASE_ID) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    const [items, fields] = await Promise.all([queryAllNeedsItems(), getNeedsFields()]);
+    items.sort((a, b) => (b.createdTime > a.createdTime ? 1 : b.createdTime < a.createdTime ? -1 : 0));
+    const total = items.length;
+    const completed = items.filter((i) => i.status === "対応済").length;
+    const unconfirmed = items.filter((i) => !i.status || i.status === "新").length;
+    return res.json({ items, fields, stats: { total, completed, unconfirmed } });
+  } catch (error) {
+    console.error("Stats needs list error:", error);
+    return res.status(500).json({ error: "Failed to load needs" });
+  }
+});
+
+// POST /api/stats/needs — 新規作成
+app.post("/api/stats/needs", async (req, res) => {
+  if (!notion || !process.env.NOTION_NEEDS_DATABASE_ID) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { title, category, priority, assignee, requester } = req.body ?? {};
+  if (!title || typeof title !== "string" || !title.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
+  try {
+    const dataSourceId = await resolveNeedsDataSource();
+    const properties: Record<string, any> = {
+      "ニーズ": { title: [{ type: "text", text: { content: title.trim() } }] },
+    };
+    if (category) {
+      const cats = Array.isArray(category) ? category : [category];
+      properties["分野"] = { multi_select: cats.map((c: string) => ({ name: c })) };
+    }
+    if (priority) properties["優先度"] = { select: { name: priority } };
+    if (assignee) {
+      const people = await resolveEmailsToNotionPeople(assignee);
+      if (people.length > 0) properties["割当"] = { people };
+    }
+    if (requester) {
+      const people = await resolveEmailsToNotionPeople(requester);
+      if (people.length > 0) properties["請求者"] = { people };
+    }
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+    return res.json(parseNeedsItem(created));
+  } catch (error) {
+    console.error("Stats needs create error:", error);
+    return res.status(500).json({ error: "Failed to create need" });
+  }
+});
+
+// POST /api/stats/needs/:id/update — 部分更新
+app.post("/api/stats/needs/:id/update", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const { title, category, priority, status, assignee, requester } = req.body ?? {};
+  try {
+    const properties: Record<string, any> = {};
+    if (typeof title === "string" && title.trim()) {
+      properties["ニーズ"] = { title: [{ type: "text", text: { content: title.trim() } }] };
+    }
+    if (category !== undefined) {
+      const cats = Array.isArray(category) ? category : typeof category === "string" && category ? [category] : [];
+      properties["分野"] = { multi_select: cats.map((c: string) => ({ name: c })) };
+    }
+    if (typeof priority === "string") {
+      properties["優先度"] = priority ? { select: { name: priority } } : { select: null };
+    }
+    if (typeof status === "string" && status) {
+      properties["状態"] = { status: { name: status } };
+    }
+    if (typeof assignee === "string") {
+      if (assignee === "") { properties["割当"] = { people: [] }; }
+      else { const people = await resolveEmailsToNotionPeople(assignee); if (people.length > 0) properties["割当"] = { people }; }
+    }
+    if (typeof requester === "string") {
+      if (requester === "") { properties["請求者"] = { people: [] }; }
+      else { const people = await resolveEmailsToNotionPeople(requester); if (people.length > 0) properties["請求者"] = { people }; }
+    }
+    const updated = await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, properties }),
+    );
+    return res.json(parseNeedsItem(updated));
+  } catch (error) {
+    console.error("Stats needs update error:", error);
+    return res.status(500).json({ error: "Failed to update need" });
+  }
+});
+
+// DELETE /api/stats/needs/:id — アーカイブ
+app.delete("/api/stats/needs/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats needs delete error:", error);
+    return res.status(500).json({ error: "Failed to delete need" });
+  }
+});
+
+// POST /api/stats/bugleak/create — BugLeak 新規作成
+app.post("/api/stats/bugleak/create", async (req, res) => {
+  const databaseId = process.env.NOTION_BUGLEAK_DATABASE_ID;
+  if (!notion || !databaseId) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const dataSourceId = await resolveBugLeakDataSource(databaseId);
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const properties: Record<string, any> = {};
+    for (const f of BUGLEAK_FIELDS) {
+      const val = req.body?.[f.key];
+      if (val === undefined || val === null) continue;
+      const name = pickSchemaName(schema, f.names);
+      if (!name) continue;
+      const built = buildBugProperty(schema[name], String(val));
+      if (built) properties[name] = built;
+    }
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+    return res.json(parseBugLeakItem(created));
+  } catch (error) {
+    console.error("Stats bugleak create error:", error);
+    return res.status(500).json({ error: "Failed to create bugleak item" });
+  }
+});
+
+// DELETE /api/stats/bugleak/:id — BugLeak アーカイブ
+app.delete("/api/stats/bugleak/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats bugleak delete error:", error);
+    return res.status(500).json({ error: "Failed to delete bugleak item" });
+  }
+});
+
+// ── Checklist (新DB NOTION_CHECKLIST_DATABASE_ID) ──
+
+async function resolveChecklistDataSource(): Promise<string> {
+  const databaseId = process.env.NOTION_CHECKLIST_DATABASE_ID;
+  if (!notion || !databaseId) throw new Error("Checklist DB not configured");
+  const database: any = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
+  const dataSourceId = database?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) throw new Error("No data source found in NOTION_CHECKLIST_DATABASE_ID");
+  return dataSourceId;
+}
+
+// GET /api/stats/checklist — 全件 + スキーマ
+app.get("/api/stats/checklist", async (_req, res) => {
+  if (!notion || !process.env.NOTION_CHECKLIST_DATABASE_ID) {
+    return res.status(503).json({ error: "Checklist DB not configured" });
+  }
+  try {
+    const dataSourceId = await resolveChecklistDataSource();
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+
+    const pages: any[] = [];
+    let hasMore = true;
+    let cursor: string | undefined = undefined;
+    while (hasMore) {
+      const r: any = await withNotionRetry("dataSources.query", () =>
+        (notion as any).dataSources.query({ data_source_id: dataSourceId, start_cursor: cursor, page_size: 100 }),
+      );
+      pages.push(...r.results);
+      hasMore = r.has_more;
+      cursor = r.next_cursor ?? undefined;
+    }
+
+    const fields: Record<string, { type: string; options: string[] }> = {};
+    for (const [name, prop] of Object.entries<any>(schema)) {
+      const opts: string[] =
+        prop.type === "select" ? (prop.select?.options ?? []).map((o: any) => o.name)
+        : prop.type === "status" ? (prop.status?.options ?? []).map((o: any) => o.name)
+        : prop.type === "multi_select" ? (prop.multi_select?.options ?? []).map((o: any) => o.name)
+        : [];
+      fields[name] = { type: prop.type, options: opts };
+    }
+
+    const titleKey = Object.keys(schema).find((k) => schema[k].type === "title") ?? "";
+    const items = pages.map((page: any) => {
+      const p = page?.properties ?? {};
+      const row: Record<string, any> = { id: page?.id ?? "" };
+      for (const [name, prop] of Object.entries<any>(p)) {
+        if (prop.type === "relation") {
+          row[name] = (prop.relation ?? []).map((r: any) => r.id);
+        } else {
+          row[name] = propertyToPlainText(prop);
+        }
+      }
+      row._title = propertyToPlainText(p[titleKey]);
+      row._createdTime = p["提出日"]?.created_time ?? page?.created_time ?? "";
+      return row;
+    });
+    items.sort((a, b) => (b._createdTime > a._createdTime ? 1 : b._createdTime < a._createdTime ? -1 : 0));
+
+    return res.json({ items, fields, titleKey });
+  } catch (error) {
+    console.error("Stats checklist list error:", error);
+    return res.status(500).json({ error: "Failed to load checklist" });
+  }
+});
+
+// POST /api/stats/checklist — 作成
+app.post("/api/stats/checklist", async (req, res) => {
+  if (!notion || !process.env.NOTION_CHECKLIST_DATABASE_ID) {
+    return res.status(503).json({ error: "Checklist DB not configured" });
+  }
+  try {
+    const dataSourceId = await resolveChecklistDataSource();
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const properties: Record<string, any> = {};
+    for (const [key, val] of Object.entries(req.body ?? {})) {
+      if (key === "id" || val === undefined || val === null) continue;
+      const prop = schema[key];
+      if (!prop) continue;
+      const built = buildBugProperty(prop, String(val));
+      if (built) properties[key] = built;
+    }
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+    return res.json({ id: created.id });
+  } catch (error) {
+    console.error("Stats checklist create error:", error);
+    return res.status(500).json({ error: "Failed to create checklist item" });
+  }
+});
+
+// POST /api/stats/checklist/:id/update — 更新
+app.post("/api/stats/checklist/:id/update", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const dataSourceId = await resolveChecklistDataSource();
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const properties: Record<string, any> = {};
+    for (const [key, val] of Object.entries(req.body ?? {})) {
+      if (key === "id" || val === undefined || val === null) continue;
+      const prop = schema[key];
+      if (!prop) continue;
+      const built = buildBugProperty(prop, String(val));
+      if (built) properties[key] = built;
+    }
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, properties }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats checklist update error:", error);
+    return res.status(500).json({ error: "Failed to update checklist item" });
+  }
+});
+
+// DELETE /api/stats/checklist/:id — アーカイブ
+app.delete("/api/stats/checklist/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats checklist delete error:", error);
+    return res.status(500).json({ error: "Failed to delete checklist item" });
+  }
+});
+
+// GET /api/stats/ai-page — AI実績ページ HTML
+app.get("/api/stats/ai-page", async (_req, res) => {
+  const pageId = process.env.NOTION_AI_PAGE_ID;
+  if (!notion || !pageId) {
+    return res.status(503).json({ error: "AI page not configured" });
+  }
+  try {
+    const html = await renderBlocksToHtml(pageId);
+    return res.json({ html });
+  } catch (error) {
+    console.error("Stats AI page error:", error);
+    return res.status(500).json({ error: "Failed to load AI page" });
+  }
+});
+
+// GET /api/stats/needs/:id/children — ニーズ子ページ HTML
+app.get("/api/stats/needs/:id/children", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const html = await renderBlocksToHtml(req.params.id);
+    return res.json({ html });
+  } catch (error) {
+    console.error("Stats needs children error:", error);
+    return res.status(500).json({ error: "Failed to load needs children" });
+  }
+});
+
+// GET /api/stats/needs/:id — ニーズ単一レコード
+app.get("/api/stats/needs/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const page = await withNotionRetry("pages.retrieve", () =>
+      notion!.pages.retrieve({ page_id: req.params.id }),
+    );
+    return res.json(parseNeedsItem(page));
+  } catch (error) {
+    console.error("Stats needs get error:", error);
+    return res.status(500).json({ error: "Failed to load need" });
+  }
+});
+
+// ── データ統計パネル API ここまで ──────────────────────────
+
 app.get("/api/jiji-list", async (_req, res) => {
   const databaseId = process.env.NOTION_JIJI_DATABASE_ID;
   if (!notion || !databaseId) {
