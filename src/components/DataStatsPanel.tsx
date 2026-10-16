@@ -6,16 +6,21 @@ import {
   Bot,
   Check,
   CheckSquare,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Database,
   ExternalLink,
+  FileText,
   Loader2,
   Pencil,
   Plus,
   Save,
   Shield,
+  Star,
   Trash2,
+  TrendingUp,
   X,
 } from 'lucide-react';
 
@@ -810,8 +815,13 @@ function ChecklistPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const editableFields = useMemo(() => Object.entries(fields).filter(([, f]) => ['title', 'rich_text', 'select', 'status', 'number', 'checkbox', 'date'].includes(f.type)).map(([name, f]) => ({ name, ...f })), [fields]);
-  const displayCols = useMemo(() => editableFields.slice(0, 6), [editableFields]);
+  const CHECKLIST_COLS = ['ID', 'テスト内容', 'システム', 'テスト種類', '開発品質改善資料', 'コメント'];
+  const allFields = useMemo(() => Object.entries(fields).map(([name, f]) => ({ name, ...f })), [fields]);
+  const displayCols = useMemo(() => {
+    const cols = CHECKLIST_COLS.map((name) => allFields.find((f) => f.name === name)).filter(Boolean) as typeof allFields;
+    return cols.length > 0 ? cols : allFields.slice(0, 6);
+  }, [allFields]);
+  const editableFields = useMemo(() => allFields.filter((f) => ['title', 'rich_text', 'select', 'status', 'number', 'checkbox', 'date', 'multi_select'].includes(f.type)), [allFields]);
   const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
   const pagedItems = useMemo(() => items.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE), [items, page]);
 
@@ -877,16 +887,184 @@ function ChecklistPage() {
 
 // ── Part 5: AI Stats Page ──
 
+interface AiReviewDimension { name: string; weight: string; score: number }
+interface AiReviewScore { total: number; grade: string; dimensions: AiReviewDimension[] }
+interface AiReviewIssues { critical: number; major: number; minor: number; info: number; total: number }
+interface AiReviewItem {
+  id: string; title: string; effortSaved: number | null;
+  createdTime: string; createdBy: string; totalCases: number | null;
+  score: AiReviewScore | null; issues: AiReviewIssues | null;
+}
+interface AiReviewSummary {
+  totalReports: number; avgScore: number | null; totalEffortSaved: number;
+  gradeDistribution: Record<string, number>;
+}
+
+const GRADE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  A: { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  B: { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
+  C: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  D: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  F: { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+};
+
+function GradeBadge({ grade, size = 'md' }: { grade: string; size?: 'sm' | 'md' | 'lg' }) {
+  const c = GRADE_COLORS[grade] ?? GRADE_COLORS.C;
+  const sz = size === 'lg' ? 'w-12 h-12 text-xl' : size === 'md' ? 'w-8 h-8 text-sm' : 'w-6 h-6 text-xs';
+  return <span className={`inline-flex items-center justify-center rounded-lg font-bold ${sz} ${c.bg} ${c.text} border ${c.border}`}>{grade}</span>;
+}
+
+function RadarChart({ dimensions, size = 160 }: { dimensions: AiReviewDimension[]; size?: number }) {
+  const n = dimensions.length;
+  if (n < 3) return null;
+  const cx = size / 2, cy = size / 2, r = size * 0.38;
+  const angleStep = (2 * Math.PI) / n;
+  const startAngle = -Math.PI / 2;
+
+  const gridLevels = [20, 40, 60, 80, 100];
+  const pointAt = (i: number, val: number) => {
+    const angle = startAngle + i * angleStep;
+    return { x: cx + (r * val / 100) * Math.cos(angle), y: cy + (r * val / 100) * Math.sin(angle) };
+  };
+
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} width={size} height={size} className="mx-auto">
+      {gridLevels.map((lv) => (
+        <polygon key={lv} points={Array.from({ length: n }, (_, i) => { const p = pointAt(i, lv); return `${p.x},${p.y}`; }).join(' ')}
+          fill="none" stroke="#e5e7eb" strokeWidth={lv === 100 ? 1.5 : 0.5} />
+      ))}
+      {dimensions.map((_, i) => {
+        const p = pointAt(i, 100);
+        return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="#e5e7eb" strokeWidth={0.5} />;
+      })}
+      <polygon
+        points={dimensions.map((d, i) => { const p = pointAt(i, d.score); return `${p.x},${p.y}`; }).join(' ')}
+        fill="rgba(59,130,246,0.15)" stroke="#3b82f6" strokeWidth={1.5}
+      />
+      {dimensions.map((d, i) => {
+        const p = pointAt(i, d.score);
+        return <circle key={`dot-${i}`} cx={p.x} cy={p.y} r={3} fill="#3b82f6" />;
+      })}
+      {dimensions.map((d, i) => {
+        const p = pointAt(i, 115);
+        const short = d.name.length > 6 ? d.name.slice(0, 6) + '…' : d.name;
+        return <text key={`lbl-${i}`} x={p.x} y={p.y} textAnchor="middle" dominantBaseline="central" className="fill-neutral-500" style={{ fontSize: '8px' }}>{short}</text>;
+      })}
+    </svg>
+  );
+}
+
+function IssueBar({ issues }: { issues: AiReviewIssues }) {
+  const t = issues.total || 1;
+  const bars: { label: string; count: number; color: string }[] = [
+    { label: 'Critical', count: issues.critical, color: 'bg-red-500' },
+    { label: 'Major', count: issues.major, color: 'bg-orange-400' },
+    { label: 'Minor', count: issues.minor, color: 'bg-amber-300' },
+    { label: 'Info', count: issues.info, color: 'bg-blue-300' },
+  ];
+  return (
+    <div className="space-y-1">
+      <div className="flex h-3 rounded-full overflow-hidden">
+        {bars.map((b) => b.count > 0 && <div key={b.label} className={`${b.color}`} style={{ width: `${(b.count / t) * 100}%` }} />)}
+      </div>
+      <div className="flex gap-3 text-[10px] text-neutral-500">
+        {bars.map((b) => b.count > 0 && <span key={b.label} className="flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${b.color}`} />{b.label} {b.count}</span>)}
+      </div>
+    </div>
+  );
+}
+
+function AiReviewDetail({ item }: { item: AiReviewItem }) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [showFull, setShowFull] = useState(false);
+  const [loadingHtml, setLoadingHtml] = useState(false);
+
+  const loadHtml = () => {
+    if (html !== null) { setShowFull(!showFull); return; }
+    setLoadingHtml(true);
+    fetch(`/api/stats/ai-reviews/${item.id}/html`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { setHtml(d?.html ?? ''); setShowFull(true); })
+      .catch(() => setHtml(''))
+      .finally(() => setLoadingHtml(false));
+  };
+
+  return (
+    <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 space-y-4">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-4 items-start">
+        {/* Left: Radar */}
+        <div className="flex flex-col items-center gap-2">
+          <h4 className="text-xs font-semibold text-neutral-600">評価レーダー</h4>
+          {item.score?.dimensions && <RadarChart dimensions={item.score.dimensions} />}
+          {item.score?.dimensions?.map((d) => (
+            <div key={d.name} className="flex items-center gap-2 w-full max-w-[200px] text-[10px]">
+              <span className="text-neutral-500 w-20 truncate text-right" title={d.name}>{d.name}</span>
+              <div className="flex-1 h-1.5 bg-neutral-200 rounded-full">
+                <div className={`h-full rounded-full ${d.score >= 80 ? 'bg-emerald-400' : d.score >= 60 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${d.score}%` }} />
+              </div>
+              <span className="text-neutral-600 font-medium w-6 text-right">{d.score}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* Center: Score */}
+        <div className="flex flex-col items-center gap-1 px-4">
+          {item.score && (
+            <>
+              <span className="text-3xl font-bold text-neutral-800">{item.score.total}</span>
+              <GradeBadge grade={item.score.grade} size="lg" />
+              <span className="text-[10px] text-neutral-400 mt-1">A(90+) B(80+) C(70+) D(60+) F(&lt;60)</span>
+            </>
+          )}
+        </div>
+
+        {/* Right: Issues */}
+        <div className="space-y-3">
+          <h4 className="text-xs font-semibold text-neutral-600">指摘分布</h4>
+          {item.issues && <IssueBar issues={item.issues} />}
+          {item.issues && (
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'Critical', count: item.issues.critical, color: 'text-red-600 bg-red-50 border-red-100' },
+                { label: 'Major', count: item.issues.major, color: 'text-orange-600 bg-orange-50 border-orange-100' },
+                { label: 'Minor', count: item.issues.minor, color: 'text-amber-600 bg-amber-50 border-amber-100' },
+                { label: 'Info', count: item.issues.info, color: 'text-blue-600 bg-blue-50 border-blue-100' },
+              ].map((s) => (
+                <div key={s.label} className={`flex items-center justify-between px-2 py-1 rounded border text-[11px] ${s.color}`}>
+                  <span>{s.label}</span><span className="font-bold">{s.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Full report toggle */}
+      <button onClick={loadHtml} className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 transition-colors">
+        {loadingHtml ? <Loader2 size={12} className="animate-spin" /> : <ChevronDown size={12} className={showFull ? 'rotate-180' : ''} />}
+        {showFull ? '報告を閉じる' : '完全な報告を表示'}
+      </button>
+      {showFull && html !== null && (
+        <div className="bg-white border border-neutral-200 rounded-lg p-4 prose prose-sm max-w-none text-xs [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-neutral-200 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-neutral-200 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-neutral-50 [&_th]:text-left [&_th]:font-medium">
+          <div dangerouslySetInnerHTML={{ __html: html }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AIStatsPage() {
-  const [html, setHtml] = useState('');
+  const [items, setItems] = useState<AiReviewItem[]>([]);
+  const [summary, setSummary] = useState<AiReviewSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/stats/ai-page')
+    fetch('/api/stats/ai-reviews')
       .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
-      .then((d) => setHtml(d.html ?? ''))
-      .catch(() => setError('AI実績ページの読み込みに失敗しました'))
+      .then((d) => { setItems(d.items ?? []); setSummary(d.summary ?? null); })
+      .catch(() => setError('AI実績の読み込みに失敗しました'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -894,8 +1072,84 @@ function AIStatsPage() {
   if (error) return <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-xs flex items-center gap-1.5"><AlertCircle size={14} />{error}</div>;
 
   return (
-    <div className="bg-white border border-neutral-200 rounded-xl p-4 shadow-sm prose prose-sm max-w-none text-xs [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-neutral-200 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-neutral-200 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-neutral-50 [&_th]:text-left [&_th]:font-medium">
-      <div dangerouslySetInnerHTML={{ __html: html }} />
+    <div className="space-y-4">
+      {/* Summary cards */}
+      {summary && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
+            <div className="flex items-center gap-1.5 text-[10px] text-neutral-400"><FileText size={12} />レビュー総数</div>
+            <div className="text-2xl font-bold text-neutral-800">{summary.totalReports}</div>
+          </div>
+          <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
+            <div className="flex items-center gap-1.5 text-[10px] text-neutral-400"><Star size={12} />平均得点</div>
+            <div className="flex items-center gap-2">
+              <span className="text-2xl font-bold text-neutral-800">{summary.avgScore ?? '—'}</span>
+              {summary.avgScore && <GradeBadge grade={summary.avgScore >= 90 ? 'A' : summary.avgScore >= 80 ? 'B' : summary.avgScore >= 70 ? 'C' : summary.avgScore >= 60 ? 'D' : 'F'} size="sm" />}
+            </div>
+          </div>
+          <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
+            <div className="flex items-center gap-1.5 text-[10px] text-neutral-400"><TrendingUp size={12} />工数改善合計</div>
+            <div className="text-2xl font-bold text-neutral-800">{summary.totalEffortSaved}<span className="text-sm font-normal text-neutral-400 ml-1">人日</span></div>
+          </div>
+          <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
+            <div className="flex items-center gap-1.5 text-[10px] text-neutral-400"><BarChart3 size={12} />等級分布</div>
+            <div className="flex gap-1.5 mt-1">
+              {['A', 'B', 'C', 'D', 'F'].map((g) => {
+                const cnt = summary.gradeDistribution[g] || 0;
+                if (cnt === 0) return null;
+                const c = GRADE_COLORS[g];
+                return <span key={g} className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.bg} ${c.text} border ${c.border}`}>{g}:{cnt}</span>;
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Review list */}
+      <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-neutral-50 border-b border-neutral-200">
+              <th className="text-left px-3 py-2 font-medium text-neutral-500">レビュー名称</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-20">日付</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-16">TC数</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-14">得点</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-12">等級</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-14">Critical</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-14">Major</th>
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-16">工数改善</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id}>
+                <td colSpan={8} className="p-0">
+                  <div>
+                    <button
+                      onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}
+                      className="w-full flex items-center text-left hover:bg-neutral-50 transition-colors px-3 py-2 gap-1"
+                    >
+                      <ChevronDown size={12} className={`text-neutral-400 shrink-0 transition-transform ${expandedId === item.id ? 'rotate-180' : ''}`} />
+                      <span className="flex-1 truncate text-neutral-800 font-medium">{item.title}</span>
+                      <span className="text-neutral-400 w-20 text-center shrink-0">{item.createdTime ? new Date(item.createdTime).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : '—'}</span>
+                      <span className="text-neutral-600 w-16 text-center shrink-0">{item.totalCases ?? '—'}</span>
+                      <span className="text-neutral-800 font-bold w-14 text-center shrink-0">{item.score?.total ?? '—'}</span>
+                      <span className="w-12 text-center shrink-0">{item.score?.grade ? <GradeBadge grade={item.score.grade} size="sm" /> : '—'}</span>
+                      <span className={`w-14 text-center shrink-0 font-bold ${(item.issues?.critical ?? 0) > 0 ? 'text-red-600' : 'text-neutral-400'}`}>{item.issues?.critical ?? '—'}</span>
+                      <span className={`w-14 text-center shrink-0 font-bold ${(item.issues?.major ?? 0) > 0 ? 'text-orange-500' : 'text-neutral-400'}`}>{item.issues?.major ?? '—'}</span>
+                      <span className="text-neutral-600 w-16 text-center shrink-0">{item.effortSaved != null ? `${item.effortSaved}d` : '—'}</span>
+                    </button>
+                    {expandedId === item.id && <div className="px-3 pb-3"><AiReviewDetail item={item} /></div>}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {items.length === 0 && (
+              <tr><td colSpan={8} className="text-center py-8 text-neutral-400">データなし</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
