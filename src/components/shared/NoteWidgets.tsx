@@ -214,11 +214,11 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40" onClick={onCancel}>
       <div
-        className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden"
+        className="bg-white rounded-xl shadow-2xl w-full max-w-lg mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         {/* header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100 rounded-t-xl">
           <div className="flex items-center gap-2 text-sm font-bold text-neutral-700">
             <Icon size={16} className={NOTE_COLORS[category]} />
             {category}を追加
@@ -704,7 +704,7 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
               )}
             </div>
             {showAssigneeDropdown && (
-              <div className="absolute z-10 bottom-full mb-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[140px] max-h-[160px] overflow-y-auto">
+              <div className="absolute z-10 top-full mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[140px] max-h-[160px] overflow-y-auto">
                 {memberOptions.filter((m) => !assignees.includes(m)).map((m) => (
                   <button key={m} type="button"
                     onClick={() => { setAssignees([...assignees, m]); setShowAssigneeDropdown(false); }}
@@ -1009,8 +1009,8 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100 shrink-0">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-100 shrink-0 rounded-t-xl">
           <div className="flex items-center gap-2 text-sm font-bold text-neutral-700">
             <Icon size={16} className={NOTE_COLORS[category]} />
             {category}
