@@ -209,7 +209,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
   }
 
   const Icon = NOTE_ICONS[category];
-  const needsAssignee = category === '指摘' || category === 'QA';
+  const needsAssignee = true;
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40" onClick={onCancel}>
@@ -284,8 +284,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
 
           {/* people / priority fields */}
           <div className="flex flex-wrap gap-x-4 gap-y-3">
-            {category !== '追加説明' && (
-              <div>
+            <div>
                 <label className="text-xs text-neutral-500 font-medium mb-1 block">請求者</label>
                 <select value={requester} onChange={(e) => setRequester(e.target.value)}
                   className="px-2.5 py-1.5 text-xs border border-neutral-200 rounded-lg bg-white focus:border-neutral-400 focus:outline-none min-w-[140px]">
@@ -293,9 +292,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
                   {memberOptions.map((m) => <option key={m} value={m}>{m.split('@')[0]}</option>)}
                 </select>
               </div>
-            )}
-            {needsAssignee && (
-              <div className="relative">
+            <div className="relative">
                 <label className="text-xs text-neutral-500 font-medium mb-1 block">割当</label>
                 <div className="flex flex-wrap items-center gap-1.5">
                   {assignees.map((email) => (
@@ -326,7 +323,6 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
                   </div>
                 )}
               </div>
-            )}
             {category === '指摘' && (
               <div>
                 <label className="text-xs text-neutral-500 font-medium mb-1 block">優先度</label>
@@ -365,6 +361,7 @@ export function QaThread({ noteId, memberOptions }: { noteId: string; memberOpti
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState('');
   const [author, setAuthor] = useState('');
+  const [mention, setMention] = useState('');
   const [sending, setSending] = useState(false);
   const [replyScreenshots, setReplyScreenshots] = useState<string[]>([]);
   const [editingImage, setEditingImage] = useState<string | null>(null);
@@ -399,6 +396,7 @@ export function QaThread({ noteId, memberOptions }: { noteId: string; memberOpti
         body: JSON.stringify({
           text: text.trim(),
           author: author || undefined,
+          mention: mention || undefined,
           screenshots: replyScreenshots.length > 0 ? replyScreenshots : undefined,
         }),
       });
@@ -466,11 +464,19 @@ export function QaThread({ noteId, memberOptions }: { noteId: string; memberOpti
             <option value="">匿名</option>
             {memberOptions.map((m) => <option key={m} value={m}>{m.split('@')[0]}</option>)}
           </select>
-          <input
-            type="text" value={text} onChange={(e) => setText(e.target.value)}
-            placeholder="返信を入力..."
-            className="flex-1 px-2 py-1 text-xs border border-neutral-200 rounded focus:border-neutral-400 focus:outline-none"
+          <select value={mention} onChange={(e) => setMention(e.target.value)}
+            className="px-2 py-1 text-[11px] border border-neutral-200 rounded bg-white shrink-0"
+            title="メンション（通知）">
+            <option value="">@通知なし</option>
+            {memberOptions.map((m) => <option key={m} value={m}>@{m.split('@')[0]}</option>)}
+          </select>
+          <textarea
+            value={text} onChange={(e) => setText(e.target.value)}
+            placeholder="返信を入力... (Shift+Enterで改行)"
+            rows={1}
+            className="flex-1 px-2 py-1 text-xs border border-neutral-200 rounded focus:border-neutral-400 focus:outline-none resize-none"
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+            onInput={(e) => { const t = e.target as HTMLTextAreaElement; t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px'; }}
           />
           <button type="button" onClick={handleReplyCapture}
             className="p-1.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600 shrink-0" title="画面キャプチャ">
@@ -641,7 +647,7 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
   const [priority, setPriority] = useState(note.priority ?? '');
   const [saving, setSaving] = useState(false);
   const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
-  const needsAssignee = note.category === '指摘' || note.category === 'QA';
+  const needsAssignee = true;
 
   const handleSave = async () => {
     if (!title.trim() || saving) return;
@@ -652,8 +658,8 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: title.trim(),
-          ...(needsAssignee ? { assignee: assignees.join(',') } : {}),
-          ...(note.category !== '追加説明' ? { requester } : {}),
+          assignee: assignees.join(','),
+          requester,
           ...(note.category === '指摘' ? { priority } : {}),
         }),
       });
@@ -673,8 +679,7 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
           rows={2} autoFocus />
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-2">
-        {note.category !== '追加説明' && (
-          <div>
+        <div>
             <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">請求者</label>
             <select value={requester} onChange={(e) => setRequester(e.target.value)}
               className="px-2 py-1 text-xs border border-neutral-200 rounded-lg bg-white focus:border-blue-400 focus:outline-none min-w-[120px]">
@@ -682,8 +687,6 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
               {memberOptions.map((m) => <option key={m} value={m}>{m.split('@')[0]}</option>)}
             </select>
           </div>
-        )}
-        {needsAssignee && (
           <div className="relative">
             <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">割当</label>
             <div className="flex flex-wrap items-center gap-1">
@@ -712,7 +715,6 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
               </div>
             )}
           </div>
-        )}
         {note.category === '指摘' && (
           <div>
             <label className="text-[10px] text-neutral-500 font-medium mb-0.5 block">優先度</label>

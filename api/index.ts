@@ -1741,11 +1741,16 @@ type BugLeakItem = {
   status: string;
   improvable: string;
   checklist: string;
+  checklistIds: string[];
 };
 
 function parseBugLeakItem(page: any): BugLeakItem {
   const p = page?.properties ?? {};
   const resp = p["責任"];
+  const clProp = p["チェックリスト"];
+  const checklistIds = clProp?.type === "relation"
+    ? (clProp.relation ?? []).map((r: any) => r.id as string)
+    : [];
   return {
     id: page?.id ?? "",
     system: propertyToPlainText(p["サービス"]),
@@ -1761,7 +1766,8 @@ function parseBugLeakItem(page: any): BugLeakItem {
     tcResult: propertyToPlainText(p["TestCenter確認結果"]),
     status: propertyToPlainText(p["状態"]),
     improvable: propertyToPlainText(p["改善可/不可"]),
-    checklist: propertyToPlainText(p["チェックリスト"]),
+    checklist: clProp?.type === "relation" ? "" : propertyToPlainText(clProp),
+    checklistIds,
   };
 }
 
@@ -1858,9 +1864,10 @@ app.get("/api/test-center/bug-leak", async (req, res) => {
   }
   const year = req.query.year ? Number(req.query.year) : null;
   const month = req.query.month ? Number(req.query.month) : null;
+  const showAll = req.query.all === "true";
   try {
     const items = await queryAllBugLeakItems(databaseId);
-    const filtered = items.filter((it) => {
+    const filtered = showAll && year === null && month === null ? items : items.filter((it) => {
       const m = (it.caseMonth || "").match(/^(\d{4})(\d{2})$/);
       if (!m) return false;
       if (year !== null && Number(m[1]) !== year) return false;
@@ -3842,6 +3849,635 @@ app.delete("/api/case-management/checklist/:id", async (req, res) => {
     return res.status(500).json({ error: "Failed to delete checklist item" });
   }
 });
+
+// ── データ統計パネル API ──────────────────────────────────
+
+type NeedsItem = {
+  id: string;
+  title: string;
+  category: string;
+  status: string;
+  priority: string;
+  assignee: string;
+  requester: string;
+  createdTime: string;
+};
+
+function parseNeedsItem(page: any): NeedsItem {
+  const p = page?.properties ?? {};
+  return {
+    id: page?.id ?? "",
+    title: propertyToPlainText(p["ニーズ"]),
+    category: propertyToPlainText(p["分野"]),
+    status: propertyToPlainText(p["状態"]),
+    priority: propertyToPlainText(p["優先度"]),
+    assignee: peopleToEmails(p["割当"]),
+    requester: peopleToEmails(p["請求者"]),
+    createdTime: p["提出日"]?.created_time ?? page?.created_time ?? "",
+  };
+}
+
+const NEEDS_FIELDS: { key: string; names: string[] }[] = [
+  { key: "title", names: ["ニーズ"] },
+  { key: "category", names: ["分野"] },
+  { key: "status", names: ["状態"] },
+  { key: "priority", names: ["優先度"] },
+  { key: "assignee", names: ["割当"] },
+  { key: "requester", names: ["請求者"] },
+];
+
+async function queryAllNeedsItems(): Promise<NeedsItem[]> {
+  const dataSourceId = await resolveNeedsDataSource();
+  const pages: any[] = [];
+  let hasMore = true;
+  let cursor: string | undefined = undefined;
+  while (hasMore) {
+    const r: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+      }),
+    );
+    pages.push(...r.results);
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  return pages.map(parseNeedsItem);
+}
+
+async function getNeedsFields(): Promise<Record<string, { type: string; options: string[]; writable: boolean }>> {
+  const dataSourceId = await resolveNeedsDataSource();
+  const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+  const schema: Record<string, any> = ds?.properties ?? {};
+  const out: Record<string, { type: string; options: string[]; writable: boolean }> = {};
+  for (const f of NEEDS_FIELDS) {
+    const name = pickSchemaName(schema, f.names);
+    if (!name) { out[f.key] = { type: "missing", options: [], writable: false }; continue; }
+    const prop = schema[name];
+    const opts: string[] =
+      prop.type === "select" ? (prop.select?.options ?? []).map((o: any) => o.name)
+      : prop.type === "status" ? (prop.status?.options ?? []).map((o: any) => o.name)
+      : prop.type === "multi_select" ? (prop.multi_select?.options ?? []).map((o: any) => o.name)
+      : [];
+    out[f.key] = { type: prop.type, options: opts, writable: buildBugProperty(prop, "") !== null };
+  }
+  return out;
+}
+
+// GET /api/stats/needs — 全件取得 + 統計 + スキーマ
+app.get("/api/stats/needs", async (_req, res) => {
+  if (!notion || !process.env.NOTION_NEEDS_DATABASE_ID) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  try {
+    const [items, fields] = await Promise.all([queryAllNeedsItems(), getNeedsFields()]);
+    items.sort((a, b) => (b.createdTime > a.createdTime ? 1 : b.createdTime < a.createdTime ? -1 : 0));
+    const total = items.length;
+    const completed = items.filter((i) => i.status === "対応済").length;
+    const unconfirmed = items.filter((i) => !i.status || i.status === "新").length;
+    return res.json({ items, fields, stats: { total, completed, unconfirmed } });
+  } catch (error) {
+    console.error("Stats needs list error:", error);
+    return res.status(500).json({ error: "Failed to load needs" });
+  }
+});
+
+// POST /api/stats/needs — 新規作成
+app.post("/api/stats/needs", async (req, res) => {
+  if (!notion || !process.env.NOTION_NEEDS_DATABASE_ID) {
+    return res.status(503).json({ error: "Notion API credentials not configured" });
+  }
+  const { title, category, priority, assignee, requester } = req.body ?? {};
+  if (!title || typeof title !== "string" || !title.trim()) {
+    return res.status(400).json({ error: "title is required" });
+  }
+  try {
+    const dataSourceId = await resolveNeedsDataSource();
+    const properties: Record<string, any> = {
+      "ニーズ": { title: [{ type: "text", text: { content: title.trim() } }] },
+    };
+    if (category) {
+      const cats = Array.isArray(category) ? category : [category];
+      properties["分野"] = { multi_select: cats.map((c: string) => ({ name: c })) };
+    }
+    if (priority) properties["優先度"] = { select: { name: priority } };
+    if (assignee) {
+      const people = await resolveEmailsToNotionPeople(assignee);
+      if (people.length > 0) properties["割当"] = { people };
+    }
+    if (requester) {
+      const people = await resolveEmailsToNotionPeople(requester);
+      if (people.length > 0) properties["請求者"] = { people };
+    }
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+    return res.json(parseNeedsItem(created));
+  } catch (error) {
+    console.error("Stats needs create error:", error);
+    return res.status(500).json({ error: "Failed to create need" });
+  }
+});
+
+// POST /api/stats/needs/:id/update — 部分更新
+app.post("/api/stats/needs/:id/update", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const { title, category, priority, status, assignee, requester } = req.body ?? {};
+  try {
+    const properties: Record<string, any> = {};
+    if (typeof title === "string" && title.trim()) {
+      properties["ニーズ"] = { title: [{ type: "text", text: { content: title.trim() } }] };
+    }
+    if (category !== undefined) {
+      const cats = Array.isArray(category) ? category : typeof category === "string" && category ? [category] : [];
+      properties["分野"] = { multi_select: cats.map((c: string) => ({ name: c })) };
+    }
+    if (typeof priority === "string") {
+      properties["優先度"] = priority ? { select: { name: priority } } : { select: null };
+    }
+    if (typeof status === "string" && status) {
+      properties["状態"] = { status: { name: status } };
+    }
+    if (typeof assignee === "string") {
+      if (assignee === "") { properties["割当"] = { people: [] }; }
+      else { const people = await resolveEmailsToNotionPeople(assignee); if (people.length > 0) properties["割当"] = { people }; }
+    }
+    if (typeof requester === "string") {
+      if (requester === "") { properties["請求者"] = { people: [] }; }
+      else { const people = await resolveEmailsToNotionPeople(requester); if (people.length > 0) properties["請求者"] = { people }; }
+    }
+    const updated = await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, properties }),
+    );
+    return res.json(parseNeedsItem(updated));
+  } catch (error) {
+    console.error("Stats needs update error:", error);
+    return res.status(500).json({ error: "Failed to update need" });
+  }
+});
+
+// DELETE /api/stats/needs/:id — アーカイブ
+app.delete("/api/stats/needs/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats needs delete error:", error);
+    return res.status(500).json({ error: "Failed to delete need" });
+  }
+});
+
+// POST /api/stats/bugleak/create — BugLeak 新規作成
+app.post("/api/stats/bugleak/create", async (req, res) => {
+  const databaseId = process.env.NOTION_BUGLEAK_DATABASE_ID;
+  if (!notion || !databaseId) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const dataSourceId = await resolveBugLeakDataSource(databaseId);
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const properties: Record<string, any> = {};
+    for (const f of BUGLEAK_FIELDS) {
+      const val = req.body?.[f.key];
+      if (val === undefined || val === null) continue;
+      const name = pickSchemaName(schema, f.names);
+      if (!name) continue;
+      const built = buildBugProperty(schema[name], String(val));
+      if (built) properties[name] = built;
+    }
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+    return res.json(parseBugLeakItem(created));
+  } catch (error) {
+    console.error("Stats bugleak create error:", error);
+    return res.status(500).json({ error: "Failed to create bugleak item" });
+  }
+});
+
+// DELETE /api/stats/bugleak/:id — BugLeak アーカイブ
+app.delete("/api/stats/bugleak/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats bugleak delete error:", error);
+    return res.status(500).json({ error: "Failed to delete bugleak item" });
+  }
+});
+
+// POST /api/stats/bugleak/:id/complete — 確認完了: tcResult + improvable + status + optional checklist
+app.post("/api/stats/bugleak/:id/complete", async (req, res) => {
+  const databaseId = process.env.NOTION_BUGLEAK_DATABASE_ID;
+  if (!notion || !databaseId) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  const { tcResult, improvable, checklistTitle, system } = req.body ?? {};
+  try {
+    const dataSourceId = await resolveBugLeakDataSource(databaseId);
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const props: Record<string, any> = {};
+
+    // tcResult → rich_text
+    const tcName = pickSchemaName(schema, ["TestCenter確認結果"]);
+    if (tcName && tcResult !== undefined) {
+      const built = buildBugProperty(schema[tcName], String(tcResult));
+      if (built) props[tcName] = built;
+    }
+    // improvable → select
+    const impName = pickSchemaName(schema, ["改善可/不可"]);
+    if (impName && improvable !== undefined) {
+      const built = buildBugProperty(schema[impName], String(improvable));
+      if (built) props[impName] = built;
+    }
+    // status → 確認完了
+    const stName = pickSchemaName(schema, ["状態"]);
+    if (stName) {
+      const built = buildBugProperty(schema[stName], "確認完了");
+      if (built) props[stName] = built;
+    }
+    // Create checklist item if title provided
+    let checklistId: string | null = null;
+    if (checklistTitle && String(checklistTitle).trim()) {
+      try {
+        const clDataSourceId = await resolveChecklistDataSource();
+        const clDs: any = await (notion as any).dataSources.retrieve({ data_source_id: clDataSourceId });
+        const clSchema: Record<string, any> = clDs?.properties ?? {};
+        const clProps: Record<string, any> = {};
+        // find title property
+        for (const [name, prop] of Object.entries(clSchema) as [string, any][]) {
+          if (prop.type === "title") {
+            clProps[name] = { title: [{ type: "text", text: { content: String(checklistTitle).trim() } }] };
+            break;
+          }
+        }
+        // find システム property
+        for (const [name, prop] of Object.entries(clSchema) as [string, any][]) {
+          if (name.includes("システム") || name.includes("サービス")) {
+            const built = buildBugProperty(prop, String(system ?? ""));
+            if (built) clProps[name] = built;
+            break;
+          }
+        }
+        const created: any = await withNotionRetry("pages.create", () =>
+          notion!.pages.create({
+            parent: { type: "data_source_id", data_source_id: clDataSourceId } as any,
+            properties: clProps,
+          } as any),
+        );
+        checklistId = created?.id ?? null;
+      } catch (e) {
+        console.error("Failed to create checklist item:", e);
+      }
+    }
+    // Link checklist if created
+    if (checklistId) {
+      const clName = pickSchemaName(schema, ["チェックリスト"]);
+      if (clName) {
+        const built = buildBugProperty(schema[clName], checklistId);
+        if (built) props[clName] = built;
+      }
+    }
+
+    await notion.pages.update({ page_id: pageId, properties: props } as any);
+    return res.json({ ok: true, checklistId });
+  } catch (error) {
+    console.error("Stats bugleak complete error:", error);
+    return res.status(500).json({ error: "Failed to complete bugleak item" });
+  }
+});
+
+// GET /api/stats/bugleak/:id/checklist-title — resolve checklist relation titles
+app.get("/api/stats/bugleak/:id/checklist-title", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion not configured" });
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    const page: any = await withNotionRetry("pages.retrieve", () =>
+      notion!.pages.retrieve({ page_id: pageId }),
+    );
+    const clProp = page?.properties?.["チェックリスト"];
+    if (clProp?.type !== "relation" || !clProp.relation?.length) {
+      return res.json({ titles: [] });
+    }
+    const titles: string[] = [];
+    for (const rel of clProp.relation) {
+      try {
+        const linked: any = await withNotionRetry("pages.retrieve", () =>
+          notion!.pages.retrieve({ page_id: rel.id }),
+        );
+        const lp = linked?.properties ?? {};
+        let title = "";
+        for (const val of Object.values(lp) as any[]) {
+          if (val?.type === "title") { title = propertyToPlainText(val); break; }
+        }
+        titles.push(title || rel.id);
+      } catch { titles.push(rel.id); }
+    }
+    return res.json({ titles });
+  } catch (error) {
+    console.error("Checklist title error:", error);
+    return res.status(500).json({ error: "Failed to fetch checklist titles" });
+  }
+});
+
+// ── Checklist (NOTION_CHECKLIST_DATABASE_ID) ──
+
+async function resolveChecklistDataSource(): Promise<string> {
+  const databaseId = process.env.NOTION_CHECKLIST_DATABASE_ID;
+  if (!notion || !databaseId) throw new Error("Checklist DB not configured");
+  const database: any = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
+  const dataSourceId = database?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) throw new Error("No data source found in NOTION_CHECKLIST_DATABASE_ID");
+  return dataSourceId;
+}
+
+// GET /api/stats/checklist — 全件 + スキーマ
+app.get("/api/stats/checklist", async (_req, res) => {
+  if (!notion || !process.env.NOTION_CHECKLIST_DATABASE_ID) {
+    return res.status(503).json({ error: "Checklist DB not configured" });
+  }
+  try {
+    const dataSourceId = await resolveChecklistDataSource();
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+
+    const pages: any[] = [];
+    let hasMore = true;
+    let cursor: string | undefined = undefined;
+    while (hasMore) {
+      const r: any = await withNotionRetry("dataSources.query", () =>
+        (notion as any).dataSources.query({ data_source_id: dataSourceId, start_cursor: cursor, page_size: 100 }),
+      );
+      pages.push(...r.results);
+      hasMore = r.has_more;
+      cursor = r.next_cursor ?? undefined;
+    }
+
+    const fields: Record<string, { type: string; options: string[] }> = {};
+    for (const [name, prop] of Object.entries<any>(schema)) {
+      const opts: string[] =
+        prop.type === "select" ? (prop.select?.options ?? []).map((o: any) => o.name)
+        : prop.type === "status" ? (prop.status?.options ?? []).map((o: any) => o.name)
+        : prop.type === "multi_select" ? (prop.multi_select?.options ?? []).map((o: any) => o.name)
+        : [];
+      fields[name] = { type: prop.type, options: opts };
+    }
+
+    const titleKey = Object.keys(schema).find((k) => schema[k].type === "title") ?? "";
+    const items = pages.map((page: any) => {
+      const p = page?.properties ?? {};
+      const row: Record<string, any> = { id: page?.id ?? "" };
+      for (const [name, prop] of Object.entries<any>(p)) {
+        if (prop.type === "relation") {
+          row[name] = (prop.relation ?? []).map((r: any) => r.id);
+        } else {
+          row[name] = propertyToPlainText(prop);
+        }
+      }
+      row._title = propertyToPlainText(p[titleKey]);
+      row._createdTime = p["提出日"]?.created_time ?? page?.created_time ?? "";
+      return row;
+    });
+    items.sort((a, b) => (b._createdTime > a._createdTime ? 1 : b._createdTime < a._createdTime ? -1 : 0));
+
+    return res.json({ items, fields, titleKey });
+  } catch (error) {
+    console.error("Stats checklist list error:", error);
+    return res.status(500).json({ error: "Failed to load checklist" });
+  }
+});
+
+// POST /api/stats/checklist — 作成
+app.post("/api/stats/checklist", async (req, res) => {
+  if (!notion || !process.env.NOTION_CHECKLIST_DATABASE_ID) {
+    return res.status(503).json({ error: "Checklist DB not configured" });
+  }
+  try {
+    const dataSourceId = await resolveChecklistDataSource();
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const properties: Record<string, any> = {};
+    for (const [key, val] of Object.entries(req.body ?? {})) {
+      if (key === "id" || val === undefined || val === null) continue;
+      const prop = schema[key];
+      if (!prop) continue;
+      const built = buildBugProperty(prop, String(val));
+      if (built) properties[key] = built;
+    }
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+        properties,
+      } as any),
+    );
+    return res.json({ id: created.id });
+  } catch (error) {
+    console.error("Stats checklist create error:", error);
+    return res.status(500).json({ error: "Failed to create checklist item" });
+  }
+});
+
+// POST /api/stats/checklist/:id/update — 更新
+app.post("/api/stats/checklist/:id/update", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const dataSourceId = await resolveChecklistDataSource();
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    const schema: Record<string, any> = ds?.properties ?? {};
+    const properties: Record<string, any> = {};
+    for (const [key, val] of Object.entries(req.body ?? {})) {
+      if (key === "id" || val === undefined || val === null) continue;
+      const prop = schema[key];
+      if (!prop) continue;
+      const built = buildBugProperty(prop, String(val));
+      if (built) properties[key] = built;
+    }
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, properties }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats checklist update error:", error);
+    return res.status(500).json({ error: "Failed to update checklist item" });
+  }
+});
+
+// DELETE /api/stats/checklist/:id — アーカイブ
+app.delete("/api/stats/checklist/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: req.params.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Stats checklist delete error:", error);
+    return res.status(500).json({ error: "Failed to delete checklist item" });
+  }
+});
+
+// GET /api/stats/ai-reviews — AI実績レビュー一覧（構造化データ）
+let aiReviewsCache: { data: any; ts: number } | null = null;
+const AI_REVIEWS_CACHE_TTL = 5 * 60 * 1000;
+
+app.get("/api/stats/ai-reviews", async (_req, res) => {
+  const databaseId = process.env.NOTION_AI_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "AI database not configured" });
+  }
+  if (aiReviewsCache && Date.now() - aiReviewsCache.ts < AI_REVIEWS_CACHE_TTL) {
+    return res.json(aiReviewsCache.data);
+  }
+  try {
+    const db: any = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.status(500).json({ error: "No data source found" });
+
+    const pages: any[] = [];
+    let cursor: string | undefined;
+    let hasMore = true;
+    while (hasMore) {
+      const r: any = await (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+      });
+      pages.push(...(r.results ?? []));
+      hasMore = r.has_more;
+      cursor = r.next_cursor;
+    }
+
+    const items = pages.map((page: any) => {
+      const props = page.properties ?? {};
+      const title = (props["名称"]?.title ?? []).map((x: any) => x.plain_text).join("");
+      const effortRaw = (props["工数改善（人日）"]?.rich_text ?? []).map((x: any) => x.plain_text).join("");
+      const effortSaved = effortRaw ? parseFloat(effortRaw) || null : null;
+      const createdTime = page.created_time ?? props["日期"]?.created_time ?? "";
+      const createdBy = props["创建者"]?.created_by?.name ?? "";
+
+      const totalScore = props["総合得点"]?.number ?? 0;
+      const grade = props["等級"]?.select?.name ?? "";
+      const totalCases = props["テストケース総数"]?.number ?? null;
+
+      const dimScores = {
+        req: props["要件追溯"]?.number ?? null,
+        spec: props["規格忠実度"]?.number ?? null,
+        type: props["テスト類型"]?.number ?? null,
+        exec: props["可執行性"]?.number ?? null,
+        maint: props["保守性"]?.number ?? null,
+      };
+      const dimensions = [
+        ...(dimScores.req != null ? [{ name: "要件追溯と範囲", weight: "30%", score: dimScores.req }] : []),
+        ...(dimScores.spec != null ? [{ name: "規格忠実度", weight: "20%", score: dimScores.spec }] : []),
+        ...(dimScores.type != null ? [{ name: "テスト類型覆盖", weight: "25%", score: dimScores.type }] : []),
+        ...(dimScores.exec != null ? [{ name: "可執行性", weight: "15%", score: dimScores.exec }] : []),
+        ...(dimScores.maint != null ? [{ name: "保守性", weight: "10%", score: dimScores.maint }] : []),
+      ];
+
+      const score = totalScore > 0 || dimensions.length > 0
+        ? { total: totalScore, grade, dimensions }
+        : null;
+
+      const cr = props["Critical"]?.number ?? 0;
+      const mj = props["Major"]?.number ?? 0;
+      const mn = props["Minor"]?.number ?? 0;
+      const inf = props["Info"]?.number ?? 0;
+      const issues = (cr + mj + mn + inf > 0)
+        ? { critical: cr, major: mj, minor: mn, info: inf, total: cr + mj + mn + inf }
+        : null;
+
+      return { id: page.id, title, effortSaved, createdTime, createdBy, totalCases, score, issues };
+    });
+
+    items.sort((a, b) => (b.createdTime || "").localeCompare(a.createdTime || ""));
+
+    let totalEffort = 0;
+    let scoreSum = 0;
+    let scoreCount = 0;
+    const gradeDistribution: Record<string, number> = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+    for (const item of items) {
+      if (item.effortSaved) totalEffort += item.effortSaved;
+      if (item.score) {
+        scoreSum += item.score.total;
+        scoreCount++;
+        if (item.score.grade) gradeDistribution[item.score.grade] = (gradeDistribution[item.score.grade] || 0) + 1;
+      }
+    }
+
+    const result = {
+      items,
+      summary: {
+        totalReports: items.length,
+        avgScore: scoreCount > 0 ? Math.round((scoreSum / scoreCount) * 10) / 10 : null,
+        totalEffortSaved: totalEffort,
+        gradeDistribution,
+      },
+    };
+    aiReviewsCache = { data: result, ts: Date.now() };
+    return res.json(result);
+  } catch (error) {
+    console.error("Stats AI reviews error:", error);
+    return res.status(500).json({ error: "Failed to load AI reviews" });
+  }
+});
+
+// GET /api/stats/ai-reviews/:id/html — 単一レビューの子ページ HTML
+app.get("/api/stats/ai-reviews/:id/html", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const html = await renderBlocksToHtml(req.params.id);
+    return res.json({ html });
+  } catch (error) {
+    console.error("Stats AI review HTML error:", error);
+    return res.status(500).json({ error: "Failed to load review HTML" });
+  }
+});
+
+// GET /api/stats/needs/:id/children — ニーズ子ページ HTML
+app.get("/api/stats/needs/:id/children", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const html = await renderBlocksToHtml(req.params.id);
+    return res.json({ html });
+  } catch (error) {
+    console.error("Stats needs children error:", error);
+    return res.status(500).json({ error: "Failed to load needs children" });
+  }
+});
+
+// GET /api/stats/needs/:id — ニーズ単一レコード
+app.get("/api/stats/needs/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const page = await withNotionRetry("pages.retrieve", () =>
+      notion!.pages.retrieve({ page_id: req.params.id }),
+    );
+    return res.json(parseNeedsItem(page));
+  } catch (error) {
+    console.error("Stats needs get error:", error);
+    return res.status(500).json({ error: "Failed to load need" });
+  }
+});
+
+// ── データ統計パネル API ここまで ──────────────────────────
 
 app.get("/api/jiji-list", async (_req, res) => {
   const databaseId = process.env.NOTION_JIJI_DATABASE_ID;
@@ -6003,13 +6639,24 @@ app.post("/api/notes/:id/reply", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });
   }
-  const { text, author, screenshots } = req.body ?? {};
+  const { text, author, screenshots, mention } = req.body ?? {};
   if ((!text || typeof text !== "string" || !text.trim()) && !(Array.isArray(screenshots) && screenshots.length > 0)) {
     return res.status(400).json({ error: "text or screenshots required" });
   }
   const authorLabel = author ? `[${author}] ` : "";
   const now = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
-  const content = text?.trim() ? `${authorLabel}${now} — ${text.trim()}` : `${authorLabel}${now} — (画像)`;
+  const bodyText = text?.trim() || "(画像)";
+
+  const richText: any[] = [];
+  if (mention) {
+    const people = await resolveEmailsToNotionPeople(mention);
+    if (people.length > 0) {
+      richText.push({ type: "mention", mention: { type: "user", user: { id: people[0].id } } });
+      richText.push({ type: "text", text: { content: " " } });
+    }
+  }
+  richText.push({ type: "text", text: { content: `${authorLabel}${now} — ${bodyText}` } });
+
   try {
     await withNotionRetry("blocks.children.append", () =>
       notion!.blocks.children.append({
@@ -6017,14 +6664,14 @@ app.post("/api/notes/:id/reply", async (req, res) => {
         children: [{
           object: "block",
           type: "paragraph",
-          paragraph: { rich_text: [{ type: "text", text: { content } }] },
+          paragraph: { rich_text: richText },
         }],
       } as any),
     );
     if (Array.isArray(screenshots) && screenshots.length > 0) {
       await appendScreenshots(req.params.id, screenshots);
     }
-    return res.json({ ok: true, content });
+    return res.json({ ok: true, content: `${authorLabel}${now} — ${bodyText}` });
   } catch (error) {
     console.error("Note reply error:", error);
     return res.status(500).json({ error: "Failed to add reply" });
