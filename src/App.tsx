@@ -185,7 +185,7 @@ export default function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
             >
-              <CaseManagement onBack={() => setView('home')} />
+              <CaseManagement onBack={() => setView('home')} onNavigate={setView} />
             </motion.div>
           ) : view === 'data-stats' ? (
             <motion.div

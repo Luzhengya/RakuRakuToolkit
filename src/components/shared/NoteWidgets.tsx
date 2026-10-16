@@ -312,7 +312,7 @@ export function NoteCreateForm({ category, memberOptions, entityId, entityType =
                   )}
                 </div>
                 {showAssigneeDropdown && (
-                  <div className="absolute z-10 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[160px] max-h-[200px] overflow-y-auto">
+                  <div className="absolute z-10 bottom-full mb-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[160px] max-h-[200px] overflow-y-auto">
                     {memberOptions.filter((m) => !assignees.includes(m)).map((m) => (
                       <button key={m} type="button"
                         onClick={() => { setAssignees([...assignees, m]); setShowAssigneeDropdown(false); }}
@@ -704,7 +704,7 @@ function NoteInlineEdit({ note, memberOptions, onSaved, onCancel }: {
               )}
             </div>
             {showAssigneeDropdown && (
-              <div className="absolute z-10 mt-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[140px] max-h-[160px] overflow-y-auto">
+              <div className="absolute z-10 bottom-full mb-1 bg-white border border-neutral-200 rounded-lg shadow-lg py-1 min-w-[140px] max-h-[160px] overflow-y-auto">
                 {memberOptions.filter((m) => !assignees.includes(m)).map((m) => (
                   <button key={m} type="button"
                     onClick={() => { setAssignees([...assignees, m]); setShowAssigneeDropdown(false); }}

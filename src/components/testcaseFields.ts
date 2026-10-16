@@ -27,7 +27,19 @@ export const RESULT_COLOR: Record<string, string> = {
   NG: 'bg-red-50 text-red-700 border-red-200',
   'テスト不可': 'bg-amber-50 text-amber-700 border-amber-200',
   '未実施': 'bg-neutral-100 text-neutral-600 border-neutral-200',
+  '再確認OK': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  '再確認NG': 'bg-red-50 text-red-700 border-red-200',
 };
+
+export const RETEST_OPTIONS = ['', '再確認OK', '再確認NG'] as const;
+
+export function effectiveResult(row: TcRow): string {
+  const result = (row['テスト結果'] || '').trim();
+  if (result !== 'NG') return result;
+  const retest = (row['再テスト結果'] || '').trim();
+  if (retest === '再確認OK') return 'OK';
+  return 'NG';
+}
 
 // 長文はダイアログで改行を保持したいので pre-wrap 対象にする項目
 export const LONG_TEXT_FIELDS = new Set(['前提条件', 'ステップ', '予期結果', 'テスト内容', '備考']);

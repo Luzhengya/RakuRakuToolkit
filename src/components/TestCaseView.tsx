@@ -3,8 +3,8 @@ import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Do
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
 import {
-  HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, SECONDARY_FIELDS,
-  type TcRow,
+  HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
+  effectiveResult, type TcRow,
 } from './testcaseFields';
 
 type ListResponse = {
@@ -26,6 +26,7 @@ const LIST_COLUMNS = [
   '機能名',
   'テスト内容',
   'テスト結果',
+  '再テスト結果',
   '優先級',
   'バージョン',
 ] as const;
@@ -39,7 +40,8 @@ const KEYWORD_FIELDS = [
 const EDITABLE_FIELDS = new Set<string>([
   'CMDB番号', '大分類', '中分類', '小分類', '機能名', '要件名',
   'テスト内容', '前提条件', 'ステップ', '予期結果',
-  'ポイント', '優先級', 'カテゴリ', '状態', 'テスト結果', '関連NO', '備考',
+  'ポイント', '優先級', 'カテゴリ', '状態', 'テスト結果',
+  '再テスト結果', '再実施日', '再実施者', '関連NO', '備考',
 ]);
 
 // 空欄 = 未実施。Notion の選択肢に「未実施」は無いので、選ばせると
@@ -84,6 +86,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
 
   const [sortCol, setSortCol] = useState('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc' | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 20;
 
   // システム候補 (Testcase Format と同じ、進捗管理表から取得)
   useEffect(() => {
@@ -167,6 +171,14 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     });
   }, [filtered, sortCol, sortDir]);
 
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const paged = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return sorted.slice(start, start + PAGE_SIZE);
+  }, [sorted, currentPage]);
+
+  useEffect(() => { setCurrentPage(1); }, [filtered, sortCol, sortDir]);
+
   const toggleSort = (col: string) => {
     if (sortCol !== col) { setSortCol(col); setSortDir('asc'); }
     else if (sortDir === 'asc') { setSortDir('desc'); }
@@ -174,12 +186,18 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   };
 
   // 統計 (絞り込み結果に連動)
+  // 再確認OK は OK として、再確認NG/空 は NG として集計
   const stats = useMemo(() => {
     const total = filtered.length;
-    const by = (v: string) => filtered.filter((r) => (r['テスト結果'] || '').trim() === v).length;
-    // 未実施は空欄。Notion の選択肢は OK / NG / テスト不可 の3つしかなく、
-    // まだ実施していないケースはテスト結果が入っていない状態で表される
-    return { total, ok: by('OK'), un: by(''), block: by('テスト不可'), ng: by('NG') };
+    let ok = 0, ng = 0, block = 0, un = 0;
+    for (const r of filtered) {
+      const eff = effectiveResult(r);
+      if (eff === 'OK') ok++;
+      else if (eff === 'NG') ng++;
+      else if (eff === 'テスト不可') block++;
+      else un++;
+    }
+    return { total, ok, un, block, ng };
   }, [filtered]);
 
   const hasFilter = fKeyword || fResult || fVersion || fMajor || fMiddle || fMinor;
@@ -502,11 +520,23 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((r) => (
+              {paged.map((r) => (
                 <tr key={r.id} className="hover:bg-neutral-50 cursor-pointer" onClick={() => openDetail(r)}>
                   {LIST_COLUMNS.map((c) => {
                     const v = r[c] || '';
                     if (c === 'テスト結果') {
+                      return (
+                        <td key={c} className={td0}>
+                          {v ? (
+                            <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${RESULT_COLOR[v] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
+                              {v}
+                            </span>
+                          ) : '-'}
+                        </td>
+                      );
+                    }
+                    if (c === '再テスト結果') {
+                      if ((r['テスト結果'] || '').trim() !== 'NG') return <td key={c} className={td0}>-</td>;
                       return (
                         <td key={c} className={td0}>
                           {v ? (
@@ -572,6 +602,48 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               ))}
             </tbody>
           </table>
+          {/* ページネーション */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-neutral-100">
+              <span className="text-xs text-neutral-400">{sorted.length} 件中 {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, sorted.length)} 件</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="p-1 rounded hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 2)
+                  .reduce<(number | 'dots')[]>((acc, p, idx, arr) => {
+                    if (idx > 0 && p - (arr[idx - 1] as number) > 1) acc.push('dots');
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) =>
+                    p === 'dots' ? (
+                      <span key={`d${i}`} className="px-1 text-xs text-neutral-300">…</span>
+                    ) : (
+                      <button
+                        key={p}
+                        onClick={() => setCurrentPage(p as number)}
+                        className={`min-w-[28px] h-7 rounded text-xs font-medium ${currentPage === p ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-100 text-neutral-600'}`}
+                      >
+                        {p}
+                      </button>
+                    )
+                  )}
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="p-1 rounded hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -836,6 +908,59 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     </div>
                   ))}
                 </div>
+
+                {(editing ? (draft['テスト結果'] || '') : (detail['テスト結果'] || '')).trim() === 'NG' && (
+                  <div className="border border-orange-200 rounded-lg p-3 bg-orange-50/40 space-y-3">
+                    <p className="text-[11px] font-semibold text-orange-500">再テスト</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-neutral-400">再テスト結果</p>
+                        {editing ? (
+                          <select
+                            value={draft['再テスト結果'] ?? ''}
+                            onChange={(e) => setDraft((p) => ({ ...p, '再テスト結果': e.target.value }))}
+                            className={selectCls + ' w-full'}
+                          >
+                            {RETEST_OPTIONS.map((o) => (
+                              <option key={o} value={o}>{o || '—'}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          detail['再テスト結果'] ? (
+                            <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${RESULT_COLOR[detail['再テスト結果']] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
+                              {detail['再テスト結果']}
+                            </span>
+                          ) : <span className="text-sm text-neutral-400">—</span>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-neutral-400">再実施日</p>
+                        {editing ? (
+                          <input
+                            type="date"
+                            value={draft['再実施日'] ?? ''}
+                            onChange={(e) => setDraft((p) => ({ ...p, '再実施日': e.target.value }))}
+                            className={selectCls + ' w-full'}
+                          />
+                        ) : (
+                          <p className="text-sm text-neutral-800">{detail['再実施日'] || '—'}</p>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-neutral-400">再実施者</p>
+                        {editing ? (
+                          <input
+                            value={draft['再実施者'] ?? ''}
+                            onChange={(e) => setDraft((p) => ({ ...p, '再実施者': e.target.value }))}
+                            className={selectCls + ' w-full'}
+                          />
+                        ) : (
+                          <p className="text-sm text-neutral-800">{detail['再実施者'] || '—'}</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100">
                   {SECONDARY_FIELDS.map((f) => {

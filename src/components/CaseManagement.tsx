@@ -2,9 +2,10 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSubRoute } from '../hooks/useSubRoute';
 import {
   AlertCircle,
-  ArrowLeft,
   Check,
+  ChevronDown,
   ChevronRight,
+  ExternalLink,
   FileText,
   FolderTree,
   Loader2,
@@ -151,7 +152,7 @@ function statusBadge(status: string) {
   return <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status || '-'}</span>;
 }
 
-export default function CaseManagement({ onBack }: { onBack: () => void }) {
+export default function CaseManagement({ onBack, onNavigate }: { onBack: () => void; onNavigate?: (view: string) => void }) {
   const [tree, setTree] = useState<ParentNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -168,9 +169,10 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
   const [memberOptions, setMemberOptions] = useState<string[]>([]);
 
   // ノート
-  const { counts: noteCounts, reloadCounts } = useNoteCounts();
+  const { counts: noteCounts, reloadCounts: reloadNoteCountsBase } = useNoteCounts();
   const [pendingNoteCounts, setPendingNoteCounts] = useState<Record<string, number>>({});
-  useEffect(() => {
+  const [aiPendingCounts, setAiPendingCounts] = useState<Record<string, number>>({});
+  const loadPendingNoteCounts = useCallback(() => {
     fetch('/api/notes/by-assignee')
       .then((r) => r.json())
       .then((d) => {
@@ -182,6 +184,26 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
       })
       .catch(() => {});
   }, []);
+  const loadAiPendingCounts = useCallback(() => {
+    fetch('/api/stats/needs')
+      .then((r) => r.json())
+      .then((data) => {
+        const counts: Record<string, number> = {};
+        for (const it of (data.items ?? [])) {
+          if (!(it.category ?? '').includes('AI') || it.status === '対応済') continue;
+          const a = it.assignee ?? '';
+          if (a) counts[a] = (counts[a] ?? 0) + 1;
+        }
+        setAiPendingCounts(counts);
+      })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { loadPendingNoteCounts(); loadAiPendingCounts(); }, [loadPendingNoteCounts, loadAiPendingCounts]);
+  const reloadCounts = useCallback(() => {
+    reloadNoteCountsBase();
+    loadPendingNoteCounts();
+    loadAiPendingCounts();
+  }, [reloadNoteCountsBase, loadPendingNoteCounts, loadAiPendingCounts]);
 
   // 行展開
   const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
@@ -407,11 +429,17 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="space-y-4">
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-sm">
+        <button onClick={onBack} className="text-blue-600 hover:text-blue-800 hover:underline">ホーム</button>
+        <span className="text-neutral-400">&gt;&gt;</span>
+        <button onClick={() => { setViewMode('tree'); setSelectedAssignee(null); }} className="text-blue-600 hover:text-blue-800 hover:underline">案件管理</button>
+        <span className="text-neutral-400">&gt;&gt;</span>
+        <span className="text-neutral-700 font-medium">{viewMode === 'tree' ? 'ツリー' : '担当者'}</span>
+      </nav>
+
       {/* Header */}
       <div className="flex items-center gap-3">
-        <button onClick={onBack} className="p-2 rounded-lg hover:bg-neutral-100 transition-colors">
-          <ArrowLeft size={20} />
-        </button>
         <FolderTree size={22} className="text-orange-600" />
         <h2 className="text-xl font-bold">案件管理</h2>
         <div className="ml-auto flex items-center bg-neutral-100 rounded-lg p-0.5">
@@ -483,9 +511,9 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                               {email.split('@')[0]}
                             </span>
                             <span className="flex items-center gap-1.5 shrink-0">
-                              {(pendingNoteCounts[email] ?? 0) > 0 && (
-                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA・追加説明">
-                                  <AlertCircle size={10} />{pendingNoteCounts[email]}
+                              {((pendingNoteCounts[email] ?? 0) + (aiPendingCounts[email] ?? 0)) > 0 && (
+                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA・追加説明・AI">
+                                  <AlertCircle size={10} />{(pendingNoteCounts[email] ?? 0) + (aiPendingCounts[email] ?? 0)}
                                 </span>
                               )}
                               <span className="text-[10px] text-neutral-400">{cases.length} 件</span>
@@ -514,6 +542,7 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                     memberOptions={memberOptions}
                     noteCounts={noteCounts}
                     onNoteCountChange={reloadCounts}
+                    onNavigate={onNavigate}
                   />
                 )}
               </section>
@@ -563,7 +592,20 @@ export default function CaseManagement({ onBack }: { onBack: () => void }) {
                             }`}
                           >
                             <span className="truncate">{p.month || p.projectName}</span>
-                            <span className="text-[10px] text-neutral-400 shrink-0">{p.childCount}</span>
+                            <span className="flex items-center gap-1 shrink-0">
+                              {(() => {
+                                const total = p.children.reduce((sum, c) => {
+                                  const nc = noteCounts[c.id];
+                                  return sum + (nc ? nc.qa + nc.note + nc.issue : 0);
+                                }, 0);
+                                return total > 0 ? (
+                                  <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5">
+                                    <AlertCircle size={10} />{total}
+                                  </span>
+                                ) : null;
+                              })()}
+                              <span className="text-[10px] text-neutral-400">{p.childCount}</span>
+                            </span>
                           </button>
                         ))}
                       </div>
@@ -915,12 +957,13 @@ function ChecklistPanel() {
   );
 }
 
-function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountChange }: {
+function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountChange, onNavigate }: {
   email: string;
   cases: (ChildCase & { parentName: string; parentSystem: string; parentMonth: string })[];
   memberOptions: string[];
   noteCounts: Record<string, { qa: number; note: number; issue: number }>;
   onNoteCountChange: () => void;
+  onNavigate?: (view: string) => void;
 }) {
   const [monthFilter, setMonthFilter] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -928,6 +971,56 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
   const [pendingNotes, setPendingNotes] = useState<EntityNote[]>([]);
   const [notesLoading, setNotesLoading] = useState(false);
   const [notesKey, setNotesKey] = useState(0);
+  const [aiItems, setAiItems] = useState<{ id: string; title: string; status: string; assignee: string; createdTime: string }[]>([]);
+  const [aiToggling, setAiToggling] = useState<Set<string>>(new Set());
+  const [aiExpandedId, setAiExpandedId] = useState<string | null>(null);
+  const [aiChildrenHtml, setAiChildrenHtml] = useState<Record<string, string>>({});
+  const [aiChildrenLoading, setAiChildrenLoading] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/stats/needs')
+      .then((r) => r.json())
+      .then((data) => {
+        const items = (data.items ?? []).filter((it: any) => (it.category ?? '').includes('AI'));
+        setAiItems(items.map((it: any) => ({ id: it.id, title: it.title, status: it.status, assignee: it.assignee ?? '', createdTime: it.createdTime ?? '' })));
+      })
+      .catch(() => {});
+  }, []);
+
+  const toggleAiItem = useCallback((id: string, currentDone: boolean) => {
+    setAiToggling((s) => new Set(s).add(id));
+    fetch(`/api/stats/needs/${id}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: currentDone ? '新' : '対応済' }),
+    })
+      .then((r) => r.json())
+      .then((updated) => {
+        setAiItems((prev) => prev.map((it) => it.id === id ? { ...it, status: updated.status ?? (currentDone ? '新' : '対応済') } : it));
+      })
+      .catch(() => {})
+      .finally(() => setAiToggling((s) => { const n = new Set(s); n.delete(id); return n; }));
+  }, []);
+
+  const handleAiExpand = useCallback((id: string) => {
+    setAiExpandedId((prev) => prev === id ? null : id);
+    if (!aiChildrenHtml[id] && aiChildrenLoading !== id) {
+      setAiChildrenLoading(id);
+      fetch(`/api/stats/needs/${id}/children`)
+        .then((r) => r.json())
+        .then((d) => setAiChildrenHtml((prev) => ({ ...prev, [id]: d.html ?? '' })))
+        .catch(() => setAiChildrenHtml((prev) => ({ ...prev, [id]: '' })))
+        .finally(() => setAiChildrenLoading(null));
+    }
+  }, [aiChildrenHtml, aiChildrenLoading]);
+
+  const myAiItems = useMemo(() => {
+    const mine = aiItems.filter((it) => it.assignee === email && it.status !== '対応済');
+    mine.sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime());
+    return mine.slice(0, 3);
+  }, [aiItems, email]);
+
+  const myAiTotalPending = useMemo(() => aiItems.filter((it) => it.assignee === email && it.status !== '対応済').length, [aiItems, email]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1101,6 +1194,57 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
           </div>
         )}
       </div>
+
+      {myAiItems.length > 0 && (
+        <div className="bg-white border border-violet-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-violet-100 bg-violet-50/60 flex items-center gap-2">
+            <Check size={13} className="text-violet-500" />
+            <span className="text-xs font-bold text-violet-700">AI チェックリスト</span>
+            <span className="text-[10px] text-violet-500 ml-1">未完了 {myAiTotalPending}件</span>
+          </div>
+          <div className="divide-y divide-neutral-100">
+            {myAiItems.map((it) => {
+              const expanded = aiExpandedId === it.id;
+              const toggling = aiToggling.has(it.id);
+              return (
+                <div key={it.id} className="px-4 py-3">
+                  <div className="flex items-start gap-2 cursor-pointer" onClick={() => handleAiExpand(it.id)}>
+                    {expanded ? <ChevronDown size={14} className="mt-0.5 shrink-0 text-violet-400" /> : <ChevronRight size={14} className="mt-0.5 shrink-0 text-violet-400" />}
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs font-medium text-neutral-800">{it.title}</span>
+                      <div className="text-[10px] text-neutral-400 mt-0.5">{it.createdTime?.slice(0, 10)}</div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => toggleAiItem(it.id, false)} disabled={toggling}
+                        className="px-2 py-1 text-[10px] rounded bg-violet-50 text-violet-600 hover:bg-violet-100 disabled:opacity-50">
+                        {toggling ? <Loader2 size={10} className="animate-spin" /> : '完了にする'}
+                      </button>
+                    </div>
+                  </div>
+                  {expanded && (
+                    <div className="mt-2 ml-5">
+                      {aiChildrenLoading === it.id ? (
+                        <div className="text-[10px] text-neutral-400 flex items-center gap-1"><Loader2 size={10} className="animate-spin" />読み込み中...</div>
+                      ) : aiChildrenHtml[it.id] ? (
+                        <div className="prose prose-sm max-w-none text-xs" dangerouslySetInnerHTML={{ __html: aiChildrenHtml[it.id] }} />
+                      ) : (
+                        <div className="text-[10px] text-neutral-400">内容なし</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {myAiTotalPending > 3 && onNavigate && (
+            <div className="flex justify-center py-2 border-t border-violet-100">
+              <button onClick={() => onNavigate('data-stats')} className="text-xs text-violet-600 hover:text-violet-800 hover:underline px-3 py-1.5 flex items-center gap-1">
+                <ExternalLink size={11} />もっと見る（残り {myAiTotalPending - 3}件）
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 案件セクション（月別、新しい順） */}
       {byMonth.map(([month, monthCases]) => (

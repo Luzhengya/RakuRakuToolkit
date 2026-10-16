@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, ClipboardList, Loader2 } from 'lucide-react';
 import TestcaseDetailDialog from './TestcaseDetailDialog';
-import { RESULT_COLOR, type TcRow } from './testcaseFields';
+import { RESULT_COLOR, effectiveResult, type TcRow } from './testcaseFields';
 
 type Response = {
   items: TcRow[];
@@ -43,14 +43,17 @@ export default function CaseTestcases({ caseId }: { caseId: string }) {
   };
 
   const stats = data
-    ? {
-        total: data.items.length,
-        ok: data.items.filter((r) => r['テスト結果'] === 'OK').length,
-        ng: data.items.filter((r) => r['テスト結果'] === 'NG').length,
-        block: data.items.filter((r) => r['テスト結果'] === 'テスト不可').length,
-        // 未実施は空欄 (Notion の選択肢は OK / NG / テスト不可 の3つのみ)
-        un: data.items.filter((r) => (r['テスト結果'] || '').trim() === '').length,
-      }
+    ? (() => {
+        let ok = 0, ng = 0, block = 0, un = 0;
+        for (const r of data.items) {
+          const eff = effectiveResult(r);
+          if (eff === 'OK') ok++;
+          else if (eff === 'NG') ng++;
+          else if (eff === 'テスト不可') block++;
+          else un++;
+        }
+        return { total: data.items.length, ok, ng, block, un };
+      })()
     : null;
 
   const th0 = 'px-3 py-2 text-xs font-semibold text-neutral-500 whitespace-nowrap text-left border-b border-neutral-200';

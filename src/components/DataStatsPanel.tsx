@@ -133,11 +133,12 @@ function ConfirmDialog({ message, onConfirm, onCancel }: { message: string; onCo
 
 // ── Needs: category helpers ──
 
-type NeedsCategory = 'QA' | '指摘' | 'その他';
+type NeedsCategory = 'QA' | '指摘' | 'AI' | 'その他';
 
 function classifyNeeds(item: NeedsItem): NeedsCategory {
   if (item.category === 'QA') return 'QA';
   if (item.category === '指摘') return '指摘';
+  if ((item.category ?? '').includes('AI')) return 'AI';
   return 'その他';
 }
 
@@ -181,6 +182,7 @@ function NeedsCategoryTable({
   const colorMap: Record<NeedsCategory, { bg: string; text: string; badge: string }> = {
     QA: { bg: 'bg-blue-50', text: 'text-blue-700', badge: 'bg-blue-100 text-blue-700' },
     指摘: { bg: 'bg-orange-50', text: 'text-orange-700', badge: 'bg-orange-100 text-orange-700' },
+    AI: { bg: 'bg-violet-50', text: 'text-violet-700', badge: 'bg-violet-100 text-violet-700' },
     その他: { bg: 'bg-neutral-50', text: 'text-neutral-700', badge: 'bg-neutral-100 text-neutral-600' },
   };
   const colors = colorMap[label];
@@ -302,14 +304,16 @@ function NeedsListPage() {
   const grouped = useMemo(() => {
     const qa: NeedsItem[] = [];
     const shiteki: NeedsItem[] = [];
+    const ai: NeedsItem[] = [];
     const other: NeedsItem[] = [];
     for (const item of items) {
       const cat = classifyNeeds(item);
       if (cat === 'QA') qa.push(item);
       else if (cat === '指摘') shiteki.push(item);
+      else if (cat === 'AI') ai.push(item);
       else other.push(item);
     }
-    return { qa, shiteki, other };
+    return { qa, shiteki, ai, other };
   }, [items]);
 
   const stats = useMemo(() => ({
@@ -317,6 +321,8 @@ function NeedsListPage() {
     qaUnconfirmed: grouped.qa.filter((i) => i.status !== '対応済').length,
     shiteki: grouped.shiteki.length,
     shitekiUnconfirmed: grouped.shiteki.filter((i) => i.status !== '対応済').length,
+    ai: grouped.ai.length,
+    aiUnconfirmed: grouped.ai.filter((i) => i.status !== '対応済').length,
     other: grouped.other.length,
     otherUnconfirmed: grouped.other.filter((i) => i.status !== '対応済').length,
   }), [grouped]);
@@ -369,11 +375,13 @@ function NeedsListPage() {
       <div className="flex gap-3 flex-wrap">
         <StatCard label="QA" value={stats.qa} color="bg-blue-50 text-blue-700" />
         <StatCard label="指摘" value={stats.shiteki} color="bg-orange-50 text-orange-700" />
+        <StatCard label="AI" value={stats.ai} color="bg-violet-50 text-violet-700" />
         <StatCard label="その他" value={stats.other} color="bg-neutral-100 text-neutral-700" />
       </div>
 
       <NeedsCategoryTable label="QA" items={grouped.qa} onComplete={handleComplete} onDelete={setDeleteTarget} completing={completing} />
       <NeedsCategoryTable label="指摘" items={grouped.shiteki} onComplete={handleComplete} onDelete={setDeleteTarget} completing={completing} />
+      <NeedsCategoryTable label="AI" items={grouped.ai} onComplete={handleComplete} onDelete={setDeleteTarget} completing={completing} />
       <NeedsCategoryTable label="その他" items={grouped.other} onComplete={handleComplete} onDelete={setDeleteTarget} completing={completing} />
 
       {deleteTarget && (
@@ -1059,6 +1067,33 @@ function AIStatsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [aiCheckItems, setAiCheckItems] = useState<{ id: string; title: string; status: string }[]>([]);
+  const [aiToggling, setAiToggling] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    fetch('/api/stats/needs')
+      .then((r) => r.json())
+      .then((data) => {
+        const filtered = (data.items ?? []).filter((it: any) => (it.category ?? '').includes('AI'));
+        setAiCheckItems(filtered.map((it: any) => ({ id: it.id, title: it.title, status: it.status })));
+      })
+      .catch(() => {});
+  }, []);
+
+  const toggleAiCheck = useCallback((id: string, currentDone: boolean) => {
+    setAiToggling((s) => new Set(s).add(id));
+    fetch(`/api/stats/needs/${id}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: currentDone ? '新' : '対応済' }),
+    })
+      .then((r) => r.json())
+      .then((updated) => {
+        setAiCheckItems((prev) => prev.map((it) => it.id === id ? { ...it, status: updated.status ?? (currentDone ? '新' : '対応済') } : it));
+      })
+      .catch(() => {})
+      .finally(() => setAiToggling((s) => { const n = new Set(s); n.delete(id); return n; }));
+  }, []);
 
   useEffect(() => {
     fetch('/api/stats/ai-reviews')
@@ -1105,11 +1140,43 @@ function AIStatsPage() {
         </div>
       )}
 
+      {aiCheckItems.length > 0 && (
+        <div className="bg-white border border-violet-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-violet-100 bg-violet-50/60 flex items-center gap-2">
+            <Check size={13} className="text-violet-500" />
+            <span className="text-xs font-bold text-violet-700">AI チェックリスト</span>
+            <span className="text-[10px] text-violet-500 ml-1">
+              {aiCheckItems.filter((it) => it.status === '対応済').length}/{aiCheckItems.length} 完了
+            </span>
+          </div>
+          <div className="divide-y divide-neutral-50">
+            {aiCheckItems.map((it) => {
+              const done = it.status === '対応済';
+              const toggling = aiToggling.has(it.id);
+              return (
+                <label key={it.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-50/50 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={done}
+                    disabled={toggling}
+                    onChange={() => toggleAiCheck(it.id, done)}
+                    className="accent-violet-600 w-3.5 h-3.5 shrink-0"
+                  />
+                  <span className={`text-sm ${done ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{it.title}</span>
+                  {toggling && <Loader2 size={12} className="animate-spin text-neutral-300 ml-auto" />}
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Review list */}
       <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
         <table className="w-full text-xs">
           <thead>
             <tr className="bg-neutral-50 border-b border-neutral-200">
+              <th className="text-center px-2 py-2 font-medium text-neutral-500 w-[70px]">月次</th>
               <th className="text-left px-3 py-2 font-medium text-neutral-500">レビュー名称</th>
               <th className="text-center px-2 py-2 font-medium text-neutral-500 w-20">日付</th>
               <th className="text-center px-2 py-2 font-medium text-neutral-500 w-16">TC数</th>
@@ -1123,12 +1190,13 @@ function AIStatsPage() {
           <tbody>
             {items.map((item) => (
               <tr key={item.id}>
-                <td colSpan={8} className="p-0">
+                <td colSpan={9} className="p-0">
                   <div>
                     <button
                       onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}
                       className="w-full flex items-center text-left hover:bg-neutral-50 transition-colors px-3 py-2 gap-1"
                     >
+                      <span className="text-neutral-400 w-[70px] text-center shrink-0">{item.createdTime ? (() => { const d = new Date(item.createdTime); return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}`; })() : '—'}</span>
                       <ChevronDown size={12} className={`text-neutral-400 shrink-0 transition-transform ${expandedId === item.id ? 'rotate-180' : ''}`} />
                       <span className="flex-1 truncate text-neutral-800 font-medium">{item.title}</span>
                       <span className="text-neutral-400 w-20 text-center shrink-0">{item.createdTime ? new Date(item.createdTime).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' }) : '—'}</span>
@@ -1145,7 +1213,7 @@ function AIStatsPage() {
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={8} className="text-center py-8 text-neutral-400">データなし</td></tr>
+              <tr><td colSpan={9} className="text-center py-8 text-neutral-400">データなし</td></tr>
             )}
           </tbody>
         </table>
