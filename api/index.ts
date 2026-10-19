@@ -6414,20 +6414,29 @@ app.get("/api/notes/by-assignee", async (_req, res) => {
     );
     if (pendingExplanations.length > 0) {
       const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+      const caseAssigneeMap = new Map<string, string>();
       if (databaseId) {
         const allItems = await queryAllProgressItems(databaseId);
-        const caseAssigneeMap = new Map<string, string>();
         for (const item of allItems) {
           if (item.assignee) caseAssigneeMap.set(item.id, item.assignee);
         }
-        for (const note of pendingExplanations) {
-          const caseAssignee = caseAssigneeMap.get(note.entityId);
-          if (!caseAssignee) continue;
-          const emails = caseAssignee.split(",").map((s) => s.trim()).filter(Boolean);
-          for (const email of emails) {
-            if (!byAssignee[email]) byAssignee[email] = [];
-            byAssignee[email].push(note);
+      }
+      for (const note of pendingExplanations) {
+        const recipients = new Set<string>();
+        if (note.assignee) {
+          for (const e of note.assignee.split(",").map((s) => s.trim()).filter(Boolean)) {
+            recipients.add(e);
           }
+        }
+        const caseAssignee = caseAssigneeMap.get(note.entityId);
+        if (caseAssignee) {
+          for (const e of caseAssignee.split(",").map((s) => s.trim()).filter(Boolean)) {
+            recipients.add(e);
+          }
+        }
+        for (const email of recipients) {
+          if (!byAssignee[email]) byAssignee[email] = [];
+          byAssignee[email].push(note);
         }
       }
     }
