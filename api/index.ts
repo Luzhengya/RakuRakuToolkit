@@ -6378,9 +6378,9 @@ app.get("/api/notes/counts", async (_req, res) => {
     for (const note of notes) {
       if (!note.entityId) continue;
       if (!counts[note.entityId]) counts[note.entityId] = { qa: 0, note: 0, issue: 0 };
-      if (note.category === "QA" && note.status !== "対応済") {
+      if (note.category === "QA" && note.status !== "対応済" && note.status !== "中止") {
         counts[note.entityId].qa++;
-      } else if (note.category === "指摘" && note.status !== "対応済") {
+      } else if (note.category === "指摘" && note.status !== "対応済" && note.status !== "中止") {
         counts[note.entityId].issue++;
       } else if (note.category === "追加説明") {
         counts[note.entityId].note++;
@@ -6399,7 +6399,7 @@ app.get("/api/notes/by-assignee", async (_req, res) => {
     const byAssignee: Record<string, EntityNote[]> = {};
 
     const pendingIssueQa = notes.filter(
-      (n) => (n.category === "指摘" || n.category === "QA") && n.status !== "対応済",
+      (n) => (n.category === "指摘" || n.category === "QA") && n.status !== "対応済" && n.status !== "中止",
     );
     for (const note of pendingIssueQa) {
       const emails = note.assignee.split(",").map((s) => s.trim()).filter(Boolean);
@@ -6410,7 +6410,7 @@ app.get("/api/notes/by-assignee", async (_req, res) => {
     }
 
     const pendingExplanations = notes.filter(
-      (n) => n.category === "追加説明" && n.status !== "対応済",
+      (n) => n.category === "追加説明" && n.status !== "対応済" && n.status !== "中止",
     );
     if (pendingExplanations.length > 0) {
       const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;

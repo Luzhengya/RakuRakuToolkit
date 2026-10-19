@@ -585,7 +585,18 @@ export function NoteList({ entityId, entityType = 'case', memberOptions, refresh
                         {isDone && <Check size={10} />}
                       </button>
                       <div className="flex-1 min-w-0">
-                        <p className={`text-xs ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{n.title}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className={`text-xs ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{n.title}</p>
+                          {n.status && n.status !== '新' && !isDone && (
+                            <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                              n.status === '確認中' ? 'bg-violet-50 text-violet-700' :
+                              n.status === '計画済' ? 'bg-amber-50 text-amber-700' :
+                              n.status === '進行中' ? 'bg-orange-50 text-orange-700' :
+                              n.status === '中止' ? 'bg-neutral-100 text-neutral-500' :
+                              'bg-blue-50 text-blue-700'
+                            }`}>{n.status}</span>
+                          )}
+                        </div>
                         {n.screenshots && n.screenshots.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 mt-1.5">
                             {n.screenshots.map((src, i) => (
@@ -790,6 +801,16 @@ export function PendingNoteRow({ note, memberOptions, onUpdated }: {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-neutral-800">{note.title}</span>
+            {note.status && note.status !== '新' && (
+              <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                note.status === '確認中' ? 'bg-violet-50 text-violet-700' :
+                note.status === '計画済' ? 'bg-amber-50 text-amber-700' :
+                note.status === '進行中' ? 'bg-orange-50 text-orange-700' :
+                note.status === '対応済' ? 'bg-emerald-50 text-emerald-700' :
+                note.status === '中止' ? 'bg-neutral-100 text-neutral-500' :
+                'bg-blue-50 text-blue-700'
+              }`}>{note.status}</span>
+            )}
             {note.priority === '高' && <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 font-bold">高</span>}
           </div>
           <div className="text-[10px] text-neutral-400 mt-0.5">
@@ -892,7 +913,7 @@ export function PendingNotesSection({ email, memberOptions }: {
       .then((data) => {
         if (cancelled) return;
         const mine: EntityNote[] = data.byAssignee?.[email] ?? [];
-        setNotes(mine.filter((n) => n.status !== '対応済'));
+        setNotes(mine.filter((n) => n.status !== '対応済' && n.status !== '中止'));
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -1053,7 +1074,18 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
                         {isDone && <Check size={10} />}
                       </button>
                       <div className="flex-1 min-w-0">
-                        <p className={`text-xs ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{n.title}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className={`text-xs ${isDone ? 'line-through text-neutral-400' : 'text-neutral-700'}`}>{n.title}</p>
+                          {n.status && n.status !== '新' && !isDone && (
+                            <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                              n.status === '確認中' ? 'bg-violet-50 text-violet-700' :
+                              n.status === '計画済' ? 'bg-amber-50 text-amber-700' :
+                              n.status === '進行中' ? 'bg-orange-50 text-orange-700' :
+                              n.status === '中止' ? 'bg-neutral-100 text-neutral-500' :
+                              'bg-blue-50 text-blue-700'
+                            }`}>{n.status}</span>
+                          )}
+                        </div>
                         {n.screenshots && n.screenshots.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 mt-1.5">
                             {n.screenshots.map((src, i) => (

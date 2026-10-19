@@ -144,8 +144,8 @@ function classifyNeeds(item: NeedsItem): NeedsCategory {
 
 function sortNeedsItems(items: NeedsItem[]): NeedsItem[] {
   return [...items].sort((a, b) => {
-    const aCompleted = a.status === '対応済' ? 1 : 0;
-    const bCompleted = b.status === '対応済' ? 1 : 0;
+    const aCompleted = (a.status === '対応済' || a.status === '中止') ? 1 : 0;
+    const bCompleted = (b.status === '対応済' || b.status === '中止') ? 1 : 0;
     if (aCompleted !== bCompleted) return aCompleted - bCompleted;
     return new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime();
   });
@@ -177,7 +177,7 @@ function NeedsCategoryTable({
   const sorted = useMemo(() => sortNeedsItems(items), [items]);
   const visible = sorted.slice(0, showCount);
   const hasMore = showCount < sorted.length;
-  const unconfirmed = items.filter((i) => i.status !== '対応済').length;
+  const unconfirmed = items.filter((i) => i.status !== '対応済' && i.status !== '中止').length;
 
   const colorMap: Record<NeedsCategory, { bg: string; text: string; badge: string }> = {
     QA: { bg: 'bg-blue-50', text: 'text-blue-700', badge: 'bg-blue-100 text-blue-700' },
@@ -318,13 +318,13 @@ function NeedsListPage() {
 
   const stats = useMemo(() => ({
     qa: grouped.qa.length,
-    qaUnconfirmed: grouped.qa.filter((i) => i.status !== '対応済').length,
+    qaUnconfirmed: grouped.qa.filter((i) => i.status !== '対応済' && i.status !== '中止').length,
     shiteki: grouped.shiteki.length,
-    shitekiUnconfirmed: grouped.shiteki.filter((i) => i.status !== '対応済').length,
+    shitekiUnconfirmed: grouped.shiteki.filter((i) => i.status !== '対応済' && i.status !== '中止').length,
     ai: grouped.ai.length,
-    aiUnconfirmed: grouped.ai.filter((i) => i.status !== '対応済').length,
+    aiUnconfirmed: grouped.ai.filter((i) => i.status !== '対応済' && i.status !== '中止').length,
     other: grouped.other.length,
-    otherUnconfirmed: grouped.other.filter((i) => i.status !== '対応済').length,
+    otherUnconfirmed: grouped.other.filter((i) => i.status !== '対応済' && i.status !== '中止').length,
   }), [grouped]);
 
   const handleComplete = async (id: string) => {

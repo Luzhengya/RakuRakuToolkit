@@ -190,7 +190,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
       .then((data) => {
         const counts: Record<string, number> = {};
         for (const it of (data.items ?? [])) {
-          if (!(it.category ?? '').includes('AI') || it.status === '対応済') continue;
+          if (!(it.category ?? '').includes('AI') || it.status === '対応済' || it.status === '中止') continue;
           const a = it.assignee ?? '';
           if (a) counts[a] = (counts[a] ?? 0) + 1;
         }
@@ -1015,12 +1015,12 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
   }, [aiChildrenHtml, aiChildrenLoading]);
 
   const myAiItems = useMemo(() => {
-    const mine = aiItems.filter((it) => it.assignee === email && it.status !== '対応済');
+    const mine = aiItems.filter((it) => it.assignee === email && it.status !== '対応済' && it.status !== '中止');
     mine.sort((a, b) => new Date(b.createdTime).getTime() - new Date(a.createdTime).getTime());
     return mine.slice(0, 3);
   }, [aiItems, email]);
 
-  const myAiTotalPending = useMemo(() => aiItems.filter((it) => it.assignee === email && it.status !== '対応済').length, [aiItems, email]);
+  const myAiTotalPending = useMemo(() => aiItems.filter((it) => it.assignee === email && it.status !== '対応済' && it.status !== '中止').length, [aiItems, email]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1030,7 +1030,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
       .then((data) => {
         if (cancelled) return;
         const mine: EntityNote[] = data.byAssignee?.[email] ?? [];
-        setPendingNotes(mine.filter((n) => n.status !== '対応済'));
+        setPendingNotes(mine.filter((n) => n.status !== '対応済' && n.status !== '中止'));
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setNotesLoading(false); });
@@ -1211,7 +1211,19 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                   <div className="flex items-start gap-2 cursor-pointer" onClick={() => handleAiExpand(it.id)}>
                     {expanded ? <ChevronDown size={14} className="mt-0.5 shrink-0 text-violet-400" /> : <ChevronRight size={14} className="mt-0.5 shrink-0 text-violet-400" />}
                     <div className="flex-1 min-w-0">
-                      <span className="text-xs font-medium text-neutral-800">{it.title}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium text-neutral-800">{it.title}</span>
+                        {it.status && it.status !== '新' && (
+                          <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                            it.status === '確認中' ? 'bg-violet-50 text-violet-700' :
+                            it.status === '計画済' ? 'bg-amber-50 text-amber-700' :
+                            it.status === '進行中' ? 'bg-orange-50 text-orange-700' :
+                            it.status === '対応済' ? 'bg-emerald-50 text-emerald-700' :
+                            it.status === '中止' ? 'bg-neutral-100 text-neutral-500' :
+                            'bg-blue-50 text-blue-700'
+                          }`}>{it.status}</span>
+                        )}
+                      </div>
                       <div className="text-[10px] text-neutral-400 mt-0.5">{it.createdTime?.slice(0, 10)}</div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
