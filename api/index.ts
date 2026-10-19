@@ -4194,7 +4194,7 @@ app.get("/api/stats/bugleak/:id/checklist-title", async (req, res) => {
   }
 });
 
-// ── Checklist (新DB NOTION_CHECKLIST_DATABASE_ID) ──
+// ── Checklist (NOTION_CHECKLIST_DATABASE_ID) ──
 
 async function resolveChecklistDataSource(): Promise<string> {
   const databaseId = process.env.NOTION_CHECKLIST_DATABASE_ID;
@@ -4332,18 +4332,122 @@ app.delete("/api/stats/checklist/:id", async (req, res) => {
   }
 });
 
-// GET /api/stats/ai-page — AI実績ページ HTML
-app.get("/api/stats/ai-page", async (_req, res) => {
-  const pageId = process.env.NOTION_AI_PAGE_ID;
-  if (!notion || !pageId) {
-    return res.status(503).json({ error: "AI page not configured" });
+// GET /api/stats/ai-reviews — AI実績レビュー一覧（構造化データ）
+let aiReviewsCache: { data: any; ts: number } | null = null;
+const AI_REVIEWS_CACHE_TTL = 5 * 60 * 1000;
+
+app.get("/api/stats/ai-reviews", async (_req, res) => {
+  const databaseId = process.env.NOTION_AI_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "AI database not configured" });
+  }
+  if (aiReviewsCache && Date.now() - aiReviewsCache.ts < AI_REVIEWS_CACHE_TTL) {
+    return res.json(aiReviewsCache.data);
   }
   try {
-    const html = await renderBlocksToHtml(pageId);
+    const db: any = await withNotionRetry("databases.retrieve", () =>
+      notion!.databases.retrieve({ database_id: databaseId }),
+    );
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return res.status(500).json({ error: "No data source found" });
+
+    const pages: any[] = [];
+    let cursor: string | undefined;
+    let hasMore = true;
+    while (hasMore) {
+      const r: any = await (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+      });
+      pages.push(...(r.results ?? []));
+      hasMore = r.has_more;
+      cursor = r.next_cursor;
+    }
+
+    const items = pages.map((page: any) => {
+      const props = page.properties ?? {};
+      const title = (props["名称"]?.title ?? []).map((x: any) => x.plain_text).join("");
+      const effortRaw = (props["工数改善（人日）"]?.rich_text ?? []).map((x: any) => x.plain_text).join("");
+      const effortSaved = effortRaw ? parseFloat(effortRaw) || null : null;
+      const createdTime = page.created_time ?? props["日期"]?.created_time ?? "";
+      const createdBy = props["创建者"]?.created_by?.name ?? "";
+
+      const totalScore = props["総合得点"]?.number ?? 0;
+      const grade = props["等級"]?.select?.name ?? "";
+      const totalCases = props["テストケース総数"]?.number ?? null;
+
+      const dimScores = {
+        req: props["要件追溯"]?.number ?? null,
+        spec: props["規格忠実度"]?.number ?? null,
+        type: props["テスト類型"]?.number ?? null,
+        exec: props["可執行性"]?.number ?? null,
+        maint: props["保守性"]?.number ?? null,
+      };
+      const dimensions = [
+        ...(dimScores.req != null ? [{ name: "要件追溯と範囲", weight: "30%", score: dimScores.req }] : []),
+        ...(dimScores.spec != null ? [{ name: "規格忠実度", weight: "20%", score: dimScores.spec }] : []),
+        ...(dimScores.type != null ? [{ name: "テスト類型覆盖", weight: "25%", score: dimScores.type }] : []),
+        ...(dimScores.exec != null ? [{ name: "可執行性", weight: "15%", score: dimScores.exec }] : []),
+        ...(dimScores.maint != null ? [{ name: "保守性", weight: "10%", score: dimScores.maint }] : []),
+      ];
+
+      const score = totalScore > 0 || dimensions.length > 0
+        ? { total: totalScore, grade, dimensions }
+        : null;
+
+      const cr = props["Critical"]?.number ?? 0;
+      const mj = props["Major"]?.number ?? 0;
+      const mn = props["Minor"]?.number ?? 0;
+      const inf = props["Info"]?.number ?? 0;
+      const issues = (cr + mj + mn + inf > 0)
+        ? { critical: cr, major: mj, minor: mn, info: inf, total: cr + mj + mn + inf }
+        : null;
+
+      return { id: page.id, title, effortSaved, createdTime, createdBy, totalCases, score, issues };
+    });
+
+    items.sort((a, b) => (b.createdTime || "").localeCompare(a.createdTime || ""));
+
+    let totalEffort = 0;
+    let scoreSum = 0;
+    let scoreCount = 0;
+    const gradeDistribution: Record<string, number> = { A: 0, B: 0, C: 0, D: 0, F: 0 };
+    for (const item of items) {
+      if (item.effortSaved) totalEffort += item.effortSaved;
+      if (item.score) {
+        scoreSum += item.score.total;
+        scoreCount++;
+        if (item.score.grade) gradeDistribution[item.score.grade] = (gradeDistribution[item.score.grade] || 0) + 1;
+      }
+    }
+
+    const result = {
+      items,
+      summary: {
+        totalReports: items.length,
+        avgScore: scoreCount > 0 ? Math.round((scoreSum / scoreCount) * 10) / 10 : null,
+        totalEffortSaved: totalEffort,
+        gradeDistribution,
+      },
+    };
+    aiReviewsCache = { data: result, ts: Date.now() };
+    return res.json(result);
+  } catch (error) {
+    console.error("Stats AI reviews error:", error);
+    return res.status(500).json({ error: "Failed to load AI reviews" });
+  }
+});
+
+// GET /api/stats/ai-reviews/:id/html — 単一レビューの子ページ HTML
+app.get("/api/stats/ai-reviews/:id/html", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const html = await renderBlocksToHtml(req.params.id);
     return res.json({ html });
   } catch (error) {
-    console.error("Stats AI page error:", error);
-    return res.status(500).json({ error: "Failed to load AI page" });
+    console.error("Stats AI review HTML error:", error);
+    return res.status(500).json({ error: "Failed to load review HTML" });
   }
 });
 
@@ -6535,13 +6639,24 @@ app.post("/api/notes/:id/reply", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });
   }
-  const { text, author, screenshots } = req.body ?? {};
+  const { text, author, screenshots, mention } = req.body ?? {};
   if ((!text || typeof text !== "string" || !text.trim()) && !(Array.isArray(screenshots) && screenshots.length > 0)) {
     return res.status(400).json({ error: "text or screenshots required" });
   }
   const authorLabel = author ? `[${author}] ` : "";
   const now = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
-  const content = text?.trim() ? `${authorLabel}${now} — ${text.trim()}` : `${authorLabel}${now} — (画像)`;
+  const bodyText = text?.trim() || "(画像)";
+
+  const richText: any[] = [];
+  if (mention) {
+    const people = await resolveEmailsToNotionPeople(mention);
+    if (people.length > 0) {
+      richText.push({ type: "mention", mention: { type: "user", user: { id: people[0].id } } });
+      richText.push({ type: "text", text: { content: " " } });
+    }
+  }
+  richText.push({ type: "text", text: { content: `${authorLabel}${now} — ${bodyText}` } });
+
   try {
     await withNotionRetry("blocks.children.append", () =>
       notion!.blocks.children.append({
@@ -6549,14 +6664,14 @@ app.post("/api/notes/:id/reply", async (req, res) => {
         children: [{
           object: "block",
           type: "paragraph",
-          paragraph: { rich_text: [{ type: "text", text: { content } }] },
+          paragraph: { rich_text: richText },
         }],
       } as any),
     );
     if (Array.isArray(screenshots) && screenshots.length > 0) {
       await appendScreenshots(req.params.id, screenshots);
     }
-    return res.json({ ok: true, content });
+    return res.json({ ok: true, content: `${authorLabel}${now} — ${bodyText}` });
   } catch (error) {
     console.error("Note reply error:", error);
     return res.status(500).json({ error: "Failed to add reply" });
