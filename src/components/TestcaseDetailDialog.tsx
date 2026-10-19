@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight, X, Pencil, Save, Loader2, Check, AlertCircle } from 'lucide-react';
 import {
-  HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, SECONDARY_FIELDS,
+  HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
   type TcRow,
 } from './testcaseFields';
 
 const EDITABLE_FIELDS = new Set([
   'CMDB番号', '大分類', '中分類', '小分類', '機能名', '要件名',
   'テスト内容', '前提条件', 'ステップ', '予期結果',
-  'ポイント', '優先級', 'カテゴリ', '状態', 'テスト結果', '関連NO', '備考',
+  'ポイント', '優先級', 'カテゴリ', '状態', 'テスト結果',
+  '再テスト結果', '再実施日', '再実施者', '関連NO', '備考',
 ]);
 
 const RESULT_OPTIONS = ['OK', 'NG', 'テスト不可', '未実施'];
@@ -80,6 +81,17 @@ export default function TestcaseDetailDialog({
           >
             <option value="">-</option>
             {RESULT_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        );
+      }
+      if (f === '再テスト結果') {
+        return (
+          <select
+            value={draft[f] ?? ''}
+            onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
+            className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+          >
+            {RETEST_OPTIONS.map((o) => <option key={o} value={o}>{o || '—'}</option>)}
           </select>
         );
       }
@@ -228,6 +240,40 @@ export default function TestcaseDetailDialog({
                   </div>
                 ))}
               </div>
+
+              {(editing ? (draft['テスト結果'] || '') : (row['テスト結果'] || '')).trim() === 'NG' && (
+                <div className="border border-orange-200 rounded-lg p-3 bg-orange-50/40 space-y-3">
+                  <p className="text-[11px] font-semibold text-orange-500">再テスト</p>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-neutral-400">再テスト結果</p>
+                      {isEditable('再テスト結果') ? renderField('再テスト結果', false) : (
+                        row['再テスト結果'] ? (
+                          <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${RESULT_COLOR[row['再テスト結果']] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
+                            {row['再テスト結果']}
+                          </span>
+                        ) : <span className="text-sm text-neutral-400">—</span>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-neutral-400">再実施日</p>
+                      {isEditable('再実施日') ? (
+                        <input type="date" value={draft['再実施日'] ?? ''} onChange={(e) => setDraft((p) => ({ ...p, '再実施日': e.target.value }))} className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none" />
+                      ) : (
+                        <p className="text-sm text-neutral-800">{row['再実施日'] || '—'}</p>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] text-neutral-400">再実施者</p>
+                      {isEditable('再実施者') ? (
+                        <input value={draft['再実施者'] ?? ''} onChange={(e) => setDraft((p) => ({ ...p, '再実施者': e.target.value }))} className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none" />
+                      ) : (
+                        <p className="text-sm text-neutral-800">{row['再実施者'] || '—'}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100">
                 {SECONDARY_FIELDS.map((f) => {

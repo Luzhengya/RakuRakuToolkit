@@ -4553,15 +4553,16 @@ function parseCsv(text: string): string[][] {
 const TESTCASE_HEADERS = [
   "ケース番号", "システム", "機能名", "要件名", "テスト内容",
   "前提", "ステップ", "予期結果", "ポイント", "優先級",
-  "対応", "適用段階", "状態", "テスト結果", "作成者",
-  "作成日", "更新者", "更新日", "バージョン", "関連NO", "備考",
+  "対応", "適用段階", "状態", "テスト結果",
+  "再テスト結果", "再実施日", "再実施者",
+  "作成者", "作成日", "更新者", "更新日", "バージョン", "関連NO", "備考",
 ];
-const TESTCASE_COL_COUNT = TESTCASE_HEADERS.length; // 21
+const TESTCASE_COL_COUNT = TESTCASE_HEADERS.length; // 24
 const RESULT_COL = 13;   // テスト結果 (0-based, CSV「结果」)
 const GROUP_COL = 3;     // 要件名 (0-based, CSV「相关需求」)
 const CASENO_COL = 0;    // ケース番号 (0-based, CSV「用例编号」)
 const KEYWORD_COL = 8;   // ポイント (0-based, CSV「关键词」)
-const REMARK_COL = 20;   // 備考 (0-based)
+const REMARK_COL = 23;   // 備考 (0-based)
 const SHIMATEKI_MARK = "指摘対応";
 
 // CSV「关键词」列を ポイント / 備考 に分解する。
@@ -4685,7 +4686,9 @@ async function buildTestCaseXlsx(originalName: string, csvText: string) {
 
   for (const r of dataRows) {
     const out = new Array(TESTCASE_COL_COUNT).fill("");
-    for (let i = 0; i < TESTCASE_COL_COUNT; i++) out[i] = r[i] ?? "";
+    // CSV は再テスト3列 (col14-16) を含まないため、col14以降を3つずらして配置
+    for (let i = 0; i < 14; i++) out[i] = r[i] ?? "";
+    for (let i = 14; i < r.length; i++) out[i + 3] = r[i] ?? "";
     const mapped = mapTestResult(out[RESULT_COL]);
     out[RESULT_COL] = mapped;
     // 「关键词」列を ポイント / 備考 に分解 (備考は上書き)
@@ -4768,13 +4771,16 @@ const TESTCASE_NOTION_FIELDS: TcField[] = [
   { name: "カテゴリ", kind: "rich_text", col: 11 }, // CSV「適用段階」
   { name: "状態", kind: "rich_text", col: 12 },
   { name: "テスト結果", kind: "select", col: 13 },
-  { name: "作成者", kind: "rich_text", col: 14 },
-  { name: "作成日", kind: "date", col: 15 },
-  { name: "更新者", kind: "rich_text", col: 16 },
-  { name: "更新日", kind: "date", col: 17 },
-  { name: "バージョン", kind: "number", col: 18 },
-  { name: "関連NO", kind: "rich_text", col: 19 },
-  { name: "備考", kind: "rich_text", col: 20 },
+  { name: "再テスト結果", kind: "select", col: 14 },
+  { name: "再実施日", kind: "date", col: 15 },
+  { name: "再実施者", kind: "rich_text", col: 16 },
+  { name: "作成者", kind: "rich_text", col: 17 },
+  { name: "作成日", kind: "date", col: 18 },
+  { name: "更新者", kind: "rich_text", col: 19 },
+  { name: "更新日", kind: "date", col: 20 },
+  { name: "バージョン", kind: "number", col: 21 },
+  { name: "関連NO", kind: "rich_text", col: 22 },
+  { name: "備考", kind: "rich_text", col: 23 },
 ];
 const TC_VERSION_FIELD = "バージョン";
 
@@ -4791,7 +4797,9 @@ function toIsoDate(raw: string): string | null {
 // Excel 出力と同じ整形を適用した「1行 = 21列」を返す
 function normalizeTestcaseRow(r: string[]): string[] {
   const out = new Array(TESTCASE_COL_COUNT).fill("");
-  for (let i = 0; i < TESTCASE_COL_COUNT; i++) out[i] = (r[i] ?? "").trim();
+  // CSV は再テスト3列 (col14-16) を含まないため、col14以降を3つずらして配置
+  for (let i = 0; i < 14; i++) out[i] = (r[i] ?? "").trim();
+  for (let i = 14; i < r.length; i++) out[i + 3] = (r[i] ?? "").trim();
   out[RESULT_COL] = mapTestResult(out[RESULT_COL]);
   const { point, remark } = splitKeyword(r[KEYWORD_COL] ?? "");
   out[KEYWORD_COL] = point;
@@ -5756,7 +5764,8 @@ app.get("/api/testcase/list", async (req, res) => {
 const TESTCASE_EDITABLE_FIELDS = new Set([
   "CMDB番号", "大分類", "中分類", "小分類", "機能名", "要件名",
   "テスト内容", "前提条件", "ステップ", "予期結果",
-  "ポイント", "優先級", "カテゴリ", "状態", "テスト結果", "関連NO", "備考",
+  "ポイント", "優先級", "カテゴリ", "状態", "テスト結果",
+  "再テスト結果", "再実施日", "再実施者", "関連NO", "備考",
 ]);
 
 // テストケース1件を更新する
@@ -6369,9 +6378,9 @@ app.get("/api/notes/counts", async (_req, res) => {
     for (const note of notes) {
       if (!note.entityId) continue;
       if (!counts[note.entityId]) counts[note.entityId] = { qa: 0, note: 0, issue: 0 };
-      if (note.category === "QA" && note.status !== "対応済") {
+      if (note.category === "QA" && note.status !== "対応済" && note.status !== "中止") {
         counts[note.entityId].qa++;
-      } else if (note.category === "指摘" && note.status !== "対応済") {
+      } else if (note.category === "指摘" && note.status !== "対応済" && note.status !== "中止") {
         counts[note.entityId].issue++;
       } else if (note.category === "追加説明") {
         counts[note.entityId].note++;
@@ -6390,7 +6399,7 @@ app.get("/api/notes/by-assignee", async (_req, res) => {
     const byAssignee: Record<string, EntityNote[]> = {};
 
     const pendingIssueQa = notes.filter(
-      (n) => (n.category === "指摘" || n.category === "QA") && n.status !== "対応済",
+      (n) => (n.category === "指摘" || n.category === "QA") && n.status !== "対応済" && n.status !== "中止",
     );
     for (const note of pendingIssueQa) {
       const emails = note.assignee.split(",").map((s) => s.trim()).filter(Boolean);
@@ -6401,7 +6410,7 @@ app.get("/api/notes/by-assignee", async (_req, res) => {
     }
 
     const pendingExplanations = notes.filter(
-      (n) => n.category === "追加説明" && n.status !== "対応済",
+      (n) => n.category === "追加説明" && n.status !== "対応済" && n.status !== "中止",
     );
     if (pendingExplanations.length > 0) {
       const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
@@ -6524,6 +6533,37 @@ app.post("/api/notes/:id/toggle", async (req, res) => {
         },
       }),
     );
+
+    if (done) {
+      try {
+        const page: any = await withNotionRetry("pages.retrieve", () =>
+          notion!.pages.retrieve({ page_id: req.params.id }),
+        );
+        const requesterEmail = peopleToEmails(page.properties?.["請求者"]);
+        if (requesterEmail) {
+          const people = await resolveEmailsToNotionPeople(requesterEmail);
+          if (people.length > 0) {
+            const categories = (page.properties?.["分野"]?.multi_select ?? []).map((o: any) => o.name);
+            const category = NOTE_CATEGORIES.find((c: string) => categories.includes(c)) ?? "追加説明";
+            const label = category === "指摘" ? "対応済み" : "閲覧済み";
+            const now = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
+            const richText: any[] = [
+              { type: "mention", mention: { type: "user", user: { id: people[0].id } } },
+              { type: "text", text: { content: ` ${now} — ${label}にしました` } },
+            ];
+            await withNotionRetry("blocks.children.append", () =>
+              notion!.blocks.children.append({
+                block_id: req.params.id,
+                children: [{ object: "block", type: "paragraph", paragraph: { rich_text: richText } }],
+              } as any),
+            );
+          }
+        }
+      } catch (mentionErr) {
+        console.warn("Auto-mention on toggle failed (non-fatal):", mentionErr);
+      }
+    }
+
     return res.json({ id: req.params.id, done });
   } catch (error) {
     console.error("Note toggle error:", error);
