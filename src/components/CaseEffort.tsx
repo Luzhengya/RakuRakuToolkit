@@ -8,6 +8,7 @@ interface EffortField {
   value: string;
   editable: boolean;
   reason: string | null;
+  group: 'estimate' | 'actual';
 }
 
 export default function CaseEffort({ caseId }: { caseId: string }) {
@@ -77,12 +78,48 @@ export default function CaseEffort({ caseId }: { caseId: string }) {
     }
   };
 
+  const estimateFields = fields.filter((f) => f.group === 'estimate');
+  const actualFields = fields.filter((f) => f.group === 'actual');
+
+  const renderGroup = (groupFields: EffortField[], groupLabel: string) => (
+    <div className="space-y-1.5">
+      <p className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider">{groupLabel}</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        {groupFields.map((f) => {
+          const shortLabel = f.label.replace(/^工数[見積実績]+\(/, '').replace(/\)$/, '');
+          return (
+            <div key={f.key} className="bg-neutral-50 rounded-lg px-3 py-2">
+              <p className="text-neutral-400 text-[10px] font-medium mb-0.5">{shortLabel}</p>
+              {editing && f.editable ? (
+                <input
+                  type="text"
+                  value={draft[f.key] ?? ''}
+                  onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
+                  className="w-full rounded border border-neutral-300 px-2 py-1 text-sm font-mono text-neutral-800 focus:border-neutral-500 focus:outline-none"
+                />
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <span className={`font-mono text-neutral-700 ${f.value ? '' : 'text-neutral-300'}`}>
+                    {f.value || '-'}
+                  </span>
+                  {!f.editable && f.reason && (
+                    <span title={f.reason}><Lock size={10} className="text-neutral-300" /></span>
+                  )}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <section className="bg-white border border-neutral-200 rounded-xl p-5 shadow-sm space-y-3">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <ClipboardList size={15} className="text-neutral-400" />
-          <h3 className="text-sm font-bold text-neutral-800">工数（見積）</h3>
+          <h3 className="text-sm font-bold text-neutral-800">工数</h3>
           {saved && (
             <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600">
               <Check size={12} /> 保存しました
@@ -136,37 +173,15 @@ export default function CaseEffort({ caseId }: { caseId: string }) {
           読み込み中...
         </div>
       ) : (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-            {fields.map((f) => (
-              <div key={f.key} className="bg-neutral-50 rounded-lg px-3 py-2">
-                <p className="text-neutral-400 text-[10px] font-medium mb-0.5">{f.label.replace(/^工数見積\(/, '').replace(/\)$/, '')}</p>
-                {editing && f.editable ? (
-                  <input
-                    type="text"
-                    value={draft[f.key] ?? ''}
-                    onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
-                    className="w-full rounded border border-neutral-300 px-2 py-1 text-sm font-mono text-neutral-800 focus:border-neutral-500 focus:outline-none"
-                  />
-                ) : (
-                  <span className="inline-flex items-center gap-1">
-                    <span className={`font-mono text-neutral-700 ${f.value ? '' : 'text-neutral-300'}`}>
-                      {f.value || '-'}
-                    </span>
-                    {!f.editable && f.reason && (
-                      <span title={f.reason}><Lock size={10} className="text-neutral-300" /></span>
-                    )}
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
+        <div className="space-y-3">
+          {estimateFields.length > 0 && renderGroup(estimateFields, '見積')}
+          {actualFields.length > 0 && renderGroup(actualFields, '実績')}
           {!anyEditable && (
             <p className="text-[11px] text-amber-600">
-              この案件の工数見積は編集できません（{fields.find((f) => f.reason)?.reason ?? '理由不明'}）。
+              この案件の工数は編集できません（{fields.find((f) => f.reason)?.reason ?? '理由不明'}）。
             </p>
           )}
-        </>
+        </div>
       )}
     </section>
   );

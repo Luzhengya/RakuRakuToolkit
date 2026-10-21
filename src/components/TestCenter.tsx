@@ -83,6 +83,7 @@ type ProgressItem = {
   implementationEstimate: string;
   executionEstimate: string;
   reviewEstimate: string;
+  verificationDate: string;
 };
 
 type ApiResponse = {
@@ -1556,6 +1557,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const [overviewUpdatedAt, setOverviewUpdatedAt] = useState<number | null>(initialOverview?.updatedAt ?? null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [areaAlerts, setAreaAlerts] = useState<Map<string, { overdue: number; risk: number }>>(new Map());
   const [bugChartItems, setBugChartItems] = useState<{ judgment: string; month: string }[]>([]);
   const [kpiTargets, setKpiTargets] = useState<{ first: { label: string; value: string }[]; second: { label: string; value: string }[] }>({ first: [], second: [] });
   useEffect(() => {
@@ -1776,6 +1778,25 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     } catch { /* */ }
   };
 
+  const fetchAlerts = async () => {
+    try {
+      const res = await fetch('/api/test-center/alerts');
+      if (!res.ok) return;
+      const data = await res.json();
+      const allAlerts = [...(data.design ?? []), ...(data.execution ?? [])];
+      const map = new Map<string, { overdue: number; risk: number }>();
+      for (const a of allAlerts) {
+        const areaId = a.areaId;
+        if (!areaId) continue;
+        let slot = map.get(areaId);
+        if (!slot) { slot = { overdue: 0, risk: 0 }; map.set(areaId, slot); }
+        if (a.level === 'overdue') slot.overdue++;
+        else if (a.level === 'today' || a.level === 'soon') slot.risk++;
+      }
+      setAreaAlerts(map);
+    } catch {}
+  };
+
   const fetchOverview = async (refresh = false) => {
     setOverviewLoading(true);
     setOverviewError(null);
@@ -1783,6 +1804,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       const [response] = await Promise.all([
         fetch(`/api/test-center/overview${refresh ? '?refresh=true' : ''}`),
         fetchBugChartData(refresh),
+        fetchAlerts(),
       ]);
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -1898,8 +1920,12 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     const bugTotal = filteredOverview.reduce((sum, item) => sum + parseNumber(item.bugCount), 0);
     const systemSet = new Set(filteredOverview.map((item) => item.areaId));
     const doneCount = filteredOverview.filter((item) => isCompletedStatus(item.status.trim())).length;
-    const inProgressCount = filteredOverview.filter((item) => item.status.trim() === '進行中').length;
-    const blockedCount = filteredOverview.filter((item) => item.status.trim() === 'ブロック').length;
+    const yearItems = overviewItems.filter((item) => {
+      const key = toMonthKey(item.month);
+      return key ? Number(key.slice(0, 4)) === filterYear : false;
+    });
+    const inProgressCount = yearItems.filter((item) => item.status.trim() === '進行中').length;
+    const blockedCount = yearItems.filter((item) => item.status.trim() === 'ブロック').length;
     const doneRate = caseCount > 0 ? Math.round((doneCount / caseCount) * 100) : 0;
     return { caseCount, bugTotal, systemCount: systemSet.size, doneCount, inProgressCount, blockedCount, doneRate };
   }, [filteredOverview]);
@@ -1957,6 +1983,20 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     }
     return Array.from(buckets.entries()).map(([month, bug]) => ({ month, bug }));
   }, [bugChartItems, filterYear]);
+
+  const monthlyNgSeries = useMemo(() => {
+    const buckets = new Map<number, number>();
+    for (let m = 1; m <= 12; m++) buckets.set(m, 0);
+    for (const item of overviewItems) {
+      const key = toMonthKey(item.month);
+      if (!key) continue;
+      const y = Number(key.slice(0, 4));
+      if (y !== filterYear) continue;
+      const m = Number(key.slice(4, 6));
+      buckets.set(m, (buckets.get(m) ?? 0) + parseNumber(item.bugCount));
+    }
+    return Array.from(buckets.entries()).map(([month, ng]) => ({ month, ng }));
+  }, [overviewItems, filterYear]);
 
   const monthlyCaseSeries = useMemo(() => {
     const buckets = new Map<number, { total: number; done: number }>();
@@ -2697,7 +2737,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                           <th className="px-3 py-2.5 text-center">予定期間</th>
                           <th className="px-3 py-2.5 text-center">実績期間</th>
                           <th className="px-3 py-2.5 text-right">{t('fieldEstTotal')}</th>
-                          <th className="px-3 py-2.5 text-right">{t('fieldActTotal')}</th>
+                          <th className="px-3 py-2.5 text-center">検証リリース予定日</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-neutral-100">
@@ -2732,7 +2772,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                                 {fmtDate(item.actualStartDate)}〜{fmtDate(item.actualExecutionCompleteDate)}
                               </td>
                               <td className="px-3 py-2.5 text-right font-mono text-xs">{item.estimateTotal || '-'}</td>
-                              <td className="px-3 py-2.5 text-right font-mono text-xs">{item.actualTotal || '-'}</td>
+                              <td className="px-3 py-2.5 text-center text-xs text-neutral-500 whitespace-nowrap">{item.verificationDate ? item.verificationDate.replace(/^\d{4}-/, '').replace('-', '/') : '-'}</td>
                             </tr>
                           );
                         })}
@@ -2748,16 +2788,20 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                       <p className="text-xl font-bold text-neutral-900">{currentItems.length}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] text-neutral-400 font-medium">完了</p>
-                      <p className="text-xl font-bold text-emerald-600">{currentItems.filter((i) => isCompletedStatus(i.status.trim())).length}</p>
+                      <p className="text-[11px] text-neutral-400 font-medium">テストケース数</p>
+                      <p className="text-xl font-bold text-teal-600">{currentItems.reduce((s, i) => s + (parseFloat(i.testTotalCount) || 0), 0)}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] text-neutral-400 font-medium">進行中</p>
-                      <p className="text-xl font-bold text-blue-600">{currentItems.filter((i) => i.status.trim() === '進行中').length}</p>
+                      <p className="text-[11px] text-neutral-400 font-medium">NG総件数</p>
+                      <p className="text-xl font-bold text-red-600">{currentItems.reduce((s, i) => s + (parseFloat(i.bugCount) || 0) + (parseFloat(i.unexpectedNgCount) || 0), 0)}</p>
                     </div>
                     <div>
-                      <p className="text-[11px] text-neutral-400 font-medium">見積工数合計</p>
-                      <p className="text-xl font-bold text-neutral-900">{currentItems.reduce((s, i) => s + (parseFloat(i.estimateTotal) || 0), 0).toFixed(1)}</p>
+                      <p className="text-[11px] text-neutral-400 font-medium">工数合計（見積/実績）</p>
+                      <p className="text-xl font-bold text-neutral-900">
+                        {currentItems.reduce((s, i) => s + (parseFloat(i.estimateTotal) || 0), 0).toFixed(1)}
+                        <span className="text-neutral-300 mx-0.5">/</span>
+                        {currentItems.reduce((s, i) => s + (parseFloat(i.actualTotal) || 0), 0).toFixed(1)}
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -2846,6 +2890,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                                 {resultSaveNoticeMap[item.id].message}
                               </div>
                             )}
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <FileText size={13} className="text-neutral-400" />
+                              <span className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">手動統計</span>
+                            </div>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                               {([
                                 { key: 'testTotalCount' as const, label: t('fieldTestTotal') },
@@ -2873,13 +2921,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                                 </div>
                               ))}
                             </div>
+                            <div className="border-t border-neutral-100 pt-3">
+                              <CaseTestcases caseId={item.id} embedded />
+                            </div>
                           </section>
 
                           <div className="border-t border-neutral-100 pt-3">
                             <CaseBugList caseId={item.id} lang={lang} />
-                          </div>
-                          <div className="border-t border-neutral-100 pt-3">
-                            <CaseTestcases caseId={item.id} />
                           </div>
                         </div>
                       )}
@@ -2978,8 +3026,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           <ProgressAlerts onSelectCase={jumpToCase} />
 
           {/* ダッシュボードカード */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <DashboardCard title="月別 BUG数推移" iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }}>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                   <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -2988,6 +3036,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                     <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
                     <Bar
                       dataKey="bug"
+                      name="BUG数"
                       fill="#0f172a"
                       radius={[4, 4, 0, 0]}
                       maxBarSize={22}
@@ -3001,6 +3050,19 @@ export default function TestCenter({ onBack }: TestCenterProps) {
                         }
                       }}
                     />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </DashboardCard>
+
+            <DashboardCard title="月別 NG数推移" iconColor="bg-red-500">
+              <div className="h-44">
+                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
+                  <BarChart data={monthlyNgSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
+                    <YAxis hide />
+                    <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
+                    <Bar dataKey="ng" name="NG数" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -3064,13 +3126,28 @@ export default function TestCenter({ onBack }: TestCenterProps) {
               const doneCount = stats?.doneCount ?? 0;
               const doneRate = caseCount > 0 ? Math.round((doneCount / caseCount) * 100) : 0;
               const barColor = doneRate === 100 ? '#10b981' : doneRate >= 50 ? '#3b82f6' : '#f59e0b';
+              const alerts = areaAlerts.get(area.id);
               return (
                 <button
                   key={area.id}
                   type="button"
                   onClick={() => loadAreaData(area.id)}
-                  className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-400 hover:shadow-sm transition-all space-y-2"
+                  className="bg-white border border-neutral-200 rounded-xl p-4 text-left hover:border-neutral-400 hover:shadow-sm transition-all space-y-2 relative"
                 >
+                  {(alerts?.overdue || alerts?.risk) ? (
+                    <div className="absolute top-2 right-2 flex items-center gap-1">
+                      {alerts.overdue > 0 && (
+                        <span className="rounded-full bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 tabular-nums" title={`${alerts.overdue}件 遅延`}>
+                          {alerts.overdue}
+                        </span>
+                      )}
+                      {alerts.risk > 0 && (
+                        <span className="rounded-full bg-amber-400 text-white text-[10px] font-bold px-1.5 py-0.5 tabular-nums" title={`${alerts.risk}件 遅延リスク`}>
+                          {alerts.risk}
+                        </span>
+                      )}
+                    </div>
+                  ) : null}
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-lg bg-neutral-50 flex items-center justify-center flex-shrink-0">
                       {area.icon}

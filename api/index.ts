@@ -2639,28 +2639,31 @@ app.post("/api/test-center/case-schedule/:id", async (req, res) => {
   }
 });
 
-// ── 案件の工数見積 ────────────────────────────────────────────────
-const EFFORT_FIELDS: { key: string; label: string; aliases: string[] }[] = [
-  { key: "designEstimate", label: "工数見積(設計)", aliases: ["工数見積(設計書)", "工数見積(設計)"] },
-  { key: "implementationEstimate", label: "工数見積(実装)", aliases: ["工数見積(実装)"] },
-  { key: "executionEstimate", label: "工数見積(実施)", aliases: ["工数見積(実施)"] },
-  { key: "reviewEstimate", label: "工数見積(レビュー)", aliases: ["review見積工数", "Review見積工数", "レビュー見積工数"] },
+// ── 案件の工数見積・実績 ────────────────────────────────────────────
+const EFFORT_FIELDS: { key: string; label: string; aliases: string[]; group: 'estimate' | 'actual' }[] = [
+  { key: "designEstimate", label: "工数見積(設計)", aliases: ["工数見積(設計書)", "工数見積(設計)"], group: "estimate" },
+  { key: "implementationEstimate", label: "工数見積(実装)", aliases: ["工数見積(実装)"], group: "estimate" },
+  { key: "executionEstimate", label: "工数見積(実施)", aliases: ["工数見積(実施)"], group: "estimate" },
+  { key: "reviewEstimate", label: "工数見積(レビュー)", aliases: ["review見積工数", "Review見積工数", "レビュー見積工数"], group: "estimate" },
+  { key: "designActual", label: "工数実績(設計)", aliases: ["工数実績(設計書)", "工数実績(設計書) ", "工数実績(設計)"], group: "actual" },
+  { key: "implActual", label: "工数実績(実装)", aliases: ["工数実績(実装)", "工数実績(実装) "], group: "actual" },
+  { key: "execActual", label: "工数実績(実施)", aliases: ["工数実績(実施)", "工数実績(実施) "], group: "actual" },
 ];
 
-interface EffortField { key: string; label: string; property: string | null; value: string; editable: boolean; reason: string | null; }
+interface EffortField { key: string; label: string; property: string | null; value: string; editable: boolean; reason: string | null; group: 'estimate' | 'actual'; }
 
 function readEffortFields(properties: Record<string, any>): EffortField[] {
-  return EFFORT_FIELDS.map(({ key, label, aliases }) => {
+  return EFFORT_FIELDS.map(({ key, label, aliases, group }) => {
     const prop = pickProperty(properties, aliases);
     const propName = aliases.find((a) => properties[a] !== undefined) ?? null;
     if (!prop || !propName) {
-      return { key, label, property: null, value: "", editable: false, reason: "項目が見つかりません" };
+      return { key, label, property: null, value: "", editable: false, reason: "項目が見つかりません", group };
     }
     const value = propertyToPlainText(prop);
     if (prop.type === "formula") {
-      return { key, label, property: propName, value, editable: false, reason: "数式項目のため編集できません" };
+      return { key, label, property: propName, value, editable: false, reason: "数式項目のため編集できません", group };
     }
-    return { key, label, property: propName, value, editable: true, reason: null };
+    return { key, label, property: propName, value, editable: true, reason: null, group };
   });
 }
 
