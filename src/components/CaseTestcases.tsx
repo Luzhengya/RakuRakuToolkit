@@ -54,6 +54,54 @@ function StatsBar({ stats }: { stats: Stats }) {
   );
 }
 
+type StatRowDef = { label: string; value: number; color: string };
+
+function StatsRows({ stats, onToggle, listOpen }: { stats: Stats; onToggle: () => void; listOpen: boolean }) {
+  const rows: { category: string; items: StatRowDef[] }[] = [
+    {
+      category: 'テスト結果',
+      items: [
+        { label: '総件数', value: stats.total, color: 'text-neutral-900' },
+        { label: 'OK', value: stats.ok, color: 'text-emerald-600' },
+        { label: 'NG', value: stats.ng, color: 'text-red-600' },
+        { label: '未実施', value: stats.un, color: 'text-neutral-500' },
+        { label: 'テスト不可', value: stats.block, color: 'text-amber-600' },
+      ],
+    },
+    {
+      category: '再テスト',
+      items: [
+        { label: '再確認OK', value: stats.retestOk, color: 'text-emerald-500' },
+        { label: '再確認NG', value: stats.retestNg, color: 'text-red-500' },
+      ],
+    },
+  ];
+  return (
+    <div className="space-y-1.5">
+      {rows.map((row) => (
+        <div key={row.category} className="flex items-center gap-2 bg-neutral-50 rounded-lg px-3 py-1.5">
+          <span className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider w-16 shrink-0">{row.category}</span>
+          <div className="flex items-center gap-3 flex-wrap text-xs flex-1 min-w-0">
+            {row.items.map((it) => (
+              <span key={it.label} className={it.color}>
+                {it.label} <b className="tabular-nums">{it.value}</b>
+              </span>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={onToggle}
+            className="inline-flex items-center gap-0.5 text-[11px] text-teal-600 hover:text-teal-800 font-medium shrink-0"
+          >
+            {listOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            詳細
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TestcaseTable({ data, onDetailIndex }: { data: Response; onDetailIndex: (i: number) => void }) {
   const th0 = 'px-3 py-2 text-xs font-semibold text-neutral-500 whitespace-nowrap text-left border-b border-neutral-200';
   const td0 = 'px-3 py-2 text-xs text-neutral-700 whitespace-nowrap border-b border-neutral-100';
@@ -194,17 +242,7 @@ export default function CaseTestcases({ caseId, embedded }: { caseId: string; em
           <p className="text-xs text-neutral-400">テストケースなし</p>
         ) : (
           <>
-            <div className="flex items-center justify-between gap-2">
-              <StatsBar stats={stats!} />
-              <button
-                type="button"
-                onClick={() => setListOpen(!listOpen)}
-                className="inline-flex items-center gap-1 text-xs text-teal-600 hover:text-teal-800 font-medium shrink-0"
-              >
-                {listOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                詳細
-              </button>
-            </div>
+            <StatsRows stats={stats!} onToggle={() => setListOpen(!listOpen)} listOpen={listOpen} />
             {listOpen && <TestcaseTable data={data} onDetailIndex={setDetailIndex} />}
           </>
         )}

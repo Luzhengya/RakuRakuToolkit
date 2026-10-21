@@ -46,6 +46,7 @@ import {
   XAxis,
   YAxis,
   Tooltip,
+  Legend,
   ResponsiveContainer,
   PieChart,
   Pie,
@@ -1969,9 +1970,10 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     ]);
   }, [overviewItems]);
 
-  const monthlyBugSeries = useMemo(() => {
-    const buckets = new Map<number, number>();
-    for (let m = 1; m <= 12; m++) buckets.set(m, 0);
+  const monthlyBugNgSeries = useMemo(() => {
+    const bugBuckets = new Map<number, number>();
+    const ngBuckets = new Map<number, number>();
+    for (let m = 1; m <= 12; m++) { bugBuckets.set(m, 0); ngBuckets.set(m, 0); }
     for (const bug of bugChartItems) {
       if (bug.judgment === '確認OK') continue;
       const key = toMonthKey(bug.month);
@@ -1979,24 +1981,22 @@ export default function TestCenter({ onBack }: TestCenterProps) {
       const y = Number(key.slice(0, 4));
       if (y !== filterYear) continue;
       const m = Number(key.slice(4, 6));
-      buckets.set(m, (buckets.get(m) ?? 0) + 1);
+      bugBuckets.set(m, (bugBuckets.get(m) ?? 0) + 1);
     }
-    return Array.from(buckets.entries()).map(([month, bug]) => ({ month, bug }));
-  }, [bugChartItems, filterYear]);
-
-  const monthlyNgSeries = useMemo(() => {
-    const buckets = new Map<number, number>();
-    for (let m = 1; m <= 12; m++) buckets.set(m, 0);
     for (const item of overviewItems) {
       const key = toMonthKey(item.month);
       if (!key) continue;
       const y = Number(key.slice(0, 4));
       if (y !== filterYear) continue;
       const m = Number(key.slice(4, 6));
-      buckets.set(m, (buckets.get(m) ?? 0) + parseNumber(item.bugCount));
+      ngBuckets.set(m, (ngBuckets.get(m) ?? 0) + parseNumber(item.bugCount));
     }
-    return Array.from(buckets.entries()).map(([month, ng]) => ({ month, ng }));
-  }, [overviewItems, filterYear]);
+    return Array.from({ length: 12 }, (_, i) => ({
+      month: i + 1,
+      bug: bugBuckets.get(i + 1) ?? 0,
+      ng: ngBuckets.get(i + 1) ?? 0,
+    }));
+  }, [bugChartItems, overviewItems, filterYear]);
 
   const monthlyCaseSeries = useMemo(() => {
     const buckets = new Map<number, { total: number; done: number }>();
@@ -3026,43 +3026,17 @@ export default function TestCenter({ onBack }: TestCenterProps) {
           <ProgressAlerts onSelectCase={jumpToCase} />
 
           {/* ダッシュボードカード */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <DashboardCard title="月別 BUG数推移" iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }}>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <DashboardCard title={t('chartMonthlyBug')} iconColor="bg-neutral-900" actionHint="詳細" onClick={() => { setBugListInitialMonth(''); setSubRoute(['bugs']); }}>
               <div className="h-44">
                 <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                  <BarChart data={monthlyBugSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <BarChart data={monthlyBugNgSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
                     <YAxis hide />
                     <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
-                    <Bar
-                      dataKey="bug"
-                      name="BUG数"
-                      fill="#0f172a"
-                      radius={[4, 4, 0, 0]}
-                      maxBarSize={22}
-                      cursor="pointer"
-                      isAnimationActive={false}
-                      onClick={(data: any) => {
-                        if (data?.month) {
-                          const monthStr = `${filterYear}${String(data.month).padStart(2, '0')}`;
-                          setBugListInitialMonth(monthStr);
-                          setSubRoute(['bugs']);
-                        }
-                      }}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </DashboardCard>
-
-            <DashboardCard title="月別 NG数推移" iconColor="bg-red-500">
-              <div className="h-44">
-                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                  <BarChart data={monthlyNgSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#94a3b8' }} />
-                    <YAxis hide />
-                    <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
-                    <Bar dataKey="ng" name="NG数" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={22} isAnimationActive={false} />
+                    <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                    <Bar dataKey="bug" name="BUG数" fill="#0f172a" radius={[4, 4, 0, 0]} maxBarSize={16} isAnimationActive={false} />
+                    <Bar dataKey="ng" name="NG数" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={16} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>

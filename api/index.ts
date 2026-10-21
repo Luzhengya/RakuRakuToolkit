@@ -2648,6 +2648,7 @@ const EFFORT_FIELDS: { key: string; label: string; aliases: string[]; group: 'es
   { key: "designActual", label: "工数実績(設計)", aliases: ["工数実績(設計書)", "工数実績(設計書) ", "工数実績(設計)"], group: "actual" },
   { key: "implActual", label: "工数実績(実装)", aliases: ["工数実績(実装)", "工数実績(実装) "], group: "actual" },
   { key: "execActual", label: "工数実績(実施)", aliases: ["工数実績(実施)", "工数実績(実施) "], group: "actual" },
+  { key: "reviewActual", label: "工数実績(レビュー)", aliases: ["review実績工数", "Review実績工数", "レビュー実績工数"], group: "actual" },
 ];
 
 interface EffortField { key: string; label: string; property: string | null; value: string; editable: boolean; reason: string | null; group: 'estimate' | 'actual'; }
