@@ -543,6 +543,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                     noteCounts={noteCounts}
                     onNoteCountChange={reloadCounts}
                     onNavigate={onNavigate}
+                    onEdit={(c) => { setEditingCase(c); setFormError(null); }}
                   />
                 )}
               </section>
@@ -700,7 +701,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                             <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[200px]">
                               <div className="flex items-center gap-1.5">
                                 <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedCaseId === c.id ? 'rotate-90' : ''}`} />
-                                <span className="truncate">{c.projectName}</span>
+                                <span className="truncate" title={c.projectName}>{c.projectName}</span>
                                 {nc && <NoteBadges entityId={c.id} counts={nc} memberOptions={memberOptions} onCountChange={reloadCounts} editable />}
                               </div>
                             </td>
@@ -756,23 +757,23 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                 )}
               </div>
             )}
-
-            {/* 編集パネル */}
-            {editingCase && (
-              <EditPanel
-                item={editingCase}
-                statusOptions={statusOptions}
-                memberOptions={memberOptions}
-                saving={saving}
-                error={formError}
-                onSave={(fields) => handleUpdate(editingCase.id, fields)}
-                onCancel={() => { setEditingCase(null); setFormError(null); }}
-              />
-            )}
           </section>
           </>
           )}
         </div>
+      )}
+
+      {/* 編集ダイアログ (ツリー・担当者ビュー共通) */}
+      {editingCase && (
+        <EditPanel
+          item={editingCase}
+          statusOptions={statusOptions}
+          memberOptions={memberOptions}
+          saving={saving}
+          error={formError}
+          onSave={(fields) => handleUpdate(editingCase.id, fields)}
+          onCancel={() => { setEditingCase(null); setFormError(null); }}
+        />
       )}
     </div>
   );
@@ -957,13 +958,14 @@ function ChecklistPanel() {
   );
 }
 
-function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountChange, onNavigate }: {
+function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountChange, onNavigate, onEdit }: {
   email: string;
   cases: (ChildCase & { parentName: string; parentSystem: string; parentMonth: string })[];
   memberOptions: string[];
   noteCounts: Record<string, { qa: number; note: number; issue: number }>;
   onNoteCountChange: () => void;
   onNavigate?: (view: string) => void;
+  onEdit: (c: ChildCase) => void;
 }) {
   const [monthFilter, setMonthFilter] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -1276,6 +1278,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                   <th className="text-right px-3 py-2">NG数</th>
                   <th className="text-left px-3 py-2">TC開始</th>
                   <th className="text-left px-3 py-2">実施完了</th>
+                  <th className="text-right px-3 py-2 w-12"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-50">
@@ -1288,7 +1291,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                     <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[220px]">
                       <div className="flex items-center gap-1.5">
                         <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedId === c.id ? 'rotate-90' : ''}`} />
-                        <span className="truncate">{c.projectName}</span>
+                        <span className="truncate" title={c.projectName}>{c.projectName}</span>
                         {(noteCounts[c.id]?.note ?? 0) > 0 && (
                           <button
                             onClick={(e) => { e.stopPropagation(); setNoteDialogCaseId(c.id); }}
@@ -1310,8 +1313,17 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                     <td className="px-3 py-2.5 text-xs text-neutral-500">
                       {c.actualExecutionCompleteDate ? <><span className="text-neutral-800">{c.actualExecutionCompleteDate}</span></> : c.tcExecutionCompleteDate ? <><span className="text-neutral-400">{c.tcExecutionCompleteDate}</span> <span className="text-[9px] text-neutral-300">予</span></> : '-'}
                     </td>
+                    <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => onEdit(c)}
+                        className="p-1.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"
+                        title="編集"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                    </td>
                   </tr>
-                  {expandedId === c.id && <CaseDetailRow c={c} colSpan={7} memberOptions={memberOptions} />}
+                  {expandedId === c.id && <CaseDetailRow c={c} colSpan={8} memberOptions={memberOptions} />}
                   </Fragment>
                 ))}
               </tbody>
@@ -1347,15 +1359,52 @@ function StatCard({ label, value, accent }: { label: string; value: number | str
   );
 }
 
+// 翌営業日 (土日を除く) を YYYY-MM-DD で返す。解析不能・空なら ''。
+// 祝日は考慮しない (api/index.ts の businessDaysBetween と同じ方針。データソースが無いため)。
+function nextBusinessDay(raw: string): string {
+  const s = (raw ?? '').trim().slice(0, 10).replace(/[./]/g, '-');
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!m) return '';
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (Number.isNaN(d.getTime())) return '';
+  do {
+    d.setDate(d.getDate() + 1);
+  } while (d.getDay() === 0 || d.getDay() === 6);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+function DateRange({ from, to, actual }: { from: string; to: string; actual?: boolean }) {
+  const empty = !from && !to;
+  return (
+    <span className={`tabular-nums ${empty ? 'text-neutral-400' : actual ? 'text-neutral-800 font-medium' : 'text-neutral-700'}`}>
+      {from || '-'} ~ {to || '-'}
+    </span>
+  );
+}
+
 function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: number; memberOptions: string[] }) {
   const schedule = [
-    { label: 'TC開始', planned: c.tcStartDate, actual: c.actualStartDate },
-    { label: '設計書完了', planned: c.tcDesignCompleteDate, actual: c.actualDesignCompleteDate },
-    { label: '実施完了', planned: c.tcExecutionCompleteDate, actual: c.actualExecutionCompleteDate },
+    {
+      label: '設計',
+      planned: { from: c.tcStartDate, to: c.tcDesignCompleteDate },
+      actual: { from: c.actualStartDate, to: c.actualDesignCompleteDate },
+    },
+    {
+      label: '実施',
+      planned: { from: nextBusinessDay(c.tcDesignCompleteDate), to: c.tcExecutionCompleteDate },
+      actual: { from: nextBusinessDay(c.actualDesignCompleteDate), to: c.actualExecutionCompleteDate },
+    },
   ];
+  const ngCls = (v: string) => `tabular-nums ${Number(v) > 0 ? 'text-red-600 font-medium' : 'text-neutral-800'}`;
   return (
     <tr>
       <td colSpan={colSpan} className="px-4 py-3 bg-neutral-50/80">
+        <div className="text-xs mb-3">
+          <span className="font-bold text-neutral-600 mr-2">案件名</span>
+          <span className="text-neutral-800 break-words">{c.projectName || '-'}</span>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
           {/* スケジュール */}
           <div>
@@ -1364,18 +1413,22 @@ function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: n
               <thead>
                 <tr className="text-[10px] text-neutral-400">
                   <th className="text-left pb-1 font-medium"></th>
-                  <th className="text-left pb-1 font-medium">予定日</th>
-                  <th className="text-left pb-1 font-medium">実績日</th>
+                  <th className="text-left pb-1 font-medium">予定</th>
+                  <th className="text-left pb-1 font-medium">実績</th>
                 </tr>
               </thead>
               <tbody>
                 {schedule.map((s) => (
                   <tr key={s.label}>
                     <td className="py-0.5 text-neutral-500 pr-3">{s.label}</td>
-                    <td className="py-0.5 text-neutral-700 tabular-nums pr-3">{s.planned || '-'}</td>
-                    <td className={`py-0.5 tabular-nums ${s.actual ? 'text-neutral-800 font-medium' : 'text-neutral-400'}`}>{s.actual || '-'}</td>
+                    <td className="py-0.5 pr-3"><DateRange from={s.planned.from} to={s.planned.to} /></td>
+                    <td className="py-0.5"><DateRange from={s.actual.from} to={s.actual.to} actual /></td>
                   </tr>
                 ))}
+                <tr>
+                  <td className="py-0.5 text-neutral-500 pr-3">検証日</td>
+                  <td colSpan={2} className={`py-0.5 tabular-nums ${c.verificationDate ? 'text-neutral-700' : 'text-neutral-400'}`}>{c.verificationDate || '-'}</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -1383,14 +1436,18 @@ function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: n
           <div>
             <p className="font-bold text-neutral-600 mb-1.5">工数 / テスト</p>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <span className="text-neutral-500">開発工数</span>
+              <span className="text-neutral-800 tabular-nums">{c.developmentEffort || '-'}</span>
               <span className="text-neutral-500">見積総工数</span>
               <span className="text-neutral-800 tabular-nums">{c.estimateTotal || '-'}</span>
               <span className="text-neutral-500">実績総工数</span>
               <span className="text-neutral-800 tabular-nums">{c.actualTotal || '-'}</span>
-              <span className="text-neutral-500">テスト件数</span>
+              <span className="text-neutral-500">Test総件数</span>
               <span className="text-neutral-800 tabular-nums">{c.testTotalCount || '-'}</span>
               <span className="text-neutral-500">NG数</span>
-              <span className={`tabular-nums ${Number(c.bugCount) > 0 ? 'text-red-600 font-medium' : 'text-neutral-800'}`}>{c.bugCount || '-'}</span>
+              <span className={ngCls(c.bugCount)}>{c.bugCount || '-'}</span>
+              <span className="text-neutral-500">想定外NG数</span>
+              <span className={ngCls(c.unexpectedNgCount)}>{c.unexpectedNgCount || '-'}</span>
             </div>
           </div>
         </div>
@@ -1580,11 +1637,13 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
   const sectionCls = 'space-y-2';
   const headingCls = 'text-xs font-bold text-neutral-600 border-b border-neutral-100 pb-1';
 
+  // 背景クリックでは閉じない (入力中の内容を誤って失わないため)
   return (
-    <div className="mt-4 bg-white border border-neutral-200 rounded-xl shadow-sm p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h4 className="text-sm font-bold text-neutral-800">案件編集</h4>
-        <button onClick={onCancel} className="p-1 rounded hover:bg-neutral-100 text-neutral-400">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="text-sm font-bold text-neutral-800 min-w-0 break-words">案件編集：{item.projectName}</h4>
+        <button onClick={onCancel} className="p-1 rounded hover:bg-neutral-100 text-neutral-400 shrink-0">
           <X size={16} />
         </button>
       </div>
@@ -1621,6 +1680,7 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
           保存
         </button>
       </div>
+    </div>
     </div>
   );
 }
