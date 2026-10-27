@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, type DragEvent, type ChangeEvent } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { PDFDocument } from 'pdf-lib';
 // Vite ?url import serves the worker from local node_modules — avoids CDN version mismatch
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
@@ -18,6 +19,9 @@ import { motion, AnimatePresence } from 'motion/react';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const THUMB_W = 132;
+// Merging runs in browser memory; cap the total to avoid freezing/crashing the tab
+const MAX_TOTAL_MB = 100;
+const MAX_TOTAL_BYTES = MAX_TOTAL_MB * 1024 * 1024;
 
 interface PageItem {
   id: string;
@@ -130,6 +134,15 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
     const pdfs = newFiles.filter(f => f.name.toLowerCase().endsWith('.pdf'));
     if (pdfs.length === 0) {
       setUploadError('请上传 .pdf 格式的文件');
+      return;
+    }
+    const currentBytes = allFilesRef.current.reduce((sum, f) => sum + f.size, 0);
+    const addedBytes = pdfs.reduce((sum, f) => sum + f.size, 0);
+    if (currentBytes + addedBytes > MAX_TOTAL_BYTES) {
+      const toMB = (b: number) => (b / 1024 / 1024).toFixed(1);
+      setUploadError(
+        `文件总大小不能超过 ${MAX_TOTAL_MB}MB（已添加 ${toMB(currentBytes)}MB，本次 ${toMB(addedBytes)}MB）`
+      );
       return;
     }
     setUploadError(null);
@@ -247,21 +260,30 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
       const name = outputName.trim() || 'merged.pdf';
       const finalName = name.endsWith('.pdf') ? name : `${name}.pdf`;
 
-      const formData = new FormData();
-      allFiles.forEach(f => formData.append('files', f));
-      formData.append(
-        'pages',
-        JSON.stringify(pages.map(p => ({ fileIndex: p.fileIndex, pageIndex: p.pageIndex })))
-      );
-      formData.append('outputName', finalName);
-
-      const response = await fetch('/api/pdf-merge', { method: 'POST', body: formData });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error((data as { error?: string }).error || '合并请求失败');
+      // Merge in the browser: Vercel caps request/response bodies at ~4.5MB,
+      // so sending the files to the server fails for larger PDFs.
+      // Only load files that still have pages in the list.
+      const srcDocs = new Map<number, PDFDocument>();
+      for (const fileIndex of new Set(pages.map(p => p.fileIndex))) {
+        const file = allFiles[fileIndex];
+        if (!file) throw new Error('文件已被移除，请重新上传');
+        try {
+          srcDocs.set(fileIndex, await PDFDocument.load(await file.arrayBuffer()));
+        } catch (err) {
+          console.error('PDF load failed', file.name, err);
+          throw new Error(`PDF 文件无法读取：${file.name}`);
+        }
       }
 
-      const blob = await response.blob();
+      const merged = await PDFDocument.create();
+      for (const { fileIndex, pageIndex } of pages) {
+        const srcDoc = srcDocs.get(fileIndex)!;
+        const [copiedPage] = await merged.copyPages(srcDoc, [pageIndex]);
+        merged.addPage(copiedPage);
+      }
+      const bytes = await merged.save();
+
+      const blob = new Blob([bytes as BlobPart], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -368,7 +390,7 @@ export default function PdfMerge({ onBack }: { onBack: () => void }) {
                           : '点击或拖拽上传 PDF 文件'}
                     </p>
                     <p className="text-xs text-neutral-400 mt-0.5">
-                      支持 .pdf 格式，最多 20 个，单文件最大 50MB
+                      支持 .pdf 格式，文件总大小最大 {MAX_TOTAL_MB}MB，在浏览器本地合并，文件不会上传到服务器
                     </p>
                   </>
                 )}
