@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, ClipboardList, Loader2 } from 'lucide-react';
 import TestcaseDetailDialog from './TestcaseDetailDialog';
-import { RESULT_COLOR, effectiveResult, type TcRow } from './testcaseFields';
+import { RESULT_COLOR, effectiveResult, isUnivContents, tcLabel, type TcRow } from './testcaseFields';
 
 type Response = {
   items: TcRow[];
@@ -23,6 +23,8 @@ interface Stats {
 }
 
 const COLUMNS = ['ケース番号', '機能名', 'テスト内容', 'テスト結果', '優先級', 'BUG'] as const;
+// UnivContents (ブラウザ検証リスト) の列
+const UC_COLUMNS = ['ケース番号', 'course_no', 'course_name', 'CHROME', 'テスト結果', 'BUG'] as const;
 
 function computeStats(items: TcRow[]): Stats {
   let ok = 0, ng = 0, block = 0, un = 0, retestOk = 0, retestNg = 0;
@@ -105,16 +107,19 @@ function StatsRows({ stats, onToggle, listOpen }: { stats: Stats; onToggle: () =
 function TestcaseTable({ data, onDetailIndex }: { data: Response; onDetailIndex: (i: number) => void }) {
   const th0 = 'px-3 py-2 text-xs font-semibold text-neutral-500 whitespace-nowrap text-left border-b border-neutral-200';
   const td0 = 'px-3 py-2 text-xs text-neutral-700 whitespace-nowrap border-b border-neutral-100';
+  // 1案件の行は同じ表 (システム) から来るので先頭行で判定する
+  const uc = isUnivContents(data.items[0]?.['システム']);
+  const columns: readonly string[] = uc ? UC_COLUMNS : COLUMNS;
   return (
     <div className="overflow-x-auto max-h-[28rem] overflow-y-auto">
       <table className="w-full border-collapse">
         <thead className="sticky top-0 bg-white">
-          <tr>{COLUMNS.map((c) => <th key={c} className={th0}>{c}</th>)}</tr>
+          <tr>{columns.map((c) => <th key={c} className={th0}>{tcLabel(c, uc)}</th>)}</tr>
         </thead>
         <tbody>
           {data.items.map((r, i) => (
             <tr key={r.id} className="hover:bg-neutral-50 cursor-pointer" onClick={() => onDetailIndex(i)}>
-              {COLUMNS.map((c) => {
+              {columns.map((c) => {
                 if (c === 'BUG') {
                   const bugNo = r._bugNo || '';
                   return (
@@ -139,7 +144,7 @@ function TestcaseTable({ data, onDetailIndex }: { data: Response; onDetailIndex:
                     </td>
                   );
                 }
-                const wide = c === 'テスト内容' || c === '機能名';
+                const wide = c === 'テスト内容' || c === '機能名' || c === 'course_name';
                 return (
                   <td key={c} className={td0 + (wide ? ' max-w-[320px] truncate' : '')} title={wide ? v : undefined}>
                     {v || '-'}

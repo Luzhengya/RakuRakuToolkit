@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
+import UcCheckGrid from './UcCheckGrid';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
-  effectiveResult, type TcRow,
+  UC_CHECK_ITEMS, UC_EDITABLE_FIELDS, UC_HIGHLIGHT_FIELDS, UC_PRIMARY_FIELDS, UC_SECONDARY_FIELDS,
+  effectiveResult, isUnivContents, tcLabel, ucCheckShort, type TcRow,
 } from './testcaseFields';
 
 type ListResponse = {
@@ -31,10 +33,19 @@ const LIST_COLUMNS = [
   'バージョン',
 ] as const;
 
+// UnivContents (ブラウザ検証リスト) の明細列
+const UC_LIST_COLUMNS = [
+  'ケース番号', 'CMDB番号', 'course_no', 'course_name', 'CHROME',
+  ...UC_CHECK_ITEMS,
+  'テスト結果', '再テスト結果', '作業者', '作業日',
+] as const;
+const UC_CHECK_SET = new Set<string>(UC_CHECK_ITEMS);
+
 // キーワード検索の対象。複数キーワードは空白区切りで AND 検索する
 const KEYWORD_FIELDS = [
   'CMDB番号', '大分類', '中分類', '小分類', '機能名', 'テスト内容',
 ] as const;
+const UC_KEYWORD_FIELDS = ['CMDB番号', 'course_no', 'course_name', '備考'] as const;
 
 // サーバー側で編集を許可している項目 (api の TESTCASE_EDITABLE_FIELDS と対応)
 const EDITABLE_FIELDS = new Set<string>([
@@ -47,6 +58,7 @@ const EDITABLE_FIELDS = new Set<string>([
 // 空欄 = 未実施。Notion の選択肢に「未実施」は無いので、選ばせると
 // Notion 側に新しい選択肢が作られてしまう
 const RESULT_OPTIONS = ['', 'OK', 'NG', 'テスト不可'];
+const UC_RESULT_OPTIONS = ['', 'OK', 'NG'];
 
 
 export default function TestCaseView({ onBack }: { onBack: () => void }) {
@@ -83,6 +95,16 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [fMajor, setFMajor] = useState('');
   const [fMiddle, setFMiddle] = useState('');
   const [fMinor, setFMinor] = useState('');
+
+  // UnivContents はブラウザ検証リストの別テンプレートで表示する (関連処理は共通)
+  const uc = isUnivContents(system);
+  const listColumns: readonly string[] = uc ? UC_LIST_COLUMNS : LIST_COLUMNS;
+  const keywordFields: readonly string[] = uc ? UC_KEYWORD_FIELDS : KEYWORD_FIELDS;
+  const editableFields = uc ? UC_EDITABLE_FIELDS : EDITABLE_FIELDS;
+  const primaryFields: readonly string[] = uc ? UC_PRIMARY_FIELDS : PRIMARY_FIELDS;
+  const highlightFields: readonly string[] = uc ? UC_HIGHLIGHT_FIELDS : HIGHLIGHT_FIELDS;
+  const secondaryFields: readonly string[] = uc ? UC_SECONDARY_FIELDS : SECONDARY_FIELDS;
+  const subtitleField = uc ? 'course_name' : '機能名';
 
   const [sortCol, setSortCol] = useState('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc' | null>(null);
@@ -154,12 +176,12 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       if (fMiddle && (r['中分類'] || '') !== fMiddle) return false;
       if (fMinor && (r['小分類'] || '') !== fMinor) return false;
       if (keywords.length) {
-        const haystack = KEYWORD_FIELDS.map((f) => r[f] || '').join(' ').toLowerCase();
+        const haystack = keywordFields.map((f) => r[f] || '').join(' ').toLowerCase();
         if (!keywords.every((k) => haystack.includes(k))) return false;
       }
       return true;
     });
-  }, [rows, fMonth, fKeyword, fResult, fVersion, fMajor, fMiddle, fMinor]);
+  }, [rows, fMonth, fKeyword, fResult, fVersion, fMajor, fMiddle, fMinor, keywordFields]);
 
   const sorted = useMemo(() => {
     if (!sortCol || !sortDir) return filtered;
@@ -236,7 +258,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const startEdit = () => {
     if (!detail) return;
     const d: Record<string, string> = {};
-    for (const f of EDITABLE_FIELDS) d[f] = detail[f] || '';
+    for (const f of editableFields) d[f] = detail[f] || '';
     setDraft(d);
     setEditing(true);
     setDialogError(null);
@@ -288,7 +310,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       const res = await fetch('/api/testcase/export', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows: sorted, title: dbTitle || `${system}${year}` }),
+        body: JSON.stringify({ rows: sorted, title: dbTitle || `${system}${year}`, system }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
@@ -298,7 +320,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `【試験仕様書TestCenter】${dbTitle || `${system}${year}`}.xlsx`;
+      a.download = `${uc ? '【ブラウザ検証リスト】' : '【試験仕様書TestCenter】'}${dbTitle || `${system}${year}`}.xlsx`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -438,12 +460,12 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <input
             value={fKeyword}
             onChange={(e) => setFKeyword(e.target.value)}
-            placeholder="CMDB番号・分類・機能名・テスト内容を検索 (空白区切りで AND)"
+            placeholder={uc ? 'CMDB番号・course_no・course_name・備考を検索 (空白区切りで AND)' : 'CMDB番号・分類・機能名・テスト内容を検索 (空白区切りで AND)'}
             className={selectCls + ' w-full'}
           />
         </label>
         <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">テスト結果</span>
+          <span className="block text-[11px] font-semibold text-neutral-500">{tcLabel('テスト結果', uc)}</span>
           <select value={fResult} onChange={(e) => setFResult(e.target.value)} className={selectCls}>
             <option value="">すべて</option>
             {optionsOf('テスト結果').map((v) => <option key={v} value={v}>{v}</option>)}
@@ -456,6 +478,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             {optionsOf('バージョン').map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         </label>
+        {!uc && (<>
         <label className="space-y-1">
           <span className="block text-[11px] font-semibold text-neutral-500">大分類</span>
           <select value={fMajor} onChange={(e) => setFMajor(e.target.value)} className={selectCls}>
@@ -477,6 +500,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             {optionsOf('小分類').map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         </label>
+        </>)}
         {hasFilter && (
           <button
             type="button"
@@ -503,14 +527,15 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <table className="w-full border-collapse">
             <thead>
               <tr>
-                {LIST_COLUMNS.map((c) => (
+                {listColumns.map((c) => (
                   <th
                     key={c}
                     className={th0 + ' cursor-pointer hover:bg-neutral-50 select-none'}
                     onClick={() => toggleSort(c)}
+                    title={UC_CHECK_SET.has(c) ? c : undefined}
                   >
                     <span className="inline-flex items-center gap-1">
-                      {c}
+                      {UC_CHECK_SET.has(c) ? ucCheckShort(c) : tcLabel(c, uc)}
                       {sortCol === c && sortDir === 'asc' && <ChevronUp size={12} />}
                       {sortCol === c && sortDir === 'desc' && <ChevronDown size={12} />}
                     </span>
@@ -522,9 +547,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             <tbody>
               {paged.map((r) => (
                 <tr key={r.id} className="hover:bg-neutral-50 cursor-pointer" onClick={() => openDetail(r)}>
-                  {LIST_COLUMNS.map((c) => {
+                  {listColumns.map((c) => {
                     const v = r[c] || '';
-                    if (c === 'テスト結果') {
+                    if (c === 'テスト結果' || UC_CHECK_SET.has(c)) {
                       return (
                         <td key={c} className={td0}>
                           {v ? (
@@ -547,7 +572,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         </td>
                       );
                     }
-                    const wide = c === 'テスト内容' || c === '機能名';
+                    const wide = c === 'テスト内容' || c === '機能名' || c === 'course_name';
                     // Notion 側で赤字になっている項目は画面でも赤字にする
                     const red = isChanged(r.id, c);
                     return (
@@ -674,8 +699,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
                       NO.{detail['ケース番号'] || '-'}
                     </h3>
-                    {detail['機能名'] && (
-                      <span className="text-sm text-neutral-400 truncate">{detail['機能名']}</span>
+                    {detail[subtitleField] && (
+                      <span className="text-sm text-neutral-400 truncate">{detail[subtitleField]}</span>
                     )}
                     {changedCount(detail.id) > 0 && (
                       <span
@@ -845,7 +870,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               <>
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
                 <div className="lg:col-span-2 space-y-4">
-                {PRIMARY_FIELDS.map((f) => (
+                {primaryFields.map((f) => (
                   <div key={f} className="space-y-1">
                     <p className="text-xs font-bold text-neutral-700 flex items-center gap-2">
                       {f}
@@ -855,7 +880,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         </span>
                       )}
                     </p>
-                    {editing && EDITABLE_FIELDS.has(f) ? (
+                    {editing && editableFields.has(f) ? (
                       <textarea
                         value={draft[f] ?? ''}
                         onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
@@ -877,16 +902,16 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
 
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
-                  {HIGHLIGHT_FIELDS.map((f) => (
+                  {highlightFields.map((f) => (
                     <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
-                      <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                      <p className="text-[11px] font-semibold text-neutral-400">{tcLabel(f, uc)}</p>
                       {editing && f === 'テスト結果' ? (
                         <select
                           value={draft[f] ?? ''}
                           onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
                           className={selectCls + ' w-full'}
                         >
-                          {RESULT_OPTIONS.map((o) => (
+                          {(uc ? UC_RESULT_OPTIONS : RESULT_OPTIONS).map((o) => (
                             <option key={o} value={o}>{o || '未実施'}</option>
                           ))}
                         </select>
@@ -903,11 +928,20 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                           </span>
                         ) : <span className="text-sm text-neutral-400">-</span>
                       ) : (
-                        <p className="text-lg font-bold text-neutral-900">{detail[f] || '-'}</p>
+                        <p className={`font-bold text-neutral-900 ${uc ? 'text-sm break-words' : 'text-lg'}`}>{detail[f] || '-'}</p>
                       )}
                     </div>
                   ))}
                 </div>
+
+                {uc && (
+                  <UcCheckGrid
+                    row={detail}
+                    draft={draft}
+                    editing={editing}
+                    onChange={(f, v) => setDraft((p) => ({ ...p, [f]: v }))}
+                  />
+                )}
 
                 {(editing ? (draft['テスト結果'] || '') : (detail['テスト結果'] || '')).trim() === 'NG' && (
                   <div className="border border-orange-200 rounded-lg p-3 bg-orange-50/40 space-y-3">
@@ -963,8 +997,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 )}
 
                 <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100">
-                  {SECONDARY_FIELDS.map((f) => {
-                    const canEdit = editing && EDITABLE_FIELDS.has(f);
+                  {secondaryFields.map((f) => {
+                    const canEdit = editing && editableFields.has(f);
                     const isLong = LONG_TEXT_FIELDS.has(f);
                     return (
                       <div key={f} className="px-3 py-2 flex items-start gap-3">

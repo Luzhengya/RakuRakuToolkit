@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useFileUpload } from '../hooks/useFileUpload';
+import { isUnivContents } from './testcaseFields';
 
 type GroupStat = {
   label: string;
@@ -60,6 +61,9 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
   const [selectedSystem, setSelectedSystem] = useState('');
   const [selectedYear, setSelectedYear] = useState<number>(() => new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number>(() => new Date().getMonth() + 1);
+  // UnivContents のみ。CSV に CMDB番号 列が無い行へ入れ、案件との突き合わせに使う
+  const [cmdbNo, setCmdbNo] = useState('');
+  const uc = isUnivContents(selectedSystem);
 
   const {
     files,
@@ -108,6 +112,7 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
         formData.append('system', selectedSystem);
         formData.append('year', String(selectedYear));
         formData.append('month', String(selectedMonth));
+        if (uc && cmdbNo.trim()) formData.append('cmdbNo', cmdbNo.trim());
       }
 
       const res = await fetch('/api/testcase-format', { method: 'POST', body: formData });
@@ -398,6 +403,18 @@ export default function TestCaseOrganize({ onBack }: { onBack: () => void }) {
                 </select>
               </label>
             </div>
+
+            {uc && (
+              <label className="block space-y-1">
+                <span className="text-xs font-semibold text-neutral-600">CMDB番号 (案件との関連付け)</span>
+                <input
+                  value={cmdbNo}
+                  onChange={(e) => setCmdbNo(e.target.value)}
+                  placeholder="例 10017589 (CSV に CMDB番号 列がある場合はそちらを優先)"
+                  className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
+                />
+              </label>
+            )}
 
             <div className="flex items-center justify-end gap-2 pt-1">
               <button

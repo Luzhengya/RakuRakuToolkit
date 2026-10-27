@@ -4637,8 +4637,8 @@ const TESTCASE_FILL: Record<string, string> = {
 };
 
 // ヘッダ行 (深藍 + 白字 + 罫線)
-function writeTestcaseHeader(ws: ExcelJS.Worksheet): void {
-  ws.addRow(TESTCASE_HEADERS);
+function writeTestcaseHeader(ws: ExcelJS.Worksheet, headers: string[] = TESTCASE_HEADERS): void {
+  ws.addRow(headers);
   ws.getRow(1).eachCell((cell) => {
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF003366" } };
     cell.font = { color: { argb: "FFFFFFFF" } };
@@ -4647,9 +4647,9 @@ function writeTestcaseHeader(ws: ExcelJS.Worksheet): void {
 }
 
 // データ行を1行追加し、テスト結果に応じた塗りと罫線を付ける
-function writeTestcaseRow(ws: ExcelJS.Worksheet, out: string[]): void {
+function writeTestcaseRow(ws: ExcelJS.Worksheet, out: string[], resultCol: number = RESULT_COL): void {
   const added = ws.addRow(out);
-  const fillColor = TESTCASE_FILL[out[RESULT_COL]];
+  const fillColor = TESTCASE_FILL[out[resultCol]];
   added.eachCell({ includeEmpty: true }, (cell) => {
     cell.border = TESTCASE_CELL_BORDER;
     if (fillColor) {
@@ -4788,6 +4788,147 @@ const TESTCASE_NOTION_FIELDS: TcField[] = [
 ];
 const TC_VERSION_FIELD = "バージョン";
 
+// ── UnivContents 専用テンプレート (コース × ブラウザ検証項目) ──────────────
+// UnivContents だけは「1行 = 1コースの検証結果」の別テンプレートを使う。
+// 表は他システムと同じ「{システム}{年度}」だが、属性は下の UC_NOTION_FIELDS で作る。
+// ケース番号 / システム / 月次 / CMDB番号 / テスト結果 / 再テスト は共通の属性名にしておき、
+// BUG 移管・移管済み判定・統計・案件との突き合わせは既存の処理をそのまま通す。
+const UNIV_CONTENTS_SYSTEM = "UnivContents";
+const UC_CHECK_ITEMS = [
+  "①コース起動", "②動画再生", "③タイトル一致", "④コース終了",
+  "⑤時間記録/進捗", "⑥試験結果の確認", "⑦ページ内にPDFリンクなど動作の確認",
+];
+// Excel の列 (= ブラウザ検証リスト CSV の列)。course_id を一意キー (ケース番号) にする
+const UC_HEADERS = [
+  "course_id", "course_no", "course_name", "版数", "CHROME",
+  ...UC_CHECK_ITEMS,
+  "結果", "備考", "作業者", "作業日", "確認者", "確認日",
+];
+const UC_RESULT_COL = UC_HEADERS.indexOf("結果");
+// CMDB番号 は Excel に出さない。CSV に列があればその値、無ければアップロード時の指定値
+const UC_CMDB_COL = UC_HEADERS.length;
+const UC_NOTION_FIELDS: TcField[] = [
+  { name: "ケース番号", kind: "title", col: 0 },
+  { name: "システム", kind: "select", col: null },
+  { name: "月次", kind: "select", col: null },
+  { name: "CMDB番号", kind: "rich_text", col: UC_CMDB_COL },
+  { name: "course_no", kind: "rich_text", col: 1 },
+  { name: "course_name", kind: "rich_text", col: 2 },
+  { name: "版数", kind: "rich_text", col: 3 },
+  { name: "CHROME", kind: "rich_text", col: 4 },
+  ...UC_CHECK_ITEMS.map((name, i): TcField => ({ name, kind: "select", col: 5 + i })),
+  { name: "テスト結果", kind: "select", col: UC_RESULT_COL }, // CSV「結果」
+  { name: "再テスト結果", kind: "select", col: null },
+  { name: "再実施日", kind: "date", col: null },
+  { name: "再実施者", kind: "rich_text", col: null },
+  { name: "備考", kind: "rich_text", col: UC_RESULT_COL + 1 },
+  { name: "作業者", kind: "rich_text", col: UC_RESULT_COL + 2 },
+  { name: "作業日", kind: "date", col: UC_RESULT_COL + 3 },
+  { name: "確認者", kind: "rich_text", col: UC_RESULT_COL + 4 },
+  { name: "確認日", kind: "date", col: UC_RESULT_COL + 5 },
+  { name: "バージョン", kind: "number", col: null },
+];
+
+// ブラウザ検証リスト形式の CSV か (ヘッダに course_no があるか)
+function isUnivContentsCsv(csvText: string): boolean {
+  const header = (parseCsv(csvText)[0] ?? []).map((c) => (c ?? "").replace(/^﻿/, "").trim());
+  return header.includes("course_no");
+}
+
+// ブラウザ検証リスト CSV → UC_HEADERS 順 (+ CMDB番号) の行。列は位置でなくヘッダ名で引く
+function parseUnivContentsRows(csvText: string, cmdbNo: string): string[][] {
+  const rows = parseCsv(csvText);
+  const header = (rows[0] ?? []).map((c) => (c ?? "").replace(/^﻿/, "").trim());
+  if (!header.includes("course_id")) throw new Error("CSV に course_id 列がありません");
+  const idx = [...UC_HEADERS, "CMDB番号"].map((h) => header.indexOf(h));
+  return rows
+    .slice(1)
+    .filter((r) => r.some((c) => (c ?? "").trim() !== ""))
+    .map((r) => {
+      const out = idx.map((i) => (i >= 0 ? (r[i] ?? "").trim() : ""));
+      if (!out[UC_CMDB_COL]) out[UC_CMDB_COL] = cmdbNo;
+      return out;
+    });
+}
+
+// システムごとのテンプレート。UnivContents 以外は従来の試験仕様書形式
+type TcTemplate = {
+  fields: TcField[];
+  headers: string[];
+  resultCol: number;
+  isUc: boolean;
+  toRows: (csvText: string, cmdbNo: string) => string[][];
+};
+const DEFAULT_TC_TEMPLATE: TcTemplate = {
+  fields: TESTCASE_NOTION_FIELDS,
+  headers: TESTCASE_HEADERS,
+  resultCol: RESULT_COL,
+  isUc: false,
+  toRows: (csvText) => parseCsv(csvText)
+    .slice(1)
+    .filter((r) => r.some((c) => (c ?? "").trim() !== ""))
+    .map(normalizeTestcaseRow),
+};
+const UC_TC_TEMPLATE: TcTemplate = {
+  fields: UC_NOTION_FIELDS,
+  headers: UC_HEADERS,
+  resultCol: UC_RESULT_COL,
+  isUc: true,
+  toRows: parseUnivContentsRows,
+};
+function tcTemplateFor(system: string): TcTemplate {
+  return system.trim() === UNIV_CONTENTS_SYSTEM ? UC_TC_TEMPLATE : DEFAULT_TC_TEMPLATE;
+}
+// ページ ID しか分からない処理 (BUG 移管・編集) 用。両テンプレートの属性をまとめて読む
+const ALL_TC_FIELDS: TcField[] = [
+  ...TESTCASE_NOTION_FIELDS,
+  ...UC_NOTION_FIELDS.filter((f) => !TESTCASE_NOTION_FIELDS.some((x) => x.name === f.name)),
+];
+
+// ブラウザ検証リスト CSV → 整形 xlsx (列は CSV のまま、結果で塗り分け + 末尾に集計)
+async function buildUnivContentsXlsx(originalName: string, csvText: string) {
+  const rows = parseCsv(csvText);
+  const header = (rows[0] ?? []).map((c) => (c ?? "").replace(/^﻿/, "").trim());
+  const resultCol = header.indexOf("結果");
+  const caseNoCol = header.indexOf("course_id");
+  const dataRows = rows.slice(1).filter((r) => r.some((c) => (c ?? "").trim() !== ""));
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Sheet");
+  writeTestcaseHeader(ws, header);
+
+  const baseName = originalName.replace(/\.[^.]+$/, "");
+  const g: TestCaseGroupStat = {
+    label: baseName, total: 0, ok: 0, block: 0, ng: 0, un: 0, shimateki: 0,
+    blockCases: [], ngCases: [], unCases: [], shimatekiCases: [],
+    ngReasons: [], blockReasons: [], unReasons: [],
+  };
+  for (const r of dataRows) {
+    const out = header.map((_, i) => (r[i] ?? "").trim());
+    writeTestcaseRow(ws, out, resultCol);
+    const result = resultCol >= 0 ? out[resultCol] : "";
+    const caseNo = caseNoCol >= 0 ? out[caseNoCol] : "";
+    const remark = out[header.indexOf("備考")] ?? "";
+    g.total++;
+    if (result === "OK") g.ok++;
+    else if (result === "NG") { g.ng++; g.ngCases.push(caseNo); g.ngReasons.push({ no: caseNo, remark }); }
+    else { g.un++; g.unCases.push(caseNo); g.unReasons.push({ no: caseNo, remark }); }
+  }
+
+  const paren = (cases: string[]) => (cases.length ? ` （${cases.join(",")}）` : "");
+  ws.addRow([]);
+  ws.addRow([`文件名：${baseName}`]);
+  ws.addRow([`テスト件数総計: ${g.total}`]);
+  ws.addRow([`テストOK: ${g.ok}`]);
+  ws.addRow([`テストNG: ${g.ng}${paren(g.ngCases)}`]);
+  ws.addRow([`未実施: ${g.un}${paren(g.unCases)}`]);
+
+  autoFitTestcaseColumns(ws);
+
+  const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+  return { outputName: `【ブラウザ検証リスト】${baseName}.xlsx`, buffer, groups: [g] };
+}
+
 // 「2026/8/3」「2026-08-03」→ ISO(YYYY-MM-DD)。解析できなければ null
 function toIsoDate(raw: string): string | null {
   const s = (raw ?? "").trim();
@@ -4853,10 +4994,10 @@ function isTcFieldChanged(page: any, f: TcField): boolean {
   return Array.isArray(segs) && segs.some((s: any) => s?.annotations?.color === "red");
 }
 
-// TESTCASE_NOTION_FIELDS から Notion のプロパティ定義を組み立てる
-function buildTestcaseSchema(): Record<string, any> {
+// TESTCASE_NOTION_FIELDS (UnivContents は UC_NOTION_FIELDS) から Notion のプロパティ定義を組み立てる
+function buildTestcaseSchema(fields: TcField[] = TESTCASE_NOTION_FIELDS): Record<string, any> {
   const properties: Record<string, any> = {};
-  for (const f of TESTCASE_NOTION_FIELDS) {
+  for (const f of fields) {
     if (f.kind === "title") properties[f.name] = { title: {} };
     else if (f.kind === "select") properties[f.name] = { select: {} };
     else if (f.kind === "date") properties[f.name] = { date: {} };
@@ -4872,7 +5013,8 @@ function buildTestcaseSchema(): Record<string, any> {
 // 既存テーブルに不足しているプロパティがあれば追加する (旧バージョンで作られた表への追従)。
 async function ensureTestcaseDatabase(
   parentPageId: string,
-  title: string
+  title: string,
+  fields: TcField[] = TESTCASE_NOTION_FIELDS
 ): Promise<{ databaseId: string; dataSourceId: string }> {
   if (!notion) throw new Error("Notion client not configured");
 
@@ -4894,7 +5036,7 @@ async function ensureTestcaseDatabase(
     cursor = existingDbId ? undefined : res.has_more ? res.next_cursor : undefined;
   } while (cursor);
 
-  const schema = buildTestcaseSchema();
+  const schema = buildTestcaseSchema(fields);
 
   if (existingDbId) {
     const db: any = await notion.databases.retrieve({ database_id: existingDbId });
@@ -4962,30 +5104,36 @@ async function uploadTestcasesToNotion(
   system: string,
   year: number,
   month: number,
-  csvTexts: string[]
+  csvTexts: string[],
+  cmdbNo = ""
 ): Promise<TcUploadResult> {
   if (!notion) throw new Error("Notion client not configured");
+  const tpl = tcTemplateFor(system);
+  // 選んだシステムと CSV の形式が食い違うと、属性の無い表に書き込むことになる
+  for (const csvText of csvTexts) {
+    if (isUnivContentsCsv(csvText) !== tpl.isUc) {
+      throw new Error(tpl.isUc
+        ? `${system} はブラウザ検証リスト形式 (course_no 列) の CSV のみ登録できます`
+        : `ブラウザ検証リスト形式の CSV は ${UNIV_CONTENTS_SYSTEM} にのみ登録できます`);
+    }
+  }
   const dbTitle = `${system}${year}`;
-  const { dataSourceId } = await ensureTestcaseDatabase(parentPageId, dbTitle);
+  const { dataSourceId } = await ensureTestcaseDatabase(parentPageId, dbTitle, tpl.fields);
   const index = await loadTestcaseIndex(dataSourceId);
 
   const result: TcUploadResult = { created: 0, updated: 0, skipped: 0 };
   // 比較対象のフィールド (バージョンは比較しない: 更新時に +1 するため)
-  const compareFields = TESTCASE_NOTION_FIELDS.filter((f) => f.name !== TC_VERSION_FIELD);
+  const compareFields = tpl.fields.filter((f) => f.name !== TC_VERSION_FIELD);
 
   for (const csvText of csvTexts) {
-    const rows = parseCsv(csvText)
-      .slice(1)
-      .filter((r) => r.some((c) => (c ?? "").trim() !== ""));
-    for (const raw of rows) {
-      const out = normalizeTestcaseRow(raw);
+    for (const out of tpl.toRows(csvText, cmdbNo)) {
       const caseNo = out[CASENO_COL];
       if (!caseNo) continue;
       const existing = index.get(caseNo);
 
       if (!existing) {
         const props: Record<string, any> = {};
-        for (const f of TESTCASE_NOTION_FIELDS) {
+        for (const f of tpl.fields) {
           const v = f.col === null ? "" : out[f.col];
           props[f.name] = buildTcPropertyValue(f, v, false);
         }
@@ -5019,7 +5167,7 @@ async function uploadTestcasesToNotion(
       }
 
       const props: Record<string, any> = {};
-      for (const f of TESTCASE_NOTION_FIELDS) {
+      for (const f of tpl.fields) {
         if (f.name === TC_VERSION_FIELD) continue;
         const v = f.col === null ? "" : out[f.col];
         // 変更された rich_text は赤字、それ以外は default に戻す (赤字は最新回の変更のみ示す)
@@ -5126,10 +5274,11 @@ app.get("/api/test-center/case-testcases/:caseId", async (req, res) => {
     }
 
     const index = await loadTestcaseIndex(dataSourceId);
+    const fields = tcTemplateFor(system).fields;
     const items: Record<string, string>[] = [];
     for (const page of index.values()) {
       const row: Record<string, string> = { id: (page as any).id };
-      for (const f of TESTCASE_NOTION_FIELDS) row[f.name] = readTcPlain(page, f);
+      for (const f of fields) row[f.name] = readTcPlain(page, f);
       if (extractCmdbNo(row["CMDB番号"]) !== cmdbNo) continue;
       items.push(row);
     }
@@ -5303,9 +5452,10 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
   try {
     const page = await notion.pages.retrieve({ page_id: pageId });
     const tc: Record<string, string> = {};
-    for (const f of TESTCASE_NOTION_FIELDS) tc[f.name] = readTcPlain(page, f);
+    for (const f of ALL_TC_FIELDS) tc[f.name] = readTcPlain(page, f);
 
     const system = (tc["システム"] ?? "").trim();
+    const isUc = tcTemplateFor(system).isUc;
     const cmdbNo = extractCmdbNo(tc["CMDB番号"]);
     const monthKey = year && tc["月次"]
       ? `${year}${String(Number(tc["月次"])).padStart(2, "0")}`
@@ -5361,23 +5511,26 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
       .filter(Boolean)
       .join(" > ");
 
+    // UnivContents はコース単位。NG になった検証項目を再現ステップに並べる
+    const ucNgItems = UC_CHECK_ITEMS.filter((k) => (tc[k] ?? "").trim() === "NG");
+
     return res.json({
       testcase: tc,
       candidates,
       nextNo: String(maxNo + 1),
       defaults: {
-        bugDesc: tc["テスト内容"] ?? "",
+        bugDesc: isUc ? (tc["course_name"] ?? "") : (tc["テスト内容"] ?? ""),
         judgment: "NG",
         status: "対応待ち",
-        // 実施者にはテストケースの作成者を入れる
-        assignee: tc["作成者"] ?? "",
-        module: moduleText,
-        reproSteps: tc["ステップ"] ?? "",
-        expectedResult: tc["予期結果"] ?? "",
+        // 実施者にはテストケースの作成者 (UnivContents は作業者) を入れる
+        assignee: (isUc ? tc["作業者"] : tc["作成者"]) ?? "",
+        module: isUc ? (tc["course_no"] ?? "") : moduleText,
+        reproSteps: isUc ? ucNgItems.map((k) => `${k}: NG`).join("\n") : (tc["ステップ"] ?? ""),
+        expectedResult: isUc ? ucNgItems.map((k) => `${k}: OK`).join("\n") : (tc["予期結果"] ?? ""),
         priority: tc["優先級"] ?? "",
         caseNumber: tc["ケース番号"] ?? "",
         execDate: new Date().toISOString().slice(0, 10),
-        browserVersion: envVersions.chrome ?? "",
+        browserVersion: (isUc && tc["CHROME"]) || (envVersions.chrome ?? ""),
         appVersion: [
           envVersions.IOS ? `iOS ${envVersions.IOS}` : "",
           envVersions.Android ? `Android ${envVersions.Android}` : "",
@@ -5741,10 +5894,11 @@ app.get("/api/testcase/list", async (req, res) => {
     // 変更された項目 (赤字) は行に混ぜず、ページID をキーにした別マップで返す。
     // 行は値がすべて文字列という前提で扱われているため、配列を混ぜると型が崩れる。
     const changed: Record<string, string[]> = {};
+    const fields = tcTemplateFor(system).fields;
     const items = Array.from(index.values()).map((page: any) => {
       const row: Record<string, string> = { id: page.id };
       const red: string[] = [];
-      for (const f of TESTCASE_NOTION_FIELDS) {
+      for (const f of fields) {
         row[f.name] = readTcPlain(page, f);
         if (isTcFieldChanged(page, f)) red.push(f.name);
       }
@@ -5770,6 +5924,9 @@ const TESTCASE_EDITABLE_FIELDS = new Set([
   "テスト内容", "前提条件", "ステップ", "予期結果",
   "ポイント", "優先級", "カテゴリ", "状態", "テスト結果",
   "再テスト結果", "再実施日", "再実施者", "関連NO", "備考",
+  // UnivContents (ケース番号/システム/月次/バージョンは同じ理由で対象外)
+  "course_no", "course_name", "版数", "CHROME", ...UC_CHECK_ITEMS,
+  "作業者", "作業日", "確認者", "確認日",
 ]);
 
 // テストケース1件を更新する
@@ -5791,7 +5948,7 @@ app.post("/api/testcase/:id/update", async (req, res) => {
       rejected.push(name);
       continue;
     }
-    const f = TESTCASE_NOTION_FIELDS.find((x) => x.name === name);
+    const f = ALL_TC_FIELDS.find((x) => x.name === name);
     if (!f) {
       rejected.push(name);
       continue;
@@ -5843,6 +6000,7 @@ app.delete("/api/testcase/:id", async (req, res) => {
 app.post("/api/testcase/export", async (req, res) => {
   const rows = req.body?.rows;
   const title = String(req.body?.title ?? "testcase").trim() || "testcase";
+  const tpl = tcTemplateFor(String(req.body?.system ?? ""));
   if (!Array.isArray(rows)) {
     return res.status(400).json({ error: "rows は必須です" });
   }
@@ -5853,22 +6011,23 @@ app.post("/api/testcase/export", async (req, res) => {
   try {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet("Sheet");
-    writeTestcaseHeader(ws);
+    writeTestcaseHeader(ws, tpl.headers);
 
     for (const row of rows as Record<string, string>[]) {
-      const out = new Array(TESTCASE_COL_COUNT).fill("");
-      for (const f of TESTCASE_NOTION_FIELDS) {
+      const out = new Array(tpl.headers.length).fill("");
+      for (const f of tpl.fields) {
         // col=null は Excel に列が無い項目 (月次/大中小分類)。
         // 逆に Excel 10列目「対応」は Notion に項目が無いので空のまま。
-        if (f.col !== null) out[f.col] = String(row[f.name] ?? "");
+        // UnivContents の CMDB番号 は列の外 (col >= 列数) なので出さない。
+        if (f.col !== null && f.col < out.length) out[f.col] = String(row[f.name] ?? "");
       }
-      writeTestcaseRow(ws, out);
+      writeTestcaseRow(ws, out, tpl.resultCol);
     }
 
     autoFitTestcaseColumns(ws);
 
     const buffer = Buffer.from(await wb.xlsx.writeBuffer());
-    const filename = `【試験仕様書TestCenter】${title}.xlsx`;
+    const filename = tpl.isUc ? `【ブラウザ検証リスト】${title}.xlsx` : `【試験仕様書TestCenter】${title}.xlsx`;
     res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.set(
       "Content-Disposition",
@@ -5915,7 +6074,9 @@ app.post("/api/testcase-format", upload.array("files", 20), async (req, res) => 
       const inputName = Buffer.from(file.originalname, "latin1").toString("utf8");
       const csvText = file.buffer.toString("utf8");
       csvTexts.push(csvText);
-      const { outputName, buffer, groups } = await buildTestCaseXlsx(inputName, csvText);
+      const { outputName, buffer, groups } = isUnivContentsCsv(csvText)
+        ? await buildUnivContentsXlsx(inputName, csvText)
+        : await buildTestCaseXlsx(inputName, csvText);
       built.push({ inputName, outputName, buffer, groups });
     }
 
@@ -5933,7 +6094,9 @@ app.post("/api/testcase-format", upload.array("files", 20), async (req, res) => 
         notionError = "Notion 未設定 (NOTION_API_KEY / NOTION_TESTCASE_PARENT_PAGE_ID)";
       } else {
         try {
-          notionResult = await uploadTestcasesToNotion(parentPageId, system, year, month, csvTexts);
+          // CMDB番号 は UnivContents のみ。CSV に列が無い行へ入れる
+          const cmdbNo = String((req.body as any)?.cmdbNo ?? "").trim();
+          notionResult = await uploadTestcasesToNotion(parentPageId, system, year, month, csvTexts, cmdbNo);
         } catch (e) {
           console.error("Testcase Notion upload error:", e);
           notionError = e instanceof Error ? e.message : "Notion 登録に失敗しました";

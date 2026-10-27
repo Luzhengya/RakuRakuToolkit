@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight, X, Pencil, Save, Loader2, Check, AlertCircle } from 'lucide-react';
+import UcCheckGrid from './UcCheckGrid';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
-  type TcRow,
+  UC_EDITABLE_FIELDS, UC_HIGHLIGHT_FIELDS, UC_PRIMARY_FIELDS, UC_SECONDARY_FIELDS,
+  isUnivContents, tcLabel, type TcRow,
 } from './testcaseFields';
 
 const EDITABLE_FIELDS = new Set([
@@ -13,6 +15,7 @@ const EDITABLE_FIELDS = new Set([
 ]);
 
 const RESULT_OPTIONS = ['OK', 'NG', 'テスト不可', '未実施'];
+const UC_RESULT_OPTIONS = ['OK', 'NG'];
 
 export default function TestcaseDetailDialog({
   rows, index, onIndex, onClose, onSave,
@@ -32,9 +35,17 @@ export default function TestcaseDetailDialog({
 
   if (!row) return null;
 
+  // UnivContents はブラウザ検証リストの別テンプレートで表示する
+  const uc = isUnivContents(row['システム']);
+  const editableFields = uc ? UC_EDITABLE_FIELDS : EDITABLE_FIELDS;
+  const primaryFields: readonly string[] = uc ? UC_PRIMARY_FIELDS : PRIMARY_FIELDS;
+  const highlightFields: readonly string[] = uc ? UC_HIGHLIGHT_FIELDS : HIGHLIGHT_FIELDS;
+  const secondaryFields: readonly string[] = uc ? UC_SECONDARY_FIELDS : SECONDARY_FIELDS;
+  const subtitle = uc ? row['course_name'] : row['機能名'];
+
   const startEdit = () => {
     const d: Record<string, string> = {};
-    for (const f of EDITABLE_FIELDS) d[f] = row[f] ?? '';
+    for (const f of editableFields) d[f] = row[f] ?? '';
     setDraft(d);
     setEditing(true);
     setSaved(false);
@@ -68,7 +79,7 @@ export default function TestcaseDetailDialog({
     onIndex(next);
   };
 
-  const isEditable = (f: string) => editing && EDITABLE_FIELDS.has(f);
+  const isEditable = (f: string) => editing && editableFields.has(f);
 
   const renderField = (f: string, multiline: boolean) => {
     if (isEditable(f)) {
@@ -80,7 +91,7 @@ export default function TestcaseDetailDialog({
             className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
           >
             <option value="">-</option>
-            {RESULT_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+            {(uc ? UC_RESULT_OPTIONS : RESULT_OPTIONS).map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
         );
       }
@@ -140,8 +151,8 @@ export default function TestcaseDetailDialog({
                 BUG #{row._bugNo}
               </span>
             )}
-            {row['機能名'] && (
-              <span className="text-sm text-neutral-400 truncate">{row['機能名']}</span>
+            {subtitle && (
+              <span className="text-sm text-neutral-400 truncate">{subtitle}</span>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -207,7 +218,7 @@ export default function TestcaseDetailDialog({
         <div className="p-5 overflow-auto">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             <div className="lg:col-span-2 space-y-4">
-              {PRIMARY_FIELDS.map((f) => (
+              {primaryFields.map((f) => (
                 <div key={f} className="space-y-1">
                   <p className="text-xs font-bold text-neutral-700">{f}</p>
                   {isEditable(f) ? (
@@ -223,9 +234,9 @@ export default function TestcaseDetailDialog({
 
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                {HIGHLIGHT_FIELDS.map((f) => (
+                {highlightFields.map((f) => (
                   <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
-                    <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                    <p className="text-[11px] font-semibold text-neutral-400">{tcLabel(f, uc)}</p>
                     {isEditable(f) ? (
                       renderField(f, false)
                     ) : f === 'テスト結果' ? (
@@ -235,11 +246,20 @@ export default function TestcaseDetailDialog({
                         </span>
                       ) : <span className="text-sm text-neutral-400">-</span>
                     ) : (
-                      <p className="text-lg font-bold text-neutral-900">{row[f] || '-'}</p>
+                      <p className={`font-bold text-neutral-900 ${uc ? 'text-sm break-words' : 'text-lg'}`}>{row[f] || '-'}</p>
                     )}
                   </div>
                 ))}
               </div>
+
+              {uc && (
+                <UcCheckGrid
+                  row={row}
+                  draft={draft}
+                  editing={editing}
+                  onChange={(f, v) => setDraft((p) => ({ ...p, [f]: v }))}
+                />
+              )}
 
               {(editing ? (draft['テスト結果'] || '') : (row['テスト結果'] || '')).trim() === 'NG' && (
                 <div className="border border-orange-200 rounded-lg p-3 bg-orange-50/40 space-y-3">
@@ -276,7 +296,7 @@ export default function TestcaseDetailDialog({
               )}
 
               <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100">
-                {SECONDARY_FIELDS.map((f) => {
+                {secondaryFields.map((f) => {
                   const isLong = LONG_TEXT_FIELDS.has(f);
                   return (
                     <div key={f} className="px-3 py-2 flex items-start gap-3">
