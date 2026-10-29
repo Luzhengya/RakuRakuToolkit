@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ChevronDown, Download, Loader2, Search, X, ChevronRight as ChevronSep } from 'lucide-react';
+import { AlertCircle, ChevronDown, Download, Loader2, Pencil, Plus, Search, Trash2, X, ChevronRight as ChevronSep } from 'lucide-react';
 import { type Lang } from '../i18n/testcenter';
 import { buildBugListHtml, inlineChildImages } from './bugListPdf';
+import BugEditDialog, { type BugSavedResult } from './BugEditDialog';
 
 type BugListProps = {
   lang: Lang;
@@ -142,6 +143,13 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
   const [childHtml, setChildHtml] = useState<string>('');
   const [childLoading, setChildLoading] = useState(false);
 
+  // 新規作成・編集・削除
+  const [editing, setEditing] = useState<BugItem | 'new' | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // 新規作成した BUG。絞り込みの並びに関係なく先頭に出して強調する
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+
   useEffect(() => {
     let aborted = false;
     (async () => {
@@ -205,8 +213,11 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
         }
         return true;
       })
-      .sort((a, b) => (a.month === b.month ? noNumber(a.no) - noNumber(b.no) : b.month.localeCompare(a.month)));
-  }, [allItems, keyword, system, year, monthNo, judgments, status]);
+      .sort((a, b) => {
+        if (a.id === pinnedId || b.id === pinnedId) return a.id === pinnedId ? -1 : 1;
+        return a.month === b.month ? noNumber(a.no) - noNumber(b.no) : b.month.localeCompare(a.month);
+      });
+  }, [allItems, keyword, system, year, monthNo, judgments, status, pinnedId]);
 
   const handleClear = () => {
     setKeyword('');
@@ -285,6 +296,10 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
       setOpenId(null);
       return;
     }
+    openRow(bug);
+  };
+
+  const openRow = async (bug: BugItem) => {
     setOpenId(bug.id);
     setChildHtml('');
     setChildLoading(true);
@@ -298,6 +313,49 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
       // silent
     } finally {
       setChildLoading(false);
+    }
+  };
+
+  // 保存後は一覧を読み直さず、その行だけ差し替える
+  const handleSaved = async (r: BugSavedResult) => {
+    setEditing(null);
+    setNotice(r.notice || null);
+    if (!r.isNew) {
+      setAllItems((prev) => prev.map((b) => (b.id === r.bugId ? { ...b, ...r.fields } : b)));
+      return;
+    }
+    // システム・月次は案件の rollup なので、作成後の1件を取り直して一覧に足す
+    try {
+      const res = await fetch(`/api/test-center/bugs/single/${encodeURIComponent(r.bugId)}`);
+      if (!res.ok) throw new Error();
+      const { item } = (await res.json()) as { item: BugItem };
+      setAllItems((prev) => [item, ...prev.filter((b) => b.id !== item.id)]);
+      setPinnedId(item.id);
+      openRow(item);
+    } catch {
+      setNotice(`${r.notice ? `${r.notice}\n` : ''}BUG は登録しましたが、一覧への反映に失敗しました。ページを再読み込みしてください。`);
+    }
+  };
+
+  const handleDelete = async (bug: BugItem) => {
+    const linked = bug.caseNumber.split(/[,\n]/).map((v) => v.trim()).filter(Boolean);
+    const msg = `No.${bug.no || '-'} を削除します。よろしいですか？`
+      + (linked.length ? `\n関連テストケース: ${linked.join(', ')}（テスト結果は NG のまま）` : '');
+    if (!window.confirm(msg)) return;
+    setDeletingId(bug.id);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/test-center/bugs/${encodeURIComponent(bug.id)}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error((b as { error?: string }).error || '削除に失敗しました');
+      }
+      setAllItems((prev) => prev.filter((b) => b.id !== bug.id));
+      if (openId === bug.id) setOpenId(null);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : '削除に失敗しました');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -328,6 +386,16 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
 
         <div className="flex items-end justify-between">
           <h2 className="text-2xl font-bold text-neutral-900">{L.title}</h2>
+          <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setEditing('new')}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            <Plus size={15} />
+            新規
+          </button>
           <button
             type="button"
             onClick={handleExportHtml}
@@ -337,7 +405,16 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
             {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
             {L.exportHtml}
           </button>
+          </div>
         </div>
+
+        {notice && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-amber-800 text-sm flex items-start gap-2">
+            <AlertCircle size={16} className="mt-0.5 shrink-0" />
+            <span className="whitespace-pre-line flex-1">{notice}</span>
+            <button type="button" onClick={() => setNotice(null)} className="text-amber-600 hover:text-amber-800"><X size={14} /></button>
+          </div>
+        )}
 
         {/* Summary cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -512,7 +589,8 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
                             }
                           }}
                           className={`grid items-center cursor-pointer transition-colors ${
-                            isOpen ? 'bg-neutral-50' : 'bg-white hover:bg-neutral-50/60'
+                            bug.id === pinnedId ? 'bg-amber-50 hover:bg-amber-50/80'
+                              : isOpen ? 'bg-neutral-50' : 'bg-white hover:bg-neutral-50/60'
                           }`}
                           style={{ gridTemplateColumns: GRID_COLS }}
                         >
@@ -548,6 +626,25 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
 
                         {isOpen && (
                           <div className="bg-neutral-50/60 border-t border-neutral-100">
+                            <div className="px-5 pt-3 flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setEditing(bug)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-neutral-300 bg-white text-xs text-neutral-700 hover:bg-neutral-50"
+                              >
+                                <Pencil size={12} />
+                                編集
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(bug)}
+                                disabled={deletingId === bug.id}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-red-200 bg-white text-xs text-red-600 hover:bg-red-50 disabled:opacity-50"
+                              >
+                                {deletingId === bug.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                                削除
+                              </button>
+                            </div>
                             {/* Bug core info */}
                             <div className="px-5 py-4 space-y-4">
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -619,6 +716,15 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
 
         <div className="pt-4 border-t border-neutral-200">{breadcrumb}</div>
       </div>
+      {editing && (
+        <BugEditDialog
+          bug={editing === 'new' ? undefined : editing}
+          initialSystem={system}
+          initialMonthKey={year && monthNo ? `${year}${String(Number(monthNo)).padStart(2, '0')}` : ''}
+          onClose={() => setEditing(null)}
+          onSaved={handleSaved}
+        />
+      )}
     </>
   );
 }

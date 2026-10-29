@@ -2415,25 +2415,45 @@ app.get("/api/test-center/bugs/by-case/:caseId", async (req, res) => {
   }
 });
 
-// バグの 備考(確認結果)/判定/ステータス/優先度 を更新
+// 画面から編集できる BUG の項目 (リクエストのキー → Notion の属性名)。
+// No・テスト案件名・ケース番号 は採番・関連付けに使うため対象外
+const BUG_EDITABLE_FIELDS: Record<string, string> = {
+  bugDesc: "Bug説明",
+  actualResult: "実際結果",
+  reproSteps: "再現ステップ",
+  expectedResult: "予定結果",
+  module: "モジュール",
+  judgment: "判定",
+  status: "ステータス",
+  priority: "優先度",
+  execDate: "実施日",
+  assignee: "実施者",
+  browserVersion: "ブラウザ / バージョン",
+  appVersion: "アプリバージョン",
+  remarks: "備考",
+};
+
+// BUG の項目 (BUG_EDITABLE_FIELDS) を更新
 app.post("/api/test-center/bugs/:id/update", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });
   }
-  const body = (req.body ?? {}) as {
-    remarks?: string;
-    judgment?: string;
-    status?: string;
-    priority?: string;
-  };
+  const body = (req.body ?? {}) as Record<string, unknown>;
   try {
     const page = await notion.pages.retrieve({ page_id: req.params.id });
     const properties = (page as any)?.properties ?? {};
     const next: Record<string, any> = {};
-    if (body.remarks !== undefined) next["備考"] = buildUpdatableProperty(properties["備考"], body.remarks ?? "", "備考");
-    if (body.judgment !== undefined) next["判定"] = buildUpdatableProperty(properties["判定"], body.judgment ?? "", "判定");
-    if (body.status !== undefined) next["ステータス"] = buildUpdatableProperty(properties["ステータス"], body.status ?? "", "ステータス");
-    if (body.priority !== undefined) next["優先度"] = buildUpdatableProperty(properties["優先度"], body.priority ?? "", "優先度");
+    const rejected: string[] = [];
+    for (const [key, name] of Object.entries(BUG_EDITABLE_FIELDS)) {
+      if (body[key] === undefined) continue;
+      const built = buildBugProperty(properties[name], String(body[key] ?? ""));
+      // 表に無い項目・書けない型 (旧表の created_by 等) は黙って捨てず知らせる
+      if (built === null) { rejected.push(name); continue; }
+      next[name] = built;
+    }
+    if (rejected.length) {
+      return res.status(400).json({ error: `更新できない項目です: ${rejected.join("、")}` });
+    }
     if (Object.keys(next).length === 0) {
       return res.status(400).json({ error: "No updatable fields provided" });
     }
@@ -5354,6 +5374,11 @@ function buildBugProperty(prop: any, value: string): any {
     }
     case "select":
       return { select: v ? { name: v } : null };
+    case "multi_select": {
+      // 読み取り (propertyToPlainText) は ", " 区切り。同じ区切りで戻す
+      const names = v.split(/[,、]/).map((s) => s.trim()).filter(Boolean);
+      return { multi_select: names.map((name) => ({ name })) };
+    }
     case "status":
       return { status: v ? { name: v } : null };
     case "checkbox":
@@ -5500,33 +5525,11 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
       system: it.system,
     }));
 
-    // 採番: 同じシステムの最大 No + 1
-    const bugs = await queryAllBugItems(bugDbId);
-    let maxNo = 0;
-    for (const b of bugs) {
-      if (system && !(b.system ?? "").includes(system)) continue;
-      const n = Number((b.no ?? "").replace(/[^0-9]/g, ""));
-      if (Number.isFinite(n) && n > maxNo) maxNo = n;
-    }
-
-    const [fieldOptions, envVersions] = await Promise.all([
+    // 採番: 同じシステムの最大 No + 1 (表示用。確定は保存時に finalizeBugNo で行う)
+    const [nextNo, fieldOptions, envVersions] = await Promise.all([
+      nextBugNo(bugDbId, system),
       getBugFieldOptions(bugDbId),
-      (async () => {
-        const envDbId = process.env.NOTION_ENV_VERSION_DATABASE_ID;
-        if (!envDbId) return { ...DEFAULT_ENV_VERSIONS };
-        try {
-          const map = await queryConfigTable(envDbId);
-          const out: Record<string, string> = { ...DEFAULT_ENV_VERSIONS };
-          for (const [k, row] of Object.entries(map)) {
-            if (k === "chrome" || k === "IOS" || k === "ios" || k === "Android") {
-              out[k === "ios" ? "IOS" : k] = row.value;
-            }
-          }
-          return out;
-        } catch {
-          return { ...DEFAULT_ENV_VERSIONS };
-        }
-      })(),
+      loadBugEnvVersions(),
     ]);
 
     // モジュールは大分類 > 中分類 > 小分類。空はスキップ
@@ -5541,7 +5544,7 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
     return res.json({
       testcase: tc,
       candidates,
-      nextNo: String(maxNo + 1),
+      nextNo,
       defaults: {
         bugDesc: isUc ? (tc["course_name"] ?? "") : (tc["テスト内容"] ?? ""),
         judgment: "NG",
@@ -5558,7 +5561,7 @@ app.get("/api/testcase/:id/bug-context", async (req, res) => {
         appVersion: [
           envVersions.IOS ? `iOS ${envVersions.IOS}` : "",
           envVersions.Android ? `Android ${envVersions.Android}` : "",
-        ].filter(Boolean).join(" / "),
+        ].filter(Boolean).join(", "), // アプリバージョン は multi_select。", " 区切りで1件ずつ入る
       },
       fieldOptions,
     });
@@ -5603,6 +5606,218 @@ app.post("/api/testcase/upload-bug-image", upload.single("file"), async (req, re
   }
 });
 
+// ── BUG 採番・作成材料 (移管と BUG 一覧の新規作成で共用) ──────────────
+
+// 同じシステムの最大 No + 1。システムは BUG 表では rollup なので含むかで判定する
+async function nextBugNo(bugDbId: string, system: string, forceRefresh = false): Promise<string> {
+  const bugs = await queryAllBugItems(bugDbId, forceRefresh);
+  let maxNo = 0;
+  for (const b of bugs) {
+    if (system && !(b.system ?? "").includes(system)) continue;
+    const n = Number((b.no ?? "").replace(/[^0-9]/g, ""));
+    if (Number.isFinite(n) && n > maxNo) maxNo = n;
+  }
+  return String(maxNo + 1);
+}
+
+// 案件 (進捗管理表の行) のシステム。複数値のときは先頭を使う (case-testcases と同じ)
+async function caseSystemOf(caseId: string): Promise<string> {
+  const page = await notion!.pages.retrieve({ page_id: caseId });
+  return (parseProgressItem(page).system ?? "").split(",")[0].trim();
+}
+
+// 保存直前の確定採番。キャッシュを使わず BUG 表の最新値から取る
+async function finalizeBugNo(caseId: string): Promise<string> {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID!;
+  return nextBugNo(bugDbId, await caseSystemOf(caseId), true);
+}
+
+// 環境バージョン (Chrome / iOS / Android)。取れなければ既定値
+async function loadBugEnvVersions(): Promise<Record<string, string>> {
+  const envDbId = process.env.NOTION_ENV_VERSION_DATABASE_ID;
+  if (!envDbId) return { ...DEFAULT_ENV_VERSIONS };
+  try {
+    const map = await queryConfigTable(envDbId);
+    const out: Record<string, string> = { ...DEFAULT_ENV_VERSIONS };
+    for (const [k, row] of Object.entries(map)) {
+      if (k === "chrome" || k === "IOS" || k === "ios" || k === "Android") {
+        out[k === "ios" ? "IOS" : k] = row.value;
+      }
+    }
+    return out;
+  } catch {
+    return { ...DEFAULT_ENV_VERSIONS };
+  }
+}
+
+// BUG 一覧の新規作成ダイアログの材料 (案件候補・選択肢・既定値)
+app.get("/api/test-center/bugs/new-context", async (_req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  const progressDbId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !bugDbId || !progressDbId) {
+    return res.status(503).json({ error: "Notion 未設定" });
+  }
+  try {
+    const [allItems, fieldOptions, envVersions] = await Promise.all([
+      queryAllProgressItems(progressDbId),
+      getBugFieldOptions(bugDbId),
+      loadBugEnvVersions(),
+    ]);
+    // BUG のシステム・月次は案件の rollup なので、末端の案件だけを候補にする
+    const candidates = allItems
+      .filter((it) => it.childProjectIds.length === 0)
+      .map((it) => ({ id: it.id, projectName: it.projectName, month: it.month, system: it.system }))
+      .sort((a, b) =>
+        (toMonthKeyServer(b.month) || "").localeCompare(toMonthKeyServer(a.month) || "")
+        || a.projectName.localeCompare(b.projectName));
+    return res.json({
+      candidates,
+      fieldOptions,
+      defaults: {
+        judgment: "NG",
+        status: "対応待ち",
+        execDate: new Date().toISOString().slice(0, 10),
+        browserVersion: envVersions.chrome ?? "",
+        appVersion: [
+          envVersions.IOS ? `iOS ${envVersions.IOS}` : "",
+          envVersions.Android ? `Android ${envVersions.Android}` : "",
+        ].filter(Boolean).join(", "),
+      },
+    });
+  } catch (error) {
+    console.error("Bug new-context error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
+// 選んだ案件のシステムでの No 候補 (表示用。確定は保存時)
+app.get("/api/test-center/bugs/next-no", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !bugDbId) return res.status(503).json({ error: "Notion 未設定" });
+  const caseId = String(req.query.caseId ?? "").trim();
+  if (!caseId) return res.status(400).json({ error: "caseId は必須です" });
+  try {
+    const system = await caseSystemOf(caseId);
+    return res.json({ system, nextNo: await nextBugNo(bugDbId, system) });
+  } catch (error) {
+    console.error("Bug next-no error for %s:", caseId, error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
+// BUG 一覧からの新規作成 (テストケースを経由しない)
+app.post("/api/test-center/bugs", async (req, res) => {
+  const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
+  if (!notion || !bugDbId) return res.status(503).json({ error: "Notion 未設定" });
+  const b = (req.body ?? {}) as Record<string, any>;
+  // 案件が無いと システム/月次 の rollup が空になり、採番体系からも外れる
+  if (!String(b.caseId ?? "").trim()) return res.status(400).json({ error: "テスト案件を選択してください" });
+  if (!String(b.bugDesc ?? "").trim()) return res.status(400).json({ error: "Bug説明を入力してください" });
+  if (!String(b.actualResult ?? "").trim()) return res.status(400).json({ error: "実際結果を入力してください" });
+  try {
+    const requestedNo = String(b.no ?? "");
+    b.no = await finalizeBugNo(String(b.caseId));
+    // ケース番号はテストケースとの関連付けなので、一覧からの新規では入れない
+    b.caseNumber = "";
+    const created = await createBugPage(bugDbId, b);
+    return res.json({ ok: true, ...created, requestedNo });
+  } catch (error) {
+    console.error("Bug create error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "作成に失敗しました" });
+  }
+});
+
+// BUG 削除 (Notion のアーカイブ。ゴミ箱から復元できる)。
+// 移管元テストケースのテスト結果は変えない (関連付け解除と同じ扱い)
+app.delete("/api/test-center/bugs/:id", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion 未設定" });
+  const pageId = String(req.params.id ?? "").trim();
+  if (!pageId) return res.status(400).json({ error: "id は必須です" });
+  try {
+    await notion.pages.update({ page_id: pageId, archived: true } as any);
+    invalidateBugCache();
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Bug delete error for %s:", pageId, error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "削除に失敗しました" });
+  }
+});
+
+// BUG 表に1件作る (プロパティ + 詳細説明/截图の子ブロック)。
+// 子ブロックの追加が失敗しても BUG 作成自体は成功として扱い、結果だけ返す。
+async function createBugPage(
+  bugDbId: string,
+  b: Record<string, any>,
+): Promise<{ bugId: string; bugNo: string; skipped: string[]; childrenAttached: boolean; childrenError: string | null }> {
+  const { dataSourceId, properties: schema } = await getBugSchema(bugDbId);
+
+  const values: Record<string, string> = {
+    "No": b.no ?? "",
+    "テスト案件名": b.caseId ?? "",
+    "Bug説明": b.bugDesc ?? "",
+    "実際結果": b.actualResult ?? "",
+    "判定": b.judgment ?? "",
+    "ステータス": b.status ?? "",
+    "モジュール": b.module ?? "",
+    "再現ステップ": b.reproSteps ?? "",
+    "予定結果": b.expectedResult ?? "",
+    "優先度": b.priority ?? "",
+    "ケース番号": b.caseNumber ?? "",
+    "実施日": b.execDate ?? "",
+    // 実施者。テキスト型なのでテストケースの作成者がそのまま入る
+    "実施者": b.assignee ?? "",
+    "ブラウザ / バージョン": b.browserVersion ?? "",
+    "アプリバージョン": b.appVersion ?? "",
+  };
+
+  const props: Record<string, any> = {};
+  const skipped: string[] = [];
+  for (const [name, value] of Object.entries(values)) {
+    const built = buildBugProperty(schema[name], value);
+    if (built === null) {
+      // 表に無い項目、または rollup など書けない型。値があるのに書けない場合だけ記録
+      if (value.trim()) skipped.push(name);
+      continue;
+    }
+    props[name] = built;
+  }
+
+  const created: any = await notion!.pages.create({
+    parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
+    properties: props,
+  } as any);
+
+  // 詳細説明 + 截图を子ブロックとして追加（失敗しても BUG 作成自体は成功扱い）
+  const detailDesc = String(b.detailDesc ?? "").trim();
+  const imageIds: string[] = Array.isArray(b.imageIds) ? b.imageIds : [];
+  const childBlocks: any[] = [];
+  if (detailDesc) {
+    childBlocks.push({
+      type: "paragraph",
+      paragraph: { rich_text: [{ type: "text", text: { content: detailDesc } }] },
+    });
+  }
+  for (const fid of imageIds) {
+    childBlocks.push({
+      type: "image",
+      image: { type: "file_upload" as const, file_upload: { id: fid } },
+    });
+  }
+  let childrenAttached = true;
+  let childrenError: string | null = null;
+  if (childBlocks.length > 0) {
+    try {
+      await notion!.blocks.children.append({ block_id: created.id, children: childBlocks });
+    } catch (e) {
+      childrenAttached = false;
+      childrenError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  invalidateBugCache();
+  return { bugId: created?.id ?? "", bugNo: values["No"], skipped, childrenAttached, childrenError };
+}
+
 // BUG を1件作り、元のテストケースのテスト結果を NG にする
 app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
   const bugDbId = process.env.NOTION_BUG_DATABASE_ID;
@@ -5622,73 +5837,10 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
   }
 
   try {
-    const { dataSourceId, properties: schema } = await getBugSchema(bugDbId);
-
-    const values: Record<string, string> = {
-      "No": b.no ?? "",
-      "テスト案件名": b.caseId ?? "",
-      "Bug説明": b.bugDesc ?? "",
-      "実際結果": b.actualResult ?? "",
-      "判定": b.judgment ?? "",
-      "ステータス": b.status ?? "",
-      "モジュール": b.module ?? "",
-      "再現ステップ": b.reproSteps ?? "",
-      "予定結果": b.expectedResult ?? "",
-      "優先度": b.priority ?? "",
-      "ケース番号": b.caseNumber ?? "",
-      "実施日": b.execDate ?? "",
-      // 実施者。テキスト型なのでテストケースの作成者がそのまま入る
-      "実施者": b.assignee ?? "",
-      "ブラウザ / バージョン": b.browserVersion ?? "",
-      "アプリバージョン": b.appVersion ?? "",
-    };
-
-    const props: Record<string, any> = {};
-    const skipped: string[] = [];
-    for (const [name, value] of Object.entries(values)) {
-      const built = buildBugProperty(schema[name], value);
-      if (built === null) {
-        // 表に無い項目、または rollup など書けない型。値があるのに書けない場合だけ記録
-        if (value.trim()) skipped.push(name);
-        continue;
-      }
-      props[name] = built;
-    }
-
-    const created: any = await notion.pages.create({
-      parent: { type: "data_source_id", data_source_id: dataSourceId } as any,
-      properties: props,
-    } as any);
-
-    // 詳細説明 + 截图を子ブロックとして追加（失敗しても BUG 作成自体は成功扱い）
-    const detailDesc = String(b.detailDesc ?? "").trim();
-    const imageIds: string[] = Array.isArray(b.imageIds) ? b.imageIds : [];
-    const childBlocks: any[] = [];
-    if (detailDesc) {
-      childBlocks.push({
-        type: "paragraph",
-        paragraph: { rich_text: [{ type: "text", text: { content: detailDesc } }] },
-      });
-    }
-    for (const fid of imageIds) {
-      childBlocks.push({
-        type: "image",
-        image: { type: "file_upload" as const, file_upload: { id: fid } },
-      });
-    }
-    let childrenAttached = true;
-    let childrenError: string | null = null;
-    if (childBlocks.length > 0) {
-      try {
-        await notion.blocks.children.append({
-          block_id: created.id,
-          children: childBlocks,
-        });
-      } catch (e) {
-        childrenAttached = false;
-        childrenError = e instanceof Error ? e.message : String(e);
-      }
-    }
+    // 画面で表示した No は開いた時点の値。同時に作られると重なるので保存時に取り直す
+    const requestedNo = String(b.no ?? "");
+    b.no = await finalizeBugNo(String(b.caseId));
+    const created = await createBugPage(bugDbId, b);
 
     // 元のテストケースを NG にする。BUG は作れているので、ここが失敗しても
     // 全体は成功として扱い、結果だけ伝える
@@ -5708,16 +5860,7 @@ app.post("/api/testcase/:id/transfer-bug", async (req, res) => {
     }
 
     invalidateBugCache();
-    return res.json({
-      ok: true,
-      bugId: created?.id ?? "",
-      bugNo: values["No"],
-      skipped,
-      resultUpdated,
-      resultError,
-      childrenAttached,
-      childrenError,
-    });
+    return res.json({ ok: true, ...created, requestedNo, resultUpdated, resultError });
   } catch (error) {
     console.error("Bug transfer error for %s:", pageId, error);
     return res.status(500).json({

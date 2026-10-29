@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, Bug, Camera, Image, Link2, Loader2, Plus, Send, X } from 'lucide-react';
-import { captureScreen } from '../utils/captureScreen';
-import ScreenshotEditor from './ScreenshotEditor';
+import { useEffect, useState } from 'react';
+import { AlertCircle, Bug, Link2, Loader2, Plus, Send } from 'lucide-react';
+import { ScreenshotButtons, ScreenshotThumbs, useBugScreenshots } from './BugScreenshots';
 
 interface Candidate {
   id: string;
@@ -36,23 +35,6 @@ interface LinkableBug {
   bugDesc: string;
   caseNumbers: string[];
   month: string;
-}
-
-interface ScreenshotItem {
-  id: string;
-  file: File;
-  preview: string;
-  dataUrl: string;
-  uploading: boolean;
-  fileUploadId: string | null;
-  error: string | null;
-}
-
-let screenshotSeq = 0;
-
-function safeBlobUrl(url: string): string {
-  if (url.startsWith('blob:') || url.startsWith('data:')) return url;
-  return '';
 }
 
 function pickDefault(options: string[], preferred: string): string {
@@ -92,11 +74,8 @@ export default function BugTransferForm({
   const [browserVersion, setBrowserVersion] = useState('');
   const [appVersion, setAppVersion] = useState('');
 
-  // -- 截图 state --
-  const [screenshots, setScreenshots] = useState<ScreenshotItem[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [editorImage, setEditorImage] = useState<string | null>(null);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  // -- 截图 --
+  const shots = useBugScreenshots();
 
   // -- 関連付け state --
   const [linkableBugs, setLinkableBugs] = useState<LinkableBug[]>([]);
@@ -159,121 +138,6 @@ export default function BugTransferForm({
     if (m === 'link' && linkableBugs.length === 0) loadLinkableBugs();
   };
 
-  const dataUrlToFile = (dataUrl: string, name: string): File => {
-    const [header, b64] = dataUrl.split(',');
-    const mime = header.match(/:(.*?);/)?.[1] ?? 'image/png';
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return new File([arr], name, { type: mime });
-  };
-
-  const uploadScreenshot = async (file: File, dataUrl?: string) => {
-    const preview = URL.createObjectURL(file);
-    const id = `ss-${++screenshotSeq}`;
-    const du = dataUrl ?? await new Promise<string>((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.readAsDataURL(file);
-    });
-    const item: ScreenshotItem = { id, file, preview, dataUrl: du, uploading: true, fileUploadId: null, error: null };
-    setScreenshots((prev) => [...prev, item]);
-    try {
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/testcase/upload-bug-image', { method: 'POST', body: fd });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((body as { error?: string }).error || 'アップロード失敗');
-      const fid = (body as { fileUploadId: string }).fileUploadId;
-      setScreenshots((prev) =>
-        prev.map((s) => (s.id === id ? { ...s, uploading: false, fileUploadId: fid } : s)),
-      );
-    } catch (e) {
-      setScreenshots((prev) =>
-        prev.map((s) =>
-          s.id === id ? { ...s, uploading: false, error: e instanceof Error ? e.message : 'アップロード失敗' } : s,
-        ),
-      );
-    }
-  };
-
-  const addFiles = (files: FileList | File[]) => {
-    for (const f of Array.from(files)) {
-      if (f.type.startsWith('image/')) uploadScreenshot(f);
-    }
-  };
-
-  const removeScreenshot = (id: string) => {
-    setScreenshots((prev) => {
-      const target = prev.find((s) => s.id === id);
-      if (target) URL.revokeObjectURL(target.preview);
-      return prev.filter((s) => s.id !== id);
-    });
-  };
-
-  const handlePaste = (e: { clipboardData: DataTransfer | null; preventDefault: () => void }) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const imageFiles: File[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      if (item.type.startsWith('image/')) {
-        const f = item.getAsFile();
-        if (f) imageFiles.push(f);
-      }
-    }
-    if (imageFiles.length > 0) {
-      e.preventDefault();
-      addFiles(imageFiles);
-    }
-  };
-
-  const startCapture = async () => {
-    const dataUrl = await captureScreen();
-    if (dataUrl) setEditorImage(dataUrl);
-  };
-
-  const onEditorDone = (editedDataUrl: string) => {
-    if (editingIndex !== null) {
-      const old = screenshots[editingIndex];
-      URL.revokeObjectURL(old.preview);
-      const file = dataUrlToFile(editedDataUrl, `screenshot-${Date.now()}.png`);
-      const preview = URL.createObjectURL(file);
-      const id = old.id;
-      const item: ScreenshotItem = { id, file, preview, dataUrl: editedDataUrl, uploading: true, fileUploadId: null, error: null };
-      setScreenshots((prev) => prev.map((s) => s.id === id ? item : s));
-      setEditingIndex(null);
-      setEditorImage(null);
-      const fd = new FormData();
-      fd.append('file', file);
-      fetch('/api/testcase/upload-bug-image', { method: 'POST', body: fd })
-        .then(async (res) => {
-          const body = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error((body as { error?: string }).error || 'アップロード失敗');
-          const fid = (body as { fileUploadId: string }).fileUploadId;
-          setScreenshots((prev) => prev.map((s) => s.id === id ? { ...s, uploading: false, fileUploadId: fid } : s));
-        })
-        .catch((e) => {
-          setScreenshots((prev) => prev.map((s) => s.id === id ? { ...s, uploading: false, error: e instanceof Error ? e.message : 'アップロード失敗' } : s));
-        });
-    } else {
-      const file = dataUrlToFile(editedDataUrl, `screenshot-${Date.now()}.png`);
-      uploadScreenshot(file, editedDataUrl);
-      setEditorImage(null);
-    }
-  };
-
-  const onEditorCancel = () => {
-    setEditorImage(null);
-    setEditingIndex(null);
-  };
-
-  const openEditor = (index: number) => {
-    const s = screenshots[index];
-    setEditingIndex(index);
-    setEditorImage(s.dataUrl);
-  };
-
   const submitCreate = async () => {
     if (!ctx) return;
     setSaving(true);
@@ -299,12 +163,16 @@ export default function BugTransferForm({
           assignee,
           browserVersion,
           appVersion,
-          imageIds: screenshots.filter((s) => s.fileUploadId).map((s) => s.fileUploadId),
+          imageIds: shots.imageIds,
         }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((body as { error?: string }).error || '移管に失敗しました');
-      const r = body as { bugId: string; bugNo: string; resultUpdated?: boolean; resultError?: string };
+      const r = body as { bugId: string; bugNo: string; requestedNo?: string; resultUpdated?: boolean; resultError?: string };
+      // No は保存時にサーバーで取り直す。表示していた番号が先に使われていたら知らせる
+      if (r.requestedNo && r.bugNo && r.requestedNo !== r.bugNo) {
+        window.alert(`No.${r.requestedNo} は使用済みのため No.${r.bugNo} で登録しました`);
+      }
       if (r.resultUpdated === false) {
         setError(`BUG は作成しましたが、テスト結果を NG にできませんでした: ${r.resultError ?? ''}`);
         setSaving(false);
@@ -356,7 +224,7 @@ export default function BugTransferForm({
   }
 
   const noCandidate = !ctx || ctx.candidates.length === 0;
-  const screenshotUploading = screenshots.some((s) => s.uploading);
+  const screenshotUploading = shots.uploading;
   const canSubmitCreate = !!selectedCase && !!actualResult.trim() && !!judgment && !!status && !saving && !screenshotUploading;
   const canSubmitLink = !!selectedBugId && !saving;
 
@@ -455,66 +323,17 @@ export default function BugTransferForm({
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-neutral-700">詳細説明</span>
-                  <button
-                    type="button"
-                    onClick={startCapture}
-                    className="inline-flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-700"
-                  >
-                    <Camera size={12} />
-                    截图
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="inline-flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-700"
-                  >
-                    <Image size={12} />
-                    ファイル
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
-                  />
+                  <ScreenshotButtons shots={shots} />
                 </div>
                 <textarea
                   value={detailDesc}
                   onChange={(e) => setDetailDesc(e.target.value)}
-                  onPaste={handlePaste}
+                  onPaste={shots.handlePaste}
                   rows={3}
                   placeholder="詳細な説明（Ctrl+V で画像を貼り付け可）"
                   className={inputCls}
                 />
-                {screenshots.length > 0 && (
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {screenshots.map((s, idx) => (
-                      <div key={s.id} className="relative group w-20 h-20 rounded-lg overflow-hidden border border-neutral-200 bg-neutral-50 cursor-pointer"
-                        onClick={() => !s.uploading && openEditor(idx)}>
-                        <img src={safeBlobUrl(s.preview)} alt="" className="w-full h-full object-cover" />
-                        {s.uploading && (
-                          <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
-                            <Loader2 size={16} className="animate-spin text-neutral-500" />
-                          </div>
-                        )}
-                        {s.error && (
-                          <div className="absolute inset-0 bg-red-500/20 flex items-center justify-center">
-                            <AlertCircle size={16} className="text-red-600" />
-                          </div>
-                        )}
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); removeScreenshot(s.id); }}
-                          className="absolute top-0.5 right-0.5 rounded-full bg-black/50 text-white p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <ScreenshotThumbs shots={shots} />
               </div>
 
               <label className="block space-y-1">
@@ -711,13 +530,7 @@ export default function BugTransferForm({
           )}
         </div>
       )}
-      {editorImage && (
-        <ScreenshotEditor
-          imageDataUrl={editorImage}
-          onDone={onEditorDone}
-          onCancel={onEditorCancel}
-        />
-      )}
+      {shots.editor}
     </div>
   );
 }

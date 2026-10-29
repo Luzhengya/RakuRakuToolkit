@@ -100,7 +100,11 @@ All configured via env vars (see `.env.example`):
 | `GET /api/test-center/bugs/by-case/:caseId` | Bugs for one case, plus selectable field options |
 | `GET /api/test-center/bugs/single/:id` | One bug record |
 | `GET /api/test-center/bugs/:id/children` | Bug detail child page rendered as HTML |
-| `POST /api/test-center/bugs/:id/update` | Update remarks / judgment / status / priority |
+| `GET /api/test-center/bugs/new-context` | Case candidates / select options / defaults for the BUG create dialog |
+| `GET /api/test-center/bugs/next-no?caseId=` | Next No for the case's system (display only; fixed at save) |
+| `POST /api/test-center/bugs` | Create a bug from the BUG list (No is re-numbered server-side at save) |
+| `POST /api/test-center/bugs/:id/update` | Update editable fields (`BUG_EDITABLE_FIELDS`; not No / case / case number) |
+| `DELETE /api/test-center/bugs/:id` | Archive a bug (linked test case results are left as-is) |
 | `GET /api/test-center/bug-leak` | Incident (bug leak) aggregate for the report |
 | `POST /api/test-center/bug-leak/:id/update` | Update one incident record |
 | `GET /api/test-center/notion-image` | Proxy a Notion S3 image as a data URI (amazonaws.com only) |
