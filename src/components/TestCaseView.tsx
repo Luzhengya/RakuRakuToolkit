@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, Plus, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
+import NewTestcaseDialog from './NewTestcaseDialog';
 import UcCheckGrid from './UcCheckGrid';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
@@ -82,6 +83,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   // 削除中の行 id
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  // ケース新規作成 (ライブラリに無いケースを1件追加)
+  const [newOpen, setNewOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   // ケース番号 → 移管済み BUG。BUG 表を引いて判定するので、BUG を削除すれば自動的に戻る
   const [transferred, setTransferred] = useState<Record<string, { id: string; no: string }>>({});
   // ダイアログの表示モード: 詳細 / BUG移管フォーム / 移管済み BUG の内容
@@ -421,6 +425,14 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               ? <Loader2 size={14} className="animate-spin" />
               : <Download size={14} />}
           </button>
+          <button
+            type="button"
+            onClick={() => setNewOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-sm font-medium text-white hover:bg-neutral-800 transition-colors"
+          >
+            <Plus size={14} />
+            新規ケース
+          </button>
         </div>
       </div>
 
@@ -429,6 +441,27 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <AlertCircle size={16} />
           {error}
         </div>
+      )}
+
+      {notice && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-emerald-700 flex items-center gap-2 text-sm">
+          <span className="flex-1">{notice}</span>
+          <button type="button" onClick={() => setNotice(null)} className="text-emerald-600 hover:text-emerald-800"><X size={14} /></button>
+        </div>
+      )}
+
+      {newOpen && (
+        <NewTestcaseDialog
+          initialSystem={system}
+          onClose={() => setNewOpen(false)}
+          onCreated={(r) => {
+            setNewOpen(false);
+            setNotice(`ケース ${r.caseNo} を ${r.system}${r.year} に作成しました`);
+            // 作成先の表を表示する。表示中と同じ表なら取り直す
+            if (r.system === system && r.year === year) fetchList();
+            else { setSystem(r.system); setYear(r.year); }
+          }}
+        />
       )}
 
       {!error && !exists && !loading && (

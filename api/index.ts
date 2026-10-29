@@ -4831,6 +4831,9 @@ const TESTCASE_NOTION_FIELDS: TcField[] = [
   { name: "バージョン", kind: "number", col: 21 },
   { name: "関連NO", kind: "rich_text", col: 22 },
   { name: "備考", kind: "rich_text", col: 23 },
+  // TestCase Library からコピーしたケースの項目 (CSV には無い)
+  { name: "正常/異常", kind: "rich_text", col: null },
+  { name: "源", kind: "rich_text", col: null },
 ];
 const TC_VERSION_FIELD = "バージョン";
 
@@ -6547,6 +6550,161 @@ app.get("/api/testcase-library/list", async (req, res) => {
   } catch (error) {
     console.error("Library list error:", error);
     return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
+// ── TestCase Library → TestCase (案件に紐付けて登録) ──────────────────
+// 登録先の表・月次・CMDB番号 は選んだ案件から決める。ケース番号は「CMDB番号-連番」(1始まり)。
+
+type TestcaseTarget = {
+  system: string;
+  year: number;
+  month: number;
+  cmdbNo: string;
+  dataSourceId: string;
+  dbTitle: string;
+};
+
+// 案件 (進捗管理表の末端案件) から登録先を決める
+async function resolveTestcaseTarget(caseId: string): Promise<TestcaseTarget> {
+  const parentPageId = process.env.NOTION_TESTCASE_PARENT_PAGE_ID;
+  if (!notion || !parentPageId) throw new Error("Notion 未設定 (NOTION_TESTCASE_PARENT_PAGE_ID)");
+  const item = parseProgressItem(await notion.pages.retrieve({ page_id: caseId }));
+  const system = (item.system ?? "").split(",")[0].trim();
+  const monthKey = toMonthKeyServer(item.month);
+  const cmdbNo = extractCmdbNo(item.projectName);
+  if (!system) throw new Error("案件のシステムが設定されていません");
+  if (!monthKey) throw new Error("案件の月次が設定されていません");
+  if (!cmdbNo) throw new Error("案件名の先頭に CMDB番号 がありません");
+  // UnivContents は別テンプレートの表のため、ライブラリのケースは登録できない
+  if (tcTemplateFor(system).isUc) throw new Error(`${system} の案件にはコピーできません`);
+  const year = Number(monthKey.slice(0, 4));
+  const dbTitle = `${system}${year}`;
+  const { dataSourceId } = await ensureTestcaseDatabase(parentPageId, dbTitle, TESTCASE_NOTION_FIELDS);
+  return { system, year, month: Number(monthKey.slice(4)), cmdbNo, dataSourceId, dbTitle };
+}
+
+// 同じ CMDB番号 の既存ケースの最大連番と、コピー済みの関連NO (ライブラリのケース番号)
+async function loadCmdbCaseState(target: TestcaseTarget): Promise<{ maxSeq: number; copiedLibNos: Set<string> }> {
+  const index = await loadTestcaseIndex(target.dataSourceId);
+  const re = new RegExp(`^${target.cmdbNo}-(\\d+)$`);
+  const relField = TESTCASE_NOTION_FIELDS.find((f) => f.name === "関連NO")!;
+  let maxSeq = 0;
+  const copiedLibNos = new Set<string>();
+  for (const [caseNo, page] of index) {
+    const m = caseNo.match(re);
+    if (!m) continue;
+    maxSeq = Math.max(maxSeq, Number(m[1]));
+    const rel = readTcPlain(page, relField).trim();
+    if (rel) copiedLibNos.add(rel);
+  }
+  return { maxSeq, copiedLibNos };
+}
+
+// 1件登録。案件由来の項目とコピー時に初期化する項目はここで決める
+async function createCaseInTarget(target: TestcaseTarget, caseNo: string, values: Record<string, string>): Promise<void> {
+  const fixed: Record<string, string> = {
+    "ケース番号": caseNo,
+    "システム": target.system,
+    "月次": String(target.month),
+    "CMDB番号": target.cmdbNo,
+    // 今回の実施分として登録するので、結果系は空にする
+    "テスト結果": "", "再テスト結果": "", "再実施日": "", "再実施者": "", "状態": "",
+    "バージョン": "1",
+    "作成日": new Date().toISOString().slice(0, 10),
+    "作成者": "", "更新者": "", "更新日": "",
+  };
+  const props: Record<string, any> = {};
+  for (const f of TESTCASE_NOTION_FIELDS) {
+    const v = fixed[f.name] ?? String(values[f.name] ?? "").trim();
+    props[f.name] = buildTcPropertyValue(f, v, false);
+  }
+  await notion!.pages.create({
+    parent: { type: "data_source_id", data_source_id: target.dataSourceId } as any,
+    properties: props,
+  } as any);
+}
+
+// コピー・新規作成ダイアログの案件候補 (末端案件のみ)
+app.get("/api/testcase/case-candidates", async (_req, res) => {
+  const progressDbId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !progressDbId) return res.status(503).json({ error: "Notion 未設定" });
+  try {
+    const items = await queryAllProgressItems(progressDbId);
+    const candidates = items
+      .filter((it) => it.childProjectIds.length === 0)
+      .map((it) => ({
+        id: it.id,
+        projectName: it.projectName,
+        month: it.month,
+        system: (it.system ?? "").split(",")[0].trim(),
+        cmdbNo: extractCmdbNo(it.projectName),
+      }))
+      .sort((a, b) =>
+        (toMonthKeyServer(b.month) || "").localeCompare(toMonthKeyServer(a.month) || "")
+        || a.projectName.localeCompare(b.projectName));
+    return res.json({ candidates });
+  } catch (error) {
+    console.error("Testcase case-candidates error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "取得に失敗しました" });
+  }
+});
+
+// ライブラリのケースを案件の TestCase へコピーする。
+// 1回の呼び出しは最大 30 件 (Vercel の実行時間内に収めるため、画面側で分けて送る)。
+// 同じ CMDB番号 に同じ関連NO が既にあればスキップするので、途中で止まっても再実行できる。
+const LIBRARY_COPY_BATCH_MAX = 30;
+app.post("/api/testcase/copy-from-library", async (req, res) => {
+  const caseId = String(req.body?.caseId ?? "").trim();
+  const rows = req.body?.rows;
+  if (!caseId) return res.status(400).json({ error: "案件を選択してください" });
+  if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ error: "コピーするケースがありません" });
+  if (rows.length > LIBRARY_COPY_BATCH_MAX) {
+    return res.status(400).json({ error: `1回にコピーできるのは ${LIBRARY_COPY_BATCH_MAX} 件までです` });
+  }
+  try {
+    const target = await resolveTestcaseTarget(caseId);
+    const state = await loadCmdbCaseState(target);
+    let created = 0, skipped = 0;
+    for (const row of rows as Record<string, string>[]) {
+      const libNo = String(row["ケース番号"] ?? "").trim();
+      if (libNo && state.copiedLibNos.has(libNo)) { skipped++; continue; }
+      state.maxSeq++;
+      // 関連NO にライブラリのケース番号を入れる (コピー元の追跡と重複判定に使う)
+      await createCaseInTarget(target, `${target.cmdbNo}-${state.maxSeq}`, { ...row, "関連NO": libNo });
+      if (libNo) state.copiedLibNos.add(libNo);
+      created++;
+    }
+    return res.json({ created, skipped, dbTitle: target.dbTitle, cmdbNo: target.cmdbNo, year: target.year });
+  } catch (error) {
+    console.error("Copy from library error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "コピーに失敗しました" });
+  }
+});
+
+// TestCase 画面からケースを1件新規作成する (ライブラリに無いケース)
+app.post("/api/testcase/create", async (req, res) => {
+  const caseId = String(req.body?.caseId ?? "").trim();
+  const fields = (req.body?.fields ?? {}) as Record<string, unknown>;
+  if (!caseId) return res.status(400).json({ error: "案件を選択してください" });
+  const values: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    // 編集できる項目だけ受け付ける (ケース番号・システム・月次は案件から決める)
+    if (TESTCASE_EDITABLE_FIELDS.has(k) && !["CMDB番号", "テスト結果", "再テスト結果", "再実施日", "再実施者"].includes(k)) {
+      values[k] = String(v ?? "");
+    }
+  }
+  if (!values["テスト内容"]?.trim()) return res.status(400).json({ error: "テスト内容を入力してください" });
+  if (!values["予期結果"]?.trim()) return res.status(400).json({ error: "予期結果を入力してください" });
+  try {
+    const target = await resolveTestcaseTarget(caseId);
+    const state = await loadCmdbCaseState(target);
+    const caseNo = `${target.cmdbNo}-${state.maxSeq + 1}`;
+    await createCaseInTarget(target, caseNo, values);
+    return res.json({ ok: true, caseNo, dbTitle: target.dbTitle, year: target.year, system: target.system });
+  } catch (error) {
+    console.error("Testcase create error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "作成に失敗しました" });
   }
 });
 
