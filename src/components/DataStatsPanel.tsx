@@ -428,16 +428,48 @@ function MonthCalendar({ year, month, onSelect }: { year: number; month: number 
   );
 }
 
+// 関連チェックリスト1件 (api の checklist-title が返す items)
+interface ChecklistDetail {
+  id: string;
+  title: string;
+  testType: string;
+  system: string;
+  comment: string;
+  html: string;
+}
+
 // BugLeak Detail Dialog (read-only, left-right layout)
 function BugLeakDetailDialog({ item, onClose }: { item: BugLeakItem; onClose: () => void }) {
   const [checklistTitles, setChecklistTitles] = useState<string[]>([]);
+  const [checklistItems, setChecklistItems] = useState<ChecklistDetail[]>([]);
+  const [checklistLoading, setChecklistLoading] = useState(false);
+  // 機能(画面)名 のページ本文 (障害の画像など)
+  const [bodyHtml, setBodyHtml] = useState('');
+  const [bodyLoading, setBodyLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setBodyHtml('');
+    setBodyLoading(true);
+    fetch(`/api/stats/bugleak/${item.id}/children`)
+      .then((r) => r.ok ? r.json() : { html: '' })
+      .then((d) => { if (alive) setBodyHtml(d.html ?? ''); })
+      .catch(() => {})
+      .finally(() => { if (alive) setBodyLoading(false); });
+    return () => { alive = false; };
+  }, [item.id]);
 
   useEffect(() => {
     if ((item.checklistIds ?? []).length > 0) {
+      setChecklistLoading(true);
       fetch(`/api/stats/bugleak/${item.id}/checklist-title`)
         .then((r) => r.ok ? r.json() : { titles: [] })
-        .then((d) => setChecklistTitles(d.titles ?? []))
-        .catch(() => {});
+        .then((d) => {
+          setChecklistTitles(d.titles ?? []);
+          setChecklistItems(d.items ?? []);
+        })
+        .catch(() => {})
+        .finally(() => setChecklistLoading(false));
     }
   }, [item.id, item.checklistIds]);
 
@@ -459,7 +491,7 @@ function BugLeakDetailDialog({ item, onClose }: { item: BugLeakItem; onClose: ()
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] overflow-y-auto p-5" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between mb-4">
           <div>
             <h3 className="text-base font-bold">{item.feature || '(機能名なし)'}</h3>
@@ -472,29 +504,24 @@ function BugLeakDetailDialog({ item, onClose }: { item: BugLeakItem; onClose: ()
           {/* Left: main content */}
           <div className="flex-1 space-y-3 min-w-0">
             {longField('障害内容', item.defect)}
+            {/* 機能(画面)名 のページ本文。画像が主なので、無い場合は枠ごと出さない */}
+            {bodyLoading ? (
+              <p className="text-xs text-neutral-400 inline-flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" />詳細を読み込み中...</p>
+            ) : bodyHtml.trim() ? (
+              <div>
+                <h4 className="text-xs font-semibold text-neutral-500 mb-1">詳細</h4>
+                <div className="notion-content text-sm text-neutral-700 bg-white border border-neutral-200 rounded-lg p-3 overflow-x-auto [&_p]:my-1 [&_img]:max-w-full [&_img]:max-h-[480px] [&_img]:rounded-lg [&_img]:object-contain [&_img]:my-2 [&_img]:border [&_img]:border-neutral-200" dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+              </div>
+            ) : null}
             {longField('TestCenter確認結果', item.tcResult)}
-            <div>
-              <h4 className="text-xs font-semibold text-neutral-500 mb-1">チェックリスト</h4>
-              <div className="bg-neutral-50 rounded-lg p-3 text-sm text-neutral-700 min-h-[40px]">
-                {item.checklist ? item.checklist : checklistTitles.length > 0 ? checklistTitles.join(', ') : <span className="text-neutral-300">—</span>}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <span className="text-xs text-neutral-400">指摘工程</span>
-                <p className="text-sm">{item.process || '—'}</p>
-              </div>
-              <div>
-                <span className="text-xs text-neutral-400">指摘分類</span>
-                <p className="text-sm">{item.category || '—'}</p>
-              </div>
-            </div>
           </div>
 
           {/* Right: properties sidebar */}
           <div className="w-48 flex-shrink-0 space-y-0">
             {propRow('案件別', item.caseMonth)}
             {propRow('CMDB', item.cmdb)}
+            {propRow('指摘工程', item.process)}
+            {propRow('指摘分類', item.category)}
             {propRow('原因区分', item.cause)}
             {propRow('リリース時期', item.releaseTime)}
             {propRow('状態', item.status)}
@@ -504,6 +531,52 @@ function BugLeakDetailDialog({ item, onClose }: { item: BugLeakItem; onClose: ()
               <span>{item.responsible ? <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" /> : '—'}</span>
             </div>
           </div>
+        </div>
+        {/* チェックリストは表を含むので、ダイアログの全幅を使う */}
+        <div className="mt-5 pt-4 border-t border-neutral-100">
+          <h4 className="text-xs font-semibold text-neutral-500 mb-1">チェックリスト</h4>
+          {checklistItems.length > 0 ? (
+            // 関連チェックリストは名前だけでなく本文 (確認観点の callout / 表) まで見せる
+            <div className="space-y-2">
+              {checklistItems.map((cl) => (
+                <div key={cl.id} className="bg-neutral-50 rounded-lg p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-semibold text-neutral-800">{cl.title}</p>
+                    <a
+                      href={`https://www.notion.so/${cl.id.replace(/-/g, '')}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      title="Notion で開く"
+                      className="shrink-0 p-0.5 text-neutral-400 hover:text-neutral-700"
+                    >
+                      <ExternalLink size={13} />
+                    </a>
+                  </div>
+                  {(cl.testType || cl.system) && (
+                    <div className="flex flex-wrap gap-1.5 text-[11px]">
+                      {cl.testType && <span className="rounded-full bg-purple-50 text-purple-700 border border-purple-200 px-2 py-0.5">{cl.testType}</span>}
+                      {cl.system && <span className="rounded-full bg-white text-neutral-600 border border-neutral-200 px-2 py-0.5">{cl.system}</span>}
+                    </div>
+                  )}
+                  {cl.comment && <p className="text-xs text-neutral-600 whitespace-pre-wrap">{cl.comment}</p>}
+                  {cl.html.trim() ? (
+                    <div
+                      className="notion-content text-sm text-neutral-700 bg-white border border-neutral-200 rounded-lg p-3 overflow-x-auto space-y-1.5 [&_.callout]:bg-neutral-50 [&_.callout]:rounded-md [&_.callout]:p-2 [&_.callout]:my-1.5 [&_.callout]:font-medium [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:font-normal [&_table]:my-2 [&_table]:border-collapse [&_table]:text-xs [&_table]:font-normal [&_td]:border [&_td]:border-neutral-200 [&_td]:px-2 [&_td]:py-1 [&_td]:align-top [&_tr:first-child]:bg-neutral-100 [&_img]:max-w-full [&_img]:max-h-[400px] [&_img]:rounded-lg [&_img]:object-contain [&_img]:my-2"
+                      dangerouslySetInnerHTML={{ __html: cl.html }}
+                    />
+                  ) : (
+                    <p className="text-xs text-neutral-400">本文なし</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-neutral-50 rounded-lg p-3 text-sm text-neutral-700 min-h-[40px]">
+              {checklistLoading
+                ? <span className="inline-flex items-center gap-1.5 text-neutral-400"><Loader2 size={13} className="animate-spin" />読み込み中...</span>
+                : item.checklist ? item.checklist : checklistTitles.length > 0 ? checklistTitles.join(', ') : <span className="text-neutral-300">—</span>}
+            </div>
+          )}
         </div>
       </div>
     </div>

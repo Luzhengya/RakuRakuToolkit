@@ -4164,6 +4164,18 @@ app.post("/api/stats/bugleak/:id/complete", async (req, res) => {
   }
 });
 
+// GET /api/stats/bugleak/:id/children — 機能(画面)名 のページ本文 (障害の画像など) を簡易 HTML で返す
+app.get("/api/stats/bugleak/:id/children", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  try {
+    const html = await renderBlocksToHtml(req.params.id);
+    return res.json({ html });
+  } catch (error) {
+    console.error("Stats bugleak children error:", error);
+    return res.status(500).json({ error: "Failed to load bugleak children" });
+  }
+});
+
 // GET /api/stats/bugleak/:id/checklist-title — resolve checklist relation titles
 app.get("/api/stats/bugleak/:id/checklist-title", async (req, res) => {
   if (!notion) return res.status(503).json({ error: "Notion not configured" });
@@ -4178,6 +4190,8 @@ app.get("/api/stats/bugleak/:id/checklist-title", async (req, res) => {
       return res.json({ titles: [] });
     }
     const titles: string[] = [];
+    // 詳細ダイアログで中身まで見せるため、属性と本文 (callout / 表など) も返す
+    const items: { id: string; title: string; testType: string; system: string; comment: string; html: string }[] = [];
     for (const rel of clProp.relation) {
       try {
         const linked: any = await withNotionRetry("pages.retrieve", () =>
@@ -4189,9 +4203,19 @@ app.get("/api/stats/bugleak/:id/checklist-title", async (req, res) => {
           if (val?.type === "title") { title = propertyToPlainText(val); break; }
         }
         titles.push(title || rel.id);
+        let html = "";
+        try { html = await renderBlocksToHtml(rel.id); } catch { /* 本文が取れなくても属性は見せる */ }
+        items.push({
+          id: rel.id,
+          title: title || rel.id,
+          testType: propertyToPlainText(lp["テスト種類"]),
+          system: propertyToPlainText(lp["システム"]),
+          comment: propertyToPlainText(lp["コメント"]),
+          html,
+        });
       } catch { titles.push(rel.id); }
     }
-    return res.json({ titles });
+    return res.json({ titles, items });
   } catch (error) {
     console.error("Checklist title error:", error);
     return res.status(500).json({ error: "Failed to fetch checklist titles" });
