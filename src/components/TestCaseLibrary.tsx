@@ -10,6 +10,7 @@ import {
 
 const SYSTEM_DISPLAY_NAME: Record<string, string> = {
   wreport_admin_base: '海外調書管理システム',
+  cmdb_base: 'CMDBシステム',
 };
 
 type SystemInfo = { dbId: string; dbTitle: string; hasData: boolean };
