@@ -375,7 +375,7 @@ app.post("/api/pdf-extract-tables", upload.single("file"), async (req, res) => {
   }
 });
 
-type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros" | "meikancho" | "credit-asp";
+type TestCenterArea = "jmotto" | "univ" | "overseas" | "credit" | "jmotto-app" | "univ-app" | "univ-contents" | "nayose" | "gyoshu" | "ros" | "meikancho" | "credit-asp" | "cmdb";
 
 type ProgressItem = {
   id: string;
@@ -651,6 +651,8 @@ function isItemInArea(area: TestCenterArea, systemValue: string): boolean {
       return matchesAny(["名館長クラウド", "名館長"]);
     case "credit-asp":
       return matchesAny(["与信ASP"]);
+    case "cmdb":
+      return matchesAny(["CMDB"]);
     default:
       return false;
   }
@@ -1106,7 +1108,7 @@ app.get("/api/pdf-status", (_req, res) => {
 
 app.get("/api/test-center", async (req, res) => {
   const area = req.query.area as TestCenterArea | undefined;
-  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp"];
+  const validAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp", "cmdb"];
   if (!area || !validAreas.includes(area)) {
     return res.status(400).json({ error: "Invalid area parameter" });
   }
@@ -1207,7 +1209,7 @@ app.get("/api/test-center", async (req, res) => {
 // 親案件のリレーションを辿り、エリア付きの「葉」案件(実データを持つ子案件)を解決する。
 // overview と case-stats で共用。
 async function resolveLeafCases(databaseId: string, forceRefresh = false): Promise<{ item: ProgressItem; areaId: TestCenterArea }[]> {
-  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp"];
+  const allAreas: TestCenterArea[] = ["jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app", "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "credit-asp", "cmdb"];
   const allItems = await queryAllProgressItems(databaseId, forceRefresh);
   // 子案件は同じ進捗DBの行なので、全件取得結果から id 引きできる。
   // これにより pages.retrieve の大量発行(=レート制限/遅延)を回避する。

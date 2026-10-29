@@ -26,6 +26,7 @@ import {
   Pencil,
   Save,
   Check,
+  Database,
 } from 'lucide-react';
 import { type Lang, createT } from '../i18n/testcenter';
 import { NoteBadges } from './shared/NoteWidgets';
@@ -57,7 +58,7 @@ type TestCenterProps = {
   onBack: () => void;
 };
 
-type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros' | 'meikancho' | 'credit-asp';
+type AreaId = 'jmotto' | 'univ' | 'credit' | 'overseas' | 'jmotto-app' | 'univ-app' | 'univ-contents' | 'nayose' | 'gyoshu' | 'ros' | 'meikancho' | 'credit-asp' | 'cmdb';
 
 type ProgressItem = {
   id: string;
@@ -368,6 +369,11 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId, versions: EnvVersions = D
       `☑ [ブラウザ] Chrome（${chrome}）`,
       '☑ [URL] （与信ASPのテストURLを入力してください）',
     ],
+    'cmdb': [
+      `☑ [ブラウザ] Chrome（${chrome}）`,
+      '☑ [URL] https://172.28.14.196/Cmdb/index.do',
+      '☑ [URL] https://172.28.14.196/Cmdb/showManageTop.do',
+    ],
   };
   return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
 }
@@ -432,6 +438,11 @@ const AREA_DOC_META: Record<AreaId, AreaDocMeta> = {
     releaseNameJa: '与信ASP',
     planFileNamePrefix: '与信ASP',
     svnPathSegment: '与信ASP',
+  },
+  'cmdb': {
+    releaseNameJa: 'CMDB',
+    planFileNamePrefix: 'CMDB',
+    svnPathSegment: 'CMDB',
   },
 };
 
@@ -1506,11 +1517,17 @@ const AREAS = [
     description: { zh: '与信ASP相关测试项的统一管理。', ja: '与信ASP関連のテスト項目を統一管理する。' },
     icon: <FileText className="text-indigo-600" size={22} />
   },
+  {
+    id: 'cmdb' as AreaId,
+    title: { zh: 'CMDB区域', ja: 'CMDBエリア' },
+    description: { zh: 'CMDB相关测试项的统一管理。', ja: 'CMDB関連のテスト項目を統一管理する。' },
+    icon: <Database className="text-slate-600" size={22} />
+  },
 ];
 
 export default function TestCenter({ onBack }: TestCenterProps) {
   const [subRoute, setSubRoute] = useSubRoute();
-  const VALID_AREA_IDS = new Set<string>(['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp']);
+  const VALID_AREA_IDS = new Set<string>(['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp', 'cmdb']);
   const selectedAreaId: AreaId | null = VALID_AREA_IDS.has(subRoute[0]) ? (subRoute[0] as AreaId) : null;
   const caseStatsOpen = subRoute[0] === 'case-stats';
   const bugListOpen = subRoute[0] === 'bugs';
@@ -1571,7 +1588,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   }, []);
   const initialAreaUpdatedAtMap = useMemo<Record<string, number>>(() => {
     const map: Record<string, number> = {};
-    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp'];
+    const allAreaIds: AreaId[] = ['jmotto', 'univ', 'credit', 'overseas', 'jmotto-app', 'univ-app', 'univ-contents', 'nayose', 'gyoshu', 'ros', 'meikancho', 'credit-asp', 'cmdb'];
     for (const id of allAreaIds) {
       const cache = loadAreaCache(id);
       if (cache) map[id] = cache.updatedAt;

@@ -31,7 +31,7 @@ const comparePath = argOf("--compare", null);
 
 const AREAS = [
   "jmotto", "univ", "overseas", "credit", "jmotto-app", "univ-app",
-  "univ-contents", "nayose", "gyoshu", "ros", "meikancho",
+  "univ-contents", "nayose", "gyoshu", "ros", "meikancho", "cmdb",
 ];
 
 /** 読み取り系: 期待ステータスと、記録しておきたい値の取り出し方 */
