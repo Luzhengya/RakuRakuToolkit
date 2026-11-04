@@ -1,4 +1,6 @@
-# TestCase Library のフロー表示用データを、ケースの「大分類×中分類」から組み立てる。
+# TestCase Library のフロー表示用データを組み立てる。
+#   wreport_admin_base … ケースの「大分類×中分類」を1ノードとする画面遷移（このファイル）
+#   wreport_base       … 入口別ツリー（entry_tree.py。小分類まで使ってケースを割り当てる）
 #
 # 使い方（リポジトリ直下で）:
 #   node scripts/library-flow/dump-combos.mjs      … Notion から combos/*.tsv を取り直す
@@ -217,90 +219,6 @@ def check(tabs, cnt, name):
     return isolated
 
 
-# ════ wreport_base ════════════════════════════════════════════
-def base_common(cnt):
-    t = Tab('共通（主干）')
-    C = lambda i, c, g=None: t.node(i, '共通', c, g)
-    C('entry', '入口画面（テスト用ログイン入口）', '入口')
-    C('jLimo', '連携ジャンプ（LIMO）', '入口')
-    C('jRm', '連携ジャンプ（RM会員・非会員）', '入口')
-    C('jFna', '連携ジャンプ（FNA）', '入口')
-    C('jS3', '連携ジャンプ（Step3直接遷移）', '入口')
-    C('menu', '信用調査サービスメニュー')
-    C('s1', '調査対象先入力およびレポート種類決定', '申込（共通画面）')
-    C('s2a', '貴社連絡先の入力', '申込（共通画面）')
-    C('s2b', 'お申し込み（貴社連絡先の入力）', '申込（共通画面）')
-    C('s3', 'お申し込み内容の確認', '申込（共通画面）')
-    C('s4', 'お申し込み完了', '申込（共通画面）')
-    C('file', '信用調書管理ファイル')
-    C('fileOs', '信用調書管理ファイル（海外）')
-    C('pdf', 'PDFが表示されない場合')
-    C('seme', '中国企業攻めモン')
-    C('semeD', '中国企業攻めモン（企業詳細）')
-    C('compl', '簡易版コンプラチェック')
-    C('guard', '画面遷移ガード', 'エラー・ガード')
-    C('err', 'エラー画面', 'エラー・ガード')
-    C('errRm', 'エラー画面（RM会員）', 'エラー・ガード')
-    C('e404', '404画面', 'エラー・ガード')
-    for i, c in [('hdr', '共通ヘッダ'), ('ftr', '共通フッタ'), ('exjHdr', 'exj共通レイアウト（ヘッダ）'),
-                 ('step', '共通部品（ステップ表示）'), ('title', '共通部品（タイトルバー）'),
-                 ('inPart', '申込入力画面（共通部品）'), ('cfPart', '申込確認画面（共通部品）')]:
-        C(i, c, '共通部品（全画面に配置）')
-    for i, c in [('srv', 'サーバ共通処理'), ('net', '通信共通処理'), ('sess', 'セッション管理')]:
-        C(i, c, '非画面（処理）')
-    for j in ['jLimo', 'jRm', 'jFna', 'jS3']:
-        t.edge('entry', j)
-    for j in ['jLimo', 'jRm', 'jFna']:
-        t.edge(j, 'menu', 'SSO')
-    t.edge('jS3', 's3', '直接遷移')
-    t.edge('menu', 's1', 'Step1')
-    t.edge('s1', 's2a', 'Step2')
-    t.edge('s1', 's2b', 'Step2')
-    t.edge('s2a', 's3', 'Step3')
-    t.edge('s2b', 's3', 'Step3')
-    t.edge('s3', 's4', 'Step4')
-    t.edge('menu', 'file')
-    t.edge('menu', 'fileOs', '非会員')
-    t.edge('file', 'pdf', dotted=True)
-    t.edge('menu', 'seme')
-    t.edge('seme', 'semeD')
-    t.edge('menu', 'compl')
-    t.edge('s1', 'inPart', dotted=True)
-    t.edge('s3', 'cfPart', dotted=True)
-    t.edge('guard', 'err', '不正遷移')
-    t.edge('menu', 'hdr', dotted=True)
-    t.edge('hdr', 'ftr', dotted=True)
-    t.edge('hdr', 'exjHdr', dotted=True)
-    t.edge('hdr', 'title', dotted=True)
-    t.edge('inPart', 'step', dotted=True)
-    t.edge('err', 'errRm', dotted=True)
-    t.edge('err', 'e404', dotted=True)
-    t.edge('srv', 'net', dotted=True)
-    t.edge('net', 'sess', dotted=True)
-    return t
-
-
-def base_extra():
-    def fuan(t, rest, kanri, menu):
-        t.edge(rest['中国企業不安情報（検索）'], rest['中国企業不安情報（詳細）'])
-        t.edge(rest['中国企業不安情報（詳細）'], rest['信用調書管理ファイル'], '変動通知ボタン', dotted=True) if '信用調書管理ファイル' in rest else None
-
-    def seme(t, rest, kanri, menu):
-        k = [c for c in rest if '企業検索' in c][0]
-        for c, i in rest.items():
-            if c != k:
-                t.edge(rest[k], i)
-
-    def hendo(t, rest, kanri, menu):
-        info = rest['変動通知情報（信用調書管理ファイル）']
-        t.edge(info, rest['変動通知申込（お申し込み内容の確認）'], '申込')
-        t.edge(rest['変動通知申込（お申し込み内容の確認）'], rest['変動通知申込完了（お申し込み完了）'])
-        t.edge(info, rest['変動通知再開（お申し込み内容の確認）'], '再開')
-        t.edge(info, rest['変動通知メール受信設定（全社適用）'], dotted=True)
-        t.edge(rest['変動通知申込（お申し込み内容の確認）'], rest['サーバAPI（/apply/monitor）'], 'API', dotted=True)
-    return {'中国企業不安情報': fuan, '中国企業攻めモン': seme, '中国日系企業攻めモン': seme, '変動通知': hendo}
-
-
 # ════ wreport_admin_base ══════════════════════════════════════
 def admin_common(cnt):
     t = Tab('共通（主干）')
@@ -421,12 +339,9 @@ DESC = ('- ノード＝ケースの「大分類×中分類」。ノード内の�
         '- 遷移（矢印）はケースに情報が無いため、ソースコードと既存 system_flow.md から推定。点線＝補助遷移・付属関係。')
 
 os.makedirs(OUT, exist_ok=True)
-bc = load('wreport_base')
-base_cr = {'MENU': '信用調査サービスメニュー', 'S1': '調査対象先入力およびレポート種類決定', 'S2': 'お申し込み（貴社連絡先の入力）',
-           'S3': 'お申し込み内容の確認', 'S4': 'お申し込み完了'}
-bt = render('wreport_base', '海外調書利用者システム', base_common(bc), product_tabs(bc, base_cr, base_extra()), bc, DESC)
 ac = load('wreport_admin_base')
-admin_cr = dict(base_cr, S1='お申し込み（調査対象先入力およびレポート種類決定）')
+admin_cr = {'MENU': '信用調査サービスメニュー', 'S1': 'お申し込み（調査対象先入力およびレポート種類決定）', 'S2': 'お申し込み（貴社連絡先の入力）',
+            'S3': 'お申し込み内容の確認', 'S4': 'お申し込み完了'}
 at = render('wreport_admin_base', '海外調書管理システム', admin_common(ac), product_tabs(ac, admin_cr, admin_extra()), ac, DESC)
 
 # 確認用 HTML（mermaid CDN）
@@ -434,7 +349,7 @@ html = ['<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>Case 
         '<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>',
         '<style>body{font-family:sans-serif;margin:16px}h2{border-bottom:2px solid #333;margin-top:40px}h3{margin-top:28px}.mermaid{overflow-x:auto}</style>',
         '</head><body><h1>ケース準拠 画面遷移図（初稿プレビュー）</h1>']
-for name, title, tabs, cnt in [('wreport_base', '海外調書利用者システム', bt, bc), ('wreport_admin_base', '海外調書管理システム', at, ac)]:
+for name, title, tabs, cnt in [('wreport_admin_base', '海外調書管理システム', at, ac)]:
     html.append(f'<h2>{title}（{name}）</h2>')
     for i, t in enumerate(tabs):
         html.append(f'<h3>{i}. {t.title}</h3><pre class="mermaid">{mermaid(t, cnt)}</pre>')
@@ -450,7 +365,19 @@ def tab_json(t):
             'edges': [[a, b, lab, *([True] if d else [])] for a, b, lab, d in t.edges]}
 
 
-data = {'wreport_base': [tab_json(t) for t in bt], 'wreport_admin_base': [tab_json(t) for t in at]}
+data = {'wreport_admin_base': [tab_json(t) for t in at]}
+
+# 利用者システムは入口別ツリー（entry_tree.py）。確認用 MD も出す
+sys.path.insert(0, HERE)
+import entry_tree
+base_rows = []
+for i, l in enumerate(open(os.path.join(S, 'wreport_base_combos.tsv'), encoding='utf-8')):
+    if i == 0:
+        continue
+    c, d, m, sm, f = (l.rstrip('\n').split('\t') + [''] * 5)[:5]
+    base_rows.append((int(c), {'大': d, '中': m, '小': sm, '機': f}))
+print('[wreport_base] uncovered =', entry_tree.write_draft(base_rows, os.path.join(OUT, 'entry_flow_wreport_base.md')))
+entry = {'wreport_base': entry_tree.to_json()}
 J = lambda o: json.dumps(o, ensure_ascii=False)
 lines = ['{']
 for sysname, tabs in data.items():
@@ -470,5 +397,7 @@ body = chr(10).join(lines)
 open(TS_OUT, 'w', encoding='utf-8', newline='\n').write(
     '// TestCase Library のフロー表示用データ（ケースの 大分類×中分類 を1ノードとする画面遷移図）。\n'
     '// scripts/library-flow/gen_flow.py で生成（手で編集しない）。遷移（edges）はケースに情報が無いため、ソースと既存 system_flow.md から推定。\n'
-    "import type { FlowTab } from '../utils/libraryFlow';\n\n"
-    f'export const LIBRARY_FLOWS: Record<string, FlowTab[]> = {body};\n')
+    "import type { EntryTab, FlowTab } from '../utils/libraryFlow';\n\n"
+    f'export const LIBRARY_FLOWS: Record<string, FlowTab[]> = {body};\n\n'
+    '// 利用者システムの入口別ツリー（scripts/library-flow/entry_tree.py）。ノードの条件でケースを割り当てる\n'
+    f'export const LIBRARY_ENTRY_TREES: Record<string, EntryTab[]> = {json.dumps(entry, ensure_ascii=False, indent=1)};\n')

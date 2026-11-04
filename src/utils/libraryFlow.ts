@@ -72,3 +72,126 @@ export function buildTree(tab: FlowTab): TreeSection[] {
   });
   return sections.filter((s) => s.roots.length > 0);
 }
+
+// ── 表示用の共通ツリー ───────────────────────────────
+// 入口別ツリー (EntryTab) も、遷移図から作った木 (buildTree) も、この形にそろえて描画・集計する。
+// 条件のキー：大 中 小 機 = 完全一致、小~ = 小分類に含む、小^ = 小分類が前方一致
+export type Rule = Partial<Record<'大' | '中' | '小' | '機' | '小~' | '小^', string>>;
+export type Tone = 'entry' | 'menu' | 'screen' | 'action' | 'shared';
+export type EntryNode = {
+  id: string;           // タブ内のパス (親の id + '.' + 連番)。祖先は id の前方一致で求まる
+  label: string;
+  tone: Tone;
+  own?: Rule[];
+  com?: Rule[];         // 大分類=共通 側。件数を「n件＋共通m件」で出す
+  rest?: boolean;       // 画面の残り：兄弟の機能ノード (tone=action) に当たるケースを除く
+  note?: string;
+  edgeLabel?: string;   // 親からの遷移ラベル (Step1 など)
+  dotted?: boolean;
+  ref?: boolean;        // 別の場所で展開済みの画面への参照
+  kids?: EntryNode[];
+};
+export type EntryTab = { title: string; roots: EntryNode[] };
+export type ViewTab = { title: string; sections: { title: string | null; roots: EntryNode[] }[] };
+
+const FIELD = { '大': '大分類', '中': '中分類', '小': '小分類', '機': '機能名' } as const;
+const val = (r: CaseLike, k: keyof typeof FIELD) => (r[FIELD[k]] || '').trim();
+
+export function ruleHit(r: CaseLike, rule: Rule): boolean {
+  for (const [k, v] of Object.entries(rule) as [keyof Rule, string][]) {
+    if (k === '小~') { if (!val(r, '小').includes(v)) return false; }
+    else if (k === '小^') { if (!val(r, '小').startsWith(v)) return false; }
+    else if (val(r, k) !== v) return false;
+  }
+  return true;
+}
+
+export const entryToView = (t: EntryTab): ViewTab => ({ title: t.title, sections: [{ title: null, roots: t.roots }] });
+
+// 遷移図 (大分類×中分類 ノード) の木を表示用ツリーへ。色は中分類の名前とグループで決める
+export function graphToView(tab: FlowTab): ViewTab {
+  const groupOf = new Map(tab.groups.flatMap((g) => g.nodes.map((n) => [n.id, g.title] as const)));
+  const tone = (n: FlowNode): Tone => {
+    if (n.shared) return 'shared';
+    if (/メニュー|ログイン$|サービス$/.test(n.chu)) return 'menu';
+    if (/入口|連携ジャンプ|認証連携/.test(n.chu)) return 'entry';
+    if (/非画面|共通部品/.test(groupOf.get(n.id) || '')) return 'action';
+    return 'screen';
+  };
+  const conv = (x: TreeItem, id: string): EntryNode => ({
+    id,
+    label: (x.node.shared ? '［共通］' : '') + x.node.chu,
+    tone: tone(x.node),
+    own: [{ '大': x.node.dai, '中': x.node.chu }],
+    edgeLabel: x.label || undefined,
+    dotted: x.dotted || undefined,
+    ref: x.ref || undefined,
+    kids: x.children.map((c, i) => conv(c, `${id}.${i}`)),
+  });
+  return {
+    title: tab.title,
+    sections: buildTree(tab).map((s, si) => ({ title: s.title, roots: s.roots.map((r, ri) => conv(r, `s${si}r${ri}`)) })),
+  };
+}
+
+export const walkNodes = (nodes: EntryNode[], f: (n: EntryNode, siblings: EntryNode[]) => void): void =>
+  nodes.forEach((n) => { f(n, nodes); walkNodes(n.kids || [], f); });
+
+export type NodeCases<T> = { own: T[]; com: T[] };
+
+// 条件 → 当たる行番号。絞り込みのたびに呼ばれるので、行の値の trim は1回だけ行い、
+// 完全一致のキー (中 / 機 / 大) で索引を引いて候補だけを判定する
+function ruleIndex(rows: CaseLike[]) {
+  const norm = rows.map((r) => ({ '大分類': val(r, '大'), '中分類': val(r, '中'), '小分類': val(r, '小'), '機能名': val(r, '機') }));
+  const index = new Map<string, number[]>();
+  norm.forEach((r, i) => {
+    for (const k of ['大', '中', '機'] as const) {
+      const key = `${k}\u0000${r[FIELD[k]]}`;
+      if (!index.has(key)) index.set(key, []);
+      index.get(key)!.push(i);
+    }
+  });
+  const all = norm.map((_, i) => i);
+  const memo = new Map<string, Set<number>>();
+  return (rules?: Rule[]): Set<number> => {
+    if (!rules) return new Set();
+    const mk = JSON.stringify(rules);
+    let s = memo.get(mk);
+    if (!s) {
+      s = new Set();
+      for (const rule of rules) {
+        const k = (['中', '機', '大'] as const).find((x) => rule[x] !== undefined);
+        for (const i of k ? index.get(`${k}\u0000${rule[k]}`) || [] : all) if (ruleHit(norm[i], rule)) s.add(i);
+      }
+      memo.set(mk, s);
+    }
+    return s;
+  };
+}
+
+function casesOf<T extends CaseLike>(tab: ViewTab, rows: T[], hits: ReturnType<typeof ruleIndex>) {
+  const out = new Map<string, NodeCases<T>>();
+  walkNodes(tab.sections.flatMap((s) => s.roots), (n, siblings) => {
+    const exclude = [...(n.kids || []), ...(n.rest ? siblings.filter((s) => s.tone === 'action') : [])].map((k) => hits(k.own));
+    const own: T[] = [];
+    for (const i of hits(n.own)) if (!exclude.some((e) => e.has(i))) own.push(rows[i]);
+    out.set(n.id, { own, com: [...hits(n.com)].map((i) => rows[i]) });
+  });
+  return out;
+}
+
+// 各ノードのケース。ノード = 条件に当たるケース − 直下の子が持つケース (画面＝残り)
+export function nodeCases<T extends CaseLike>(tab: ViewTab, rows: T[]): Map<string, NodeCases<T>> {
+  return casesOf(tab, rows, ruleIndex(rows));
+}
+
+// どのタブのノードにも出ないケース
+export function unassignedOf<T extends CaseLike & { id: string }>(tabs: ViewTab[], rows: T[]): T[] {
+  const hits = ruleIndex(rows);
+  const seen = new Set<string>();
+  for (const t of tabs) for (const c of casesOf(t, rows, hits).values()) for (const r of [...c.own, ...c.com]) seen.add(r.id);
+  return rows.filter((r) => !seen.has(r.id));
+}
+
+// ノード自身とその祖先 (login からの経路)
+export const pathIds = (id: string) => id.split('.').map((_, i, a) => a.slice(0, i + 1).join('.'));

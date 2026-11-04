@@ -9,8 +9,8 @@ import {
 } from './testcaseFields';
 import CasePicker, { type CaseCandidate } from './CasePicker';
 import LibraryFlow from './LibraryFlow';
-import { LIBRARY_FLOWS } from '../data/libraryFlows';
-import { caseKey, nodeKey, unassignedRows, type FlowNode } from '../utils/libraryFlow';
+import { LIBRARY_ENTRY_TREES, LIBRARY_FLOWS } from '../data/libraryFlows';
+import { entryToView, graphToView, nodeCases, pathIds, unassignedOf, type ViewTab } from '../utils/libraryFlow';
 
 const SYSTEM_DISPLAY_NAME: Record<string, string> = {
   wreport_admin_base: '海外調書管理システム',
@@ -160,10 +160,16 @@ function LibraryList({ system }: { system: string }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [copyOpen, setCopyOpen] = useState(false);
   // フロー表示 (画面遷移図のあるシステムのみ)。絞り込み・選択は一覧表示と共有する
-  const flowTabs = LIBRARY_FLOWS[system];
+  // 利用者システムは入口別ツリー、それ以外は画面遷移図をツリーにしたもの
+  const flowTabs = useMemo<ViewTab[] | undefined>(
+    () => LIBRARY_ENTRY_TREES[system]?.map(entryToView) ?? LIBRARY_FLOWS[system]?.map(graphToView),
+    [system],
+  );
   const [mode, setMode] = useState<'list' | 'flow'>('list');
   const [flowTab, setFlowTab] = useState(0);
-  const [flowNode, setFlowNode] = useState<FlowNode | 'unassigned' | null>(null);
+  // 選択中のノード (複数可)。表は選択ノードのケースの和集合
+  const [flowSel, setFlowSel] = useState<Set<string>>(new Set());
+  const [showUnassigned, setShowUnassigned] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -219,21 +225,38 @@ function LibraryList({ system }: { system: string }) {
     return arr;
   }, [filtered, sort]);
 
-  const unassigned = useMemo(() => (flowTabs ? unassignedRows(sorted, flowTabs) : []), [sorted, flowTabs]);
+  const unassigned = useMemo(
+    () => (flowTabs && mode === 'flow' ? unassignedOf(flowTabs, sorted) : []),
+    [flowTabs, mode, sorted],
+  );
+  const flowCases = useMemo(
+    () => (flowTabs && mode === 'flow' && flowTabs[flowTab] ? nodeCases(flowTabs[flowTab], sorted) : new Map()),
+    [flowTabs, flowTab, mode, sorted],
+  );
 
-  // 表に出す行：フロー表示では選んだノードのケースだけ
+  // 表に出す行：フロー表示では選んだノードのケースの和集合 (並びは一覧と同じ)
   const visible = useMemo(() => {
     if (mode !== 'flow') return sorted;
-    if (flowNode === 'unassigned') return unassigned;
-    if (!flowNode) return [];
-    const k = nodeKey(flowNode.dai, flowNode.chu);
-    return sorted.filter((r) => caseKey(r) === k);
-  }, [mode, sorted, flowNode, unassigned]);
+    if (showUnassigned) return unassigned;
+    const ids = new Set<string>();
+    for (const id of flowSel) {
+      const c = flowCases.get(id);
+      if (c) for (const r of [...c.own, ...c.com]) ids.add(r.id);
+    }
+    return sorted.filter((r) => ids.has(r.id));
+  }, [mode, sorted, flowSel, flowCases, showUnassigned, unassigned]);
 
-  const selectFlowNode = (n: FlowNode | 'unassigned') => {
-    setFlowNode(n);
+  const changeFlowSel = (f: (prev: Set<string>) => Set<string>) => {
+    setShowUnassigned(false);
+    setFlowSel(f);
     setDetailIndex(-1);
   };
+  const toggleFlowNode = (id: string) => changeFlowSel((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const selectFlowPath = (id: string) => changeFlowSel((prev) => new Set([...prev, ...pathIds(id)]));
 
   const toggleSort = (col: string) => {
     setSort((prev) => {
@@ -388,23 +411,33 @@ function LibraryList({ system }: { system: string }) {
           <LibraryFlow
             tabs={flowTabs}
             tabIndex={flowTab}
-            onTab={(i) => { setFlowTab(i); setFlowNode(null); setDetailIndex(-1); }}
-            rows={sorted}
-            selectedId={flowNode && flowNode !== 'unassigned' ? flowNode.id : null}
-            onSelect={selectFlowNode}
+            onTab={(i) => { setFlowTab(i); changeFlowSel(() => new Set()); }}
+            cases={flowCases}
+            selected={flowSel}
+            onToggle={toggleFlowNode}
+            onPath={selectFlowPath}
           />
           <div className="flex items-center gap-3 flex-wrap text-sm">
             <span className="text-neutral-600">
-              {flowNode === 'unassigned'
-                ? '未割当ケース（どのノードにも該当しない 大分類×中分類）'
-                : flowNode
-                  ? <>選択中のノード：<b className="text-neutral-900">{flowNode.shared ? '［共通］' : `${flowNode.dai} / `}{flowNode.chu}</b></>
+              {showUnassigned
+                ? '未割当ケース（どのノードにも該当しないケース）'
+                : flowSel.size > 0
+                  ? <>選択中のノード <b className="tabular-nums text-neutral-900">{flowSel.size}</b> 個（ケース {visible.length} 件）</>
                   : 'ノードを選択してください'}
             </span>
+            {(flowSel.size > 0 || showUnassigned) && (
+              <button
+                type="button"
+                onClick={() => changeFlowSel(() => new Set())}
+                className="text-xs text-neutral-500 hover:text-neutral-800"
+              >
+                ノード選択をクリア
+              </button>
+            )}
             {unassigned.length > 0 && (
               <button
                 type="button"
-                onClick={() => selectFlowNode('unassigned')}
+                onClick={() => { changeFlowSel(() => new Set()); setShowUnassigned(true); }}
                 className="ml-auto px-3 py-1 text-xs text-amber-700 border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100"
               >
                 未割当ケース {unassigned.length} 件
@@ -475,7 +508,7 @@ function LibraryList({ system }: { system: string }) {
                 <tr>
                   <td colSpan={LIST_COLUMNS.length + 1} className="px-3 py-12 text-center text-sm text-neutral-400">
                     {mode === 'flow'
-                      ? (flowNode ? '関連ケースなし' : 'フロー図のノードをクリックすると、関連するケースを表示します')
+                      ? (flowSel.size > 0 || showUnassigned ? '関連ケースなし' : 'フロー図のノードをクリックすると、関連するケースを表示します')
                       : '該当するケースがありません'}
                   </td>
                 </tr>

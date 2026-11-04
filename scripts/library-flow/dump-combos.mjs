@@ -1,5 +1,5 @@
 /**
- * TestCase Library の Notion DB から「大分類×中分類×機能名」ごとの件数を取り、
+ * TestCase Library の Notion DB から「大分類×中分類×小分類×機能名」ごとの件数を取り、
  * combos/{system}_combos.tsv に保存する (gen_flow.py / check.ts の入力)。
  *
  * 使い方 (リポジトリ直下で、.env に NOTION_API_KEY / NOTION_TESTCASE_LIBRARY_PARENT_ID が必要):
@@ -45,7 +45,7 @@ for (const name of SYSTEMS) {
   } while (cur);
   const m = new Map();
   for (const p of pages) {
-    const k = ['大分類', '中分類', '機能名'].map((f) => text(p.properties[f]).trim()).join('\t');
+    const k = ['大分類', '中分類', '小分類', '機能名'].map((f) => text(p.properties[f]).trim()).join('\t');
     m.set(k, (m.get(k) || 0) + 1);
   }
   const lines = [...m].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([k, v]) => `${v}\t${k}`);
