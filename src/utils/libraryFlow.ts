@@ -75,8 +75,10 @@ export function buildTree(tab: FlowTab): TreeSection[] {
 
 // ── 表示用の共通ツリー ───────────────────────────────
 // 入口別ツリー (EntryTab) も、遷移図から作った木 (buildTree) も、この形にそろえて描画・集計する。
-// 条件のキー：大 中 小 機 = 完全一致、小~ = 小分類に含む、小^ = 小分類が前方一致
-export type Rule = Partial<Record<'大' | '中' | '小' | '機' | '小~' | '小^', string>>;
+// 条件のキー：列（大 中 小 機）＋演算子。演算子なし＝完全一致、~ ＝含む、^ ＝前方一致、$ ＝後方一致、
+//   !~ ＝「|」区切りのどれも含まない。$ は「A または B」の未確定値（修正案の貼り付け）には当てない
+type Field = '大' | '中' | '小' | '機';
+export type Rule = Partial<Record<Field | `${Field}${'~' | '^' | '$' | '!~'}`, string>>;
 export type Tone = 'entry' | 'menu' | 'screen' | 'action' | 'shared';
 export type EntryNode = {
   id: string;           // タブ内のパス (親の id + '.' + 連番)。祖先は id の前方一致で求まる
@@ -99,9 +101,13 @@ const val = (r: CaseLike, k: keyof typeof FIELD) => (r[FIELD[k]] || '').trim();
 
 export function ruleHit(r: CaseLike, rule: Rule): boolean {
   for (const [k, v] of Object.entries(rule) as [keyof Rule, string][]) {
-    if (k === '小~') { if (!val(r, '小').includes(v)) return false; }
-    else if (k === '小^') { if (!val(r, '小').startsWith(v)) return false; }
-    else if (val(r, k) !== v) return false;
+    const x = val(r, k[0] as Field);
+    const op = k.slice(1);
+    if (op === '~') { if (!x.includes(v)) return false; }
+    else if (op === '^') { if (!x.startsWith(v)) return false; }
+    else if (op === '$') { if (!x.endsWith(v) || x.includes(' または ')) return false; }
+    else if (op === '!~') { if (v.split('|').some((w) => x.includes(w))) return false; }
+    else if (x !== v) return false;
   }
   return true;
 }

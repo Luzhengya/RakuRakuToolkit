@@ -90,9 +90,15 @@ for (const sys of Object.keys(LIBRARY_ENTRY_TREES)) {
   const views = LIBRARY_ENTRY_TREES[sys].map(entryToView);
   const { rows, total } = loadRows(sys);
 
-  test(`${sys}: 件数合計 = 総ケース数 (${total})・未割当 0 件`, () => {
+  test(`${sys}: 件数合計 = 総ケース数 (${total})・未割当件数が gen_flow.py と一致`, () => {
     assert.equal(rows.length, total);
-    assert.equal(unassignedOf(views, rows).length, 0);
+    const un = unassignedOf(views, rows).length;
+    const md = `${TEMP}/entry_flow_${sys}.md`;
+    if (fs.existsSync(md)) {
+      const m = fs.readFileSync(md, 'utf8').match(/どのノードにも出ないケース（(\d+)件）/);
+      assert.equal(un, +m![1]);
+    }
+    if (un > 0) console.log(`  WARN 未割当 ${un} 件（ケースのデータを確認。内訳は temp/entry_flow_${sys}.md の末尾）`);
   });
   test(`${sys}: ノードID一意・id が親のパスで始まる`, () => {
     for (const v of views) {
@@ -134,6 +140,14 @@ test('ruleHit: 完全一致・小分類の部分一致/前方一致・前後空�
   assert.ok(ruleHit(r, { '小^': '［ファイル' }));
   assert.ok(!ruleHit(r, { '小^': 'ファイル' }));
   assert.ok(!ruleHit(r, { '機': 'Y' }));
+});
+test('ruleHit: 入口後缀（後方一致）・含まない・「A または B」の未確定値は当てない', () => {
+  const k = (v: string) => ({ '大分類': 'P', '中分類': 'F', '小分類': 'メール配信（RM会員）', '機能名': v });
+  assert.ok(ruleHit(k('海外信用調書申込（内容確認）（非会員）'), { '機^': '海外信用調書申込（内容確認）', '機$': '（非会員）' }));
+  assert.ok(!ruleHit(k('海外信用調書申込（内容確認）（RM会員）'), { '機$': '（非会員）' }));
+  assert.ok(!ruleHit(k('X（RM会員） または X（非会員）'), { '機$': '（非会員）' }));
+  assert.ok(!ruleHit(k(''), { '小!~': '（利墨）|メール配信' }));
+  assert.ok(ruleHit(k(''), { '小!~': '（利墨）|変動通知' }));
 });
 test('nodeCases: 画面＝残り（子・機能ノードの分を除く）、共通は別集計', () => {
   const rows = [

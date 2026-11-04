@@ -1,17 +1,23 @@
 # 利用者システム（wreport_base）の入口別フロー（ツリー）定義。gen_flow.py から読み込む。
 # ノード：label / own=条件 / com=大分類=共通 側の条件（件数を「n件＋共通m件」で出す） / fn=画面内の機能 / rest / kids
-# 条件 dict のキー：大 中 小 機 = 完全一致、小~ = 小分類に含む、小^ = 小分類が前方一致
+# 条件 dict のキー：列（大 中 小 機）＋演算子。演算子なし＝完全一致、~ ＝含む、^ ＝前方一致、$ ＝後方一致、
+#   !~ ＝「|」区切りのどれも含まない。$ は「A または B」の未確定値（修正案の貼り付け）には当てない
 # ノードのケース = 条件に当たるケース − 直下の子が持つケース。rest ノードは兄弟の機能ノード分も除く（画面＝残り）
 import collections
 
 
 def hit(r, rule):
     for k, v in rule.items():
-        if k == '小~':
-            if v not in r['小']: return False
-        elif k == '小^':
-            if not r['小'].startswith(v): return False
-        elif r[k] != v:
+        x, op = r[k[0]], k[1:]
+        if op == '~':
+            if v not in x: return False
+        elif op == '^':
+            if not x.startswith(v): return False
+        elif op == '$':
+            if not x.endswith(v) or ' または ' in x: return False
+        elif op == '!~':
+            if any(w in x for w in v.split('|')): return False
+        elif x != v:
             return False
     return True
 
@@ -32,20 +38,29 @@ def C(**kw):
     return out
 
 
+# RM会員・非会員の case は機能名の末尾の入口後缀で分ける（RM会員 と 非会員 で別の case）
+SUF = {'RM会員': '（RM会員）', '非会員': '（非会員）'}
+
+
+def E(rule, ent):
+    """ent があれば機能名の入口後缀を条件に加える"""
+    return dict(rule, **{'機$': SUF[ent]}) if ent else rule
+
+
 # ── 申込チェーン ────────────────────────────────
-def chain(prod, s1_chu, old_chu, s2c, s3c, s4c, s1_fns=(), s1_extra=(), detail=None):
+def chain(prod, s1_chu, old_chu, s2c, s3c, s4c, s1_fns=(), s1_extra=(), detail=None, ent=None):
     """商品ノード配下：Step1→2→3→4 と 旧の申込画面→2→3→4"""
     def tail():
-        s2 = N('お申し込み（貴社連絡先の入力）', own=[C(大=prod, 中=x) for x in ['貴社連絡先の入力', 'お申し込み（貴社連絡先の入力）']], com=s2c)
-        s3 = N('お申し込み内容の確認', own=[C(大=prod, 中='お申し込み内容の確認')], com=s3c)
-        s4 = N('お申し込み完了', own=[C(大=prod, 中='お申し込み完了')], com=s4c)
+        s2 = N('お申し込み（貴社連絡先の入力）', own=[E(C(大=prod, 中='お申し込み（貴社連絡先の入力）'), ent)], com=s2c)
+        s3 = N('お申し込み内容の確認', own=[E(C(大=prod, 中='お申し込み内容の確認'), ent)], com=s3c)
+        s4 = N('お申し込み完了', own=[E(C(大=prod, 中='お申し込み完了'), ent)], com=s4c)
         s3['kids'] = [s4]; s2['kids'] = [s3]
         return s2
-    s1 = N('お申し込み（調査対象先入力およびレポート種類決定）', own=[C(大=prod, 中=x) for x in s1_chu] + list(s1_extra),
+    s1 = N('お申し込み（調査対象先入力およびレポート種類決定）', own=[E(C(大=prod, 中=x), ent) for x in s1_chu] + list(s1_extra),
            kids=list(s1_fns) + [tail()])
     kids = [s1]
     if old_chu:
-        kids.append(N('旧の申込画面（以前の入力フォーム）', own=[C(大=prod, 中=x) for x in old_chu], kids=[tail()]))
+        kids.append(N('旧の申込画面（以前の入力フォーム）', own=[E(C(大=prod, 中=x), ent) for x in old_chu], kids=[tail()]))
     if detail:
         kids.append(detail)
     return kids
@@ -54,17 +69,20 @@ def chain(prod, s1_chu, old_chu, s2c, s3c, s4c, s1_fns=(), s1_extra=(), detail=N
 LM_S2 = [C(大='共通', 機='信用調査申込（貴社連絡先の入力）')]
 LM_S3 = [C(大='共通', 機='信用調査申込（お申し込み内容の確認）'), C(大='共通', 機='信用調査申込（申込確定・登録処理）')]
 LM_S4 = [C(大='共通', 機='信用調査申込（お申し込み完了）')]
-J_S2 = [C(大='共通', 機='海外信用調書申込（貴社連絡先の入力）'), C(大='共通', 機='海外信用調書申込（貴社連絡先入力）')]
-J_S3 = [C(大='共通', 機='海外信用調書申込（内容確認）')]
-J_S4 = [C(大='共通', 機='海外信用調書申込（申込完了）')]
-S1 = '調査対象先入力およびレポート種類決定'
+J_S = lambda prefix, ent: [{'大': '共通', '機^': prefix, '機$': SUF[ent]}]
+J_S2 = lambda ent: J_S('海外信用調書申込（貴社連絡先', ent)  # 「の入力」「入力」の両方
+J_S3 = lambda ent: J_S('海外信用調書申込（内容確認）', ent)
+J_S4 = lambda ent: J_S('海外信用調書申込（申込完了）', ent)
+S1 = 'お申し込み（調査対象先入力およびレポート種類決定）'
 OLD = '調査対象先入力およびレポート種類決定（以前の入力フォーム）'
-OLD2 = '調査対象先入力およびレポート種類決定（以前の入力フォームで入力）'
 
 TOP_LM = C(大='共通', 機='サービスメニュー（TOPページ）')
 TOP_J = C(大='共通', 機='信用調査サービスメニュー（J入口TOP）')
 TOP_X = C(大='共通', 機='海外信用調査サービスメニュー（非会員）')
 KANRI = C(大='共通', 中='信用調書管理ファイル', 機='信用調書管理ファイル')
+KANRI_LM = dict(KANRI, **{'小!~': '（RM会員）'})
+# RM会員 には 変動通知・簡易版コンプラチェック・不安情報・メール配信 は無い（（RM会員）付きは除く）
+KANRI_RM = [dict(KANRI, **{'小~': '（RM会員）'}), dict(KANRI, **{'小!~': '（RM会員）|（利墨）|変動通知|簡易版コンプラ|不安情報|メール配信|再開'})]
 KANRI_X = C(中='信用調書管理ファイル（海外）', 機='信用調書管理ファイル検索（非会員）')
 
 
@@ -75,10 +93,10 @@ def kanri_fns(base):
 
 # ════ 利墨 ════
 lm_products = [
-    ('１．中国企業信用調査サービス', '中国信用調書（RM格付有）', [S1], [OLD2], ['１．', '一括申込依頼書（中国企業信用調査）'], ()),
+    ('１．中国企業信用調査サービス', '中国信用調書（RM格付有）', [S1], [OLD], ['１．', '一括申込依頼書（中国企業信用調査）'], ()),
     ('２．中国企業簡易情報ナビ', '中国企業簡易情報ナビ', [S1], [OLD], ['２．', '一括申込依頼書（中国企業簡易情報ナビ）', '簡易情報ナビ サンプルPDF'], ()),
     ('３．中国企業コンプラチェックレポート', '中国企業コンプラチェックレポート', [S1], [OLD], ['３．', 'コンプラチェック サンプルPDF'], ()),
-    ('４．海外信用調書', '海外信用調書', [S1], [OLD2], ['４．', '海外信用調書 サンプルPDF'],
+    ('４．海外信用調書', '海外信用調書', [S1], [OLD], ['４．', '海外信用調書 サンプルPDF'],
      [F('企業検索', C(大='海外信用調書', 機='海外信用調書申込（企業検索）')),
       F('企業情報資料アップロード', C(大='海外信用調書', 中=S1, 機='海外信用調書申込（企業情報資料アップロード）')),
       F('確認事項', C(大='海外信用調書', 機='海外信用調書申込（確認事項）'))]),
@@ -93,12 +111,12 @@ def lm_product(label, prod, s1, old, top_keys, fns):
 
 
 lm_kanri = N('信用調書管理ファイル', own=[dict(TOP_LM, 小='［信用調書管理ファイル］')], kids=[
-    N('検索', own=[KANRI], rest=True, note='信用調書管理ファイル画面のうち、右の機能に当たらないケース'),
-] + kanri_fns(KANRI) + [
-    F('メール配信', dict(KANRI, **{'小~': 'メール配信'}), C(大='共通', 中='信用調書管理ファイル', 機='メール配信設定（通知リマインド）')),
-    F('簡易版コンプラチェック（遷移）', dict(KANRI, 小='簡易版コンプラチェック')),
-    F('不安情報確認', dict(KANRI, **{'小~': '不安情報'}), C(大='中国企業不安情報', 機='変動通知ボタン表示（信用調書管理ファイル）')),
-    F('変動通知（申込・確認・再開）', dict(KANRI, **{'小~': '変動通知'}), dict(KANRI, 小='再開')),
+    N('検索', own=[KANRI_LM], rest=True, note='信用調書管理ファイル画面のうち、右の機能に当たらないケース'),
+] + kanri_fns(KANRI_LM) + [
+    F('メール配信', dict(KANRI_LM, **{'小~': 'メール配信'}), C(大='共通', 中='信用調書管理ファイル', 機='メール配信設定（通知リマインド）')),
+    F('簡易版コンプラチェック（遷移）', dict(KANRI_LM, 小='簡易版コンプラチェック')),
+    F('不安情報確認', dict(KANRI_LM, **{'小~': '不安情報'}), C(大='中国企業不安情報', 機='不安情報確認ボタン表示（信用調書管理ファイル）')),
+    F('変動通知（申込・確認・再開）', dict(KANRI_LM, **{'小~': '変動通知'}), dict(KANRI_LM, 小='再開')),
 ])
 next(k for k in lm_kanri['kids'] if k['label'].startswith('変動通知'))['kids'] = [
     N('変動通知申込（お申し込み内容の確認）', own=[C(大='変動通知', 中='変動通知申込（お申し込み内容の確認）')], kids=[
@@ -124,15 +142,22 @@ LM = N('利墨 login', own=[C(中='連携ジャンプ（LIMO）', 機='LIMO連�
 ])
 
 # ════ RM会員（J系） ════
-def j_product(label, prod, top_kw, s1=(S1,), old=(OLD,), detail=None, top_src=TOP_J, s2=J_S2, s3=J_S3, s4=J_S4):
+RM3 = {'RM中国企業情報ナビ', 'RM中国簡易情報ナビ', 'RM中国企業コンプラチェックレポート'}
+
+
+def j_product(label, prod, top_kw, s1=(S1,), old=(OLD,), detail=None, top_src=TOP_J):
+    ent = 'RM会員' if top_src is TOP_J else '非会員'
     own = [dict(top_src, **{'小~': k}) for k in top_kw] if top_src is TOP_J else [C(大=prod, 機='海外信用調査サービスメニュー（非会員）')]
-    return N(label, own=own, kids=chain(prod, list(s1), list(old), s2, s3, s4, detail=detail))
+    # 商品自身の case を入口後缀で分けるのは、両入口にある RM三商品だけ（クリフ社・ACP社・AI与信 は RM会員 のみ）
+    own_ent = ent if prod in RM3 else None
+    return N(label, own=own, kids=chain(prod, list(s1), list(old), J_S2(ent), J_S3(ent), J_S4(ent), detail=detail, ent=own_ent))
 
 
-navi_detail_j = N('その他詳細', own=[C(中='RM中国企業情報ナビ その他詳細', 機='RM中国企業情報ナビ その他詳細')], note='? J/非会員の区別は推定')
-navi_detail_x = N('その他詳細', own=[C(中='RM中国企業情報ナビ その他詳細', 機='RM中国企業情報ナビ その他詳細表示')], note='? J/非会員の区別は推定')
-KANI_S1 = ['お申し込み（調査対象先入力およびレポート種類決定）', S1]
-KANI_OLD = ['お申し込み（調査対象先入力およびレポート種類決定）［以前の入力フォーム］', OLD]
+# その他詳細：「RM中国企業情報ナビ【対象国】中国のみ」の商品欄の下にある（両入口とも）
+navi_detail_j = N('その他詳細', own=[E(C(中='RM中国企業情報ナビ その他詳細'), 'RM会員')])
+navi_detail_x = N('その他詳細', own=[E(C(中='RM中国企業情報ナビ その他詳細'), '非会員')])
+KANI_S1 = [S1]
+KANI_OLD = [OLD]
 
 semen = lambda top_btn, chu_s, kino_s, kino_d, chu_d, csv: N('中国企業攻めモン', own=[top_btn], kids=[
     N('企業検索', own=[C(中=chu_s, 機=kino_s)], rest=True),
@@ -151,8 +176,8 @@ J = N('RM会員 login', own=[C(機='RM会員SSOログイン')], kids=[
         j_product('信用交換所（クリフ社） 海外信用調書', '信用交換所(クリフ社) 海外信用調書', ['クリフ社'], old=(),
                   detail=N('その他詳細', own=[C(中='CE その他詳細')])),
         j_product('信用交換所（ACP社） 海外信用調書', '信用交換所(ACP社) 海外信用調書', ['ACP社'], old=()),
-        N('信用調書管理ファイル', own=[dict(TOP_J, 小='[信用調書管理ファイル]ボタン')], kids=[N('検索', own=[KANRI], rest=True)] + kanri_fns(KANRI),
-          note='利墨と同じ画面（/searchIndex）。ケースは利墨と共用'),
+        N('信用調書管理ファイル', own=[dict(TOP_J, 小='[信用調書管理ファイル]ボタン')], kids=[N('検索', own=KANRI_RM, rest=True)] + kanri_fns(KANRI),
+          note='利墨と同じ画面（/searchIndex）。（RM会員）付きと入口共通の case。変動通知・簡易版コンプラ・不安情報・メール配信は利墨のみ'),
         semen(dict(TOP_J, 小='[中国企業攻めモン]ボタン'), '中国企業攻めモン（企業検索）', '中国企業攻めモン（企業検索）',
               '中国企業攻めモン（企業詳細）', '中国企業攻めモン（企業詳細）', True),
     ]),
