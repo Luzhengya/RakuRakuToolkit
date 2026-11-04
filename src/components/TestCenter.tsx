@@ -689,7 +689,7 @@ function buildResultReportHtml(
 
       // stats-row 直下に条件付き説明行を追加（案件名ヘッダーなし）
       const explainRows: string[] = [];
-      if (bug > 0) {
+      if (bug > 0 || unexpectedNg > 0) {
         const caseBugs = bugsByCase?.get(item.id) ?? [];
         const ngRight = caseBugs.length > 0
           ? renderCaseBugsHtml(caseBugs, bugChildMap)
@@ -764,7 +764,7 @@ function buildResultReportHtml(
 
   const reportConclusion = bugsByCase
     ? buildBugSummaryHtml(completedItems, bugsByCase)
-    : totalBugCount + totalBlockedCount + totalPendingCount > 0
+    : totalBugCount + totalUnexpectedNgCount + totalBlockedCount + totalPendingCount > 0
       ? '一部の案件でテスト不可・NG・判断不可/想定外が存在します。詳細は案件別結果をご確認ください。'
       : '全案件で重大な問題は確認されませんでした。';
   const isActualOverEstimate = totalActualEffort > totalEstimateEffort;
