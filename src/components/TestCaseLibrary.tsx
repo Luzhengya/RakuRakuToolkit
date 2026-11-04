@@ -8,28 +8,33 @@ import {
   type TcRow,
 } from './testcaseFields';
 import CasePicker, { type CaseCandidate } from './CasePicker';
+import LibraryFlow from './LibraryFlow';
+import { LIBRARY_FLOWS } from '../data/libraryFlows';
+import { caseKey, nodeKey, unassignedRows, type FlowNode } from '../utils/libraryFlow';
 
 const SYSTEM_DISPLAY_NAME: Record<string, string> = {
   wreport_admin_base: '海外調書管理システム',
+  wreport_base: '海外調書利用者システム',
   cmdb_base: 'CMDBシステム',
 };
 
 type SystemInfo = { dbId: string; dbTitle: string; hasData: boolean };
 
 const LIST_COLUMNS = [
-  'ケース番号', 'CMDB番号', '大分類', '中分類', '小分類',
+  'ケース番号', '大分類', '中分類', '小分類',
   '機能名', 'テスト内容', '正常/異常', '優先級',
 ] as const;
 
 const FILTER_FIELDS = ['機能名', '大分類', '中分類', '小分類', '正常/異常', '優先級'] as const;
 
-const PRIMARY_FIELDS = ['テスト内容', '前提条件', 'ステップ', '予期結果', '備考'] as const;
+// 詳細ダイアログ：テスト内容の直下に分類、優先級/正常異常の直下に機能名/カテゴリを置く
+const PRIMARY_FIELDS = ['前提条件', 'ステップ', '予期結果', '備考'] as const;
+const CATEGORY_FIELDS = ['大分類', '中分類', '小分類'] as const;
 const HIGHLIGHT_FIELDS = ['優先級', '正常/異常'] as const;
+const SUB_HIGHLIGHT_FIELDS = ['機能名', 'カテゴリ'] as const;
 const SECONDARY_FIELDS = [
-  'CMDB番号', '大分類', '中分類', '小分類', '機能名', '要件名',
-  'ポイント', 'カテゴリ', '状態', 'テスト結果',
-  '源', 'システム', '月次', 'バージョン',
-  '関連NO', '作成者', '作成日', '更新者', '更新日',
+  'バージョン', '関連NO', '作成者', '作成日', '更新者', '更新日', 'システム', '源',
+  'CMDB番号', '要件名', 'ポイント', '状態', 'テスト結果', '月次',
 ] as const;
 
 // コピー API の1回あたりの件数 (api の LIBRARY_COPY_BATCH_MAX と合わせる)
@@ -154,6 +159,11 @@ function LibraryList({ system }: { system: string }) {
   // TestCase へコピーするケース (ページID)。絞り込みを変えても選択は残す
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [copyOpen, setCopyOpen] = useState(false);
+  // フロー表示 (画面遷移図のあるシステムのみ)。絞り込み・選択は一覧表示と共有する
+  const flowTabs = LIBRARY_FLOWS[system];
+  const [mode, setMode] = useState<'list' | 'flow'>('list');
+  const [flowTab, setFlowTab] = useState(0);
+  const [flowNode, setFlowNode] = useState<FlowNode | 'unassigned' | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -209,6 +219,22 @@ function LibraryList({ system }: { system: string }) {
     return arr;
   }, [filtered, sort]);
 
+  const unassigned = useMemo(() => (flowTabs ? unassignedRows(sorted, flowTabs) : []), [sorted, flowTabs]);
+
+  // 表に出す行：フロー表示では選んだノードのケースだけ
+  const visible = useMemo(() => {
+    if (mode !== 'flow') return sorted;
+    if (flowNode === 'unassigned') return unassigned;
+    if (!flowNode) return [];
+    const k = nodeKey(flowNode.dai, flowNode.chu);
+    return sorted.filter((r) => caseKey(r) === k);
+  }, [mode, sorted, flowNode, unassigned]);
+
+  const selectFlowNode = (n: FlowNode | 'unassigned') => {
+    setFlowNode(n);
+    setDetailIndex(-1);
+  };
+
   const toggleSort = (col: string) => {
     setSort((prev) => {
       if (prev.col !== col) return { col, dir: 'asc' };
@@ -246,12 +272,12 @@ function LibraryList({ system }: { system: string }) {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const allFilteredSelected = sorted.length > 0 && sorted.every((r) => selected.has(r.id));
-  // 見出しのチェック：絞り込み結果を全選択／解除 (絞り込み外の選択は残す)
+  const allFilteredSelected = visible.length > 0 && visible.every((r) => selected.has(r.id));
+  // 見出しのチェック：表示中の行を全選択／解除 (表示外の選択は残す)
   const toggleAllFiltered = () => setSelected((prev) => {
     const next = new Set(prev);
-    if (allFilteredSelected) sorted.forEach((r) => next.delete(r.id));
-    else sorted.forEach((r) => next.add(r.id));
+    if (allFilteredSelected) visible.forEach((r) => next.delete(r.id));
+    else visible.forEach((r) => next.add(r.id));
     return next;
   });
   // コピーは画面の並び順 (絞り込み外の選択はライブラリの並び順) で送る
@@ -280,9 +306,25 @@ function LibraryList({ system }: { system: string }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold text-neutral-900 mb-4">
-        {SYSTEM_DISPLAY_NAME[system] || system}
-      </h2>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <h2 className="text-xl font-bold text-neutral-900">
+          {SYSTEM_DISPLAY_NAME[system] || system}
+        </h2>
+        {flowTabs && (
+          <div className="inline-flex rounded-lg border border-neutral-200 bg-white p-0.5 text-sm">
+            {(['list', 'flow'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => { setMode(m); setDetailIndex(-1); }}
+                className={`px-3 py-1 rounded-md ${mode === m ? 'bg-neutral-900 text-white' : 'text-neutral-600 hover:bg-neutral-50'}`}
+              >
+                {m === 'list' ? '一覧' : 'フロー'}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-4">
@@ -340,6 +382,38 @@ function LibraryList({ system }: { system: string }) {
         </div>
       </div>
 
+      {/* フロー表示 */}
+      {mode === 'flow' && flowTabs && (
+        <>
+          <LibraryFlow
+            tabs={flowTabs}
+            tabIndex={flowTab}
+            onTab={(i) => { setFlowTab(i); setFlowNode(null); setDetailIndex(-1); }}
+            rows={sorted}
+            selectedId={flowNode && flowNode !== 'unassigned' ? flowNode.id : null}
+            onSelect={selectFlowNode}
+          />
+          <div className="flex items-center gap-3 flex-wrap text-sm">
+            <span className="text-neutral-600">
+              {flowNode === 'unassigned'
+                ? '未割当ケース（どのノードにも該当しない 大分類×中分類）'
+                : flowNode
+                  ? <>選択中のノード：<b className="text-neutral-900">{flowNode.shared ? '［共通］' : `${flowNode.dai} / `}{flowNode.chu}</b></>
+                  : 'ノードを選択してください'}
+            </span>
+            {unassigned.length > 0 && (
+              <button
+                type="button"
+                onClick={() => selectFlowNode('unassigned')}
+                className="ml-auto px-3 py-1 text-xs text-amber-700 border border-amber-200 bg-amber-50 rounded-lg hover:bg-amber-100"
+              >
+                未割当ケース {unassigned.length} 件
+              </button>
+            )}
+          </div>
+        </>
+      )}
+
       {/* 選択中のケース */}
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-sm text-neutral-600">
@@ -377,8 +451,8 @@ function LibraryList({ system }: { system: string }) {
                     type="checkbox"
                     checked={allFilteredSelected}
                     onChange={toggleAllFiltered}
-                    disabled={sorted.length === 0}
-                    title="絞り込み結果を全選択／解除"
+                    disabled={visible.length === 0}
+                    title="表示中のケースを全選択／解除"
                   />
                 </th>
                 {LIST_COLUMNS.map((col) => (
@@ -397,13 +471,15 @@ function LibraryList({ system }: { system: string }) {
               </tr>
             </thead>
             <tbody>
-              {sorted.length === 0 ? (
+              {visible.length === 0 ? (
                 <tr>
                   <td colSpan={LIST_COLUMNS.length + 1} className="px-3 py-12 text-center text-sm text-neutral-400">
-                    該当するケースがありません
+                    {mode === 'flow'
+                      ? (flowNode ? '関連ケースなし' : 'フロー図のノードをクリックすると、関連するケースを表示します')
+                      : '該当するケースがありません'}
                   </td>
                 </tr>
-              ) : sorted.map((r, i) => (
+              ) : visible.map((r, i) => (
                 <tr
                   key={r.id}
                   className={`cursor-pointer ${selected.has(r.id) ? 'bg-emerald-50/60 hover:bg-emerald-50' : 'hover:bg-neutral-50'}`}
@@ -441,9 +517,9 @@ function LibraryList({ system }: { system: string }) {
       )}
 
       {/* Detail dialog */}
-      {detailIndex >= 0 && sorted[detailIndex] && (
+      {detailIndex >= 0 && visible[detailIndex] && (
         <LibraryDetailDialog
-          rows={sorted}
+          rows={visible}
           index={detailIndex}
           onIndex={setDetailIndex}
           onClose={() => setDetailIndex(-1)}
@@ -505,6 +581,20 @@ function LibraryDetailDialog({
         <div className="p-5 overflow-auto">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             <div className="lg:col-span-2 space-y-4">
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-neutral-700">テスト内容</p>
+                <p className="text-sm text-neutral-800 whitespace-pre-wrap border border-neutral-200 rounded-lg p-3 bg-neutral-50 min-h-[3.5rem]">
+                  {row['テスト内容'] || '-'}
+                </p>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                {CATEGORY_FIELDS.map((f) => (
+                  <div key={f} className="border border-neutral-200 rounded-lg px-3 py-2 space-y-0.5 min-w-0">
+                    <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                    <p className="text-sm text-neutral-800 break-words">{row[f] || '-'}</p>
+                  </div>
+                ))}
+              </div>
               {PRIMARY_FIELDS.map((f) => (
                 <div key={f} className="space-y-1">
                   <p className="text-xs font-bold text-neutral-700">{f}</p>
@@ -521,6 +611,12 @@ function LibraryDetailDialog({
                   <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
                     <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
                     <p className="text-lg font-bold text-neutral-900">{row[f] || '-'}</p>
+                  </div>
+                ))}
+                {SUB_HIGHLIGHT_FIELDS.map((f) => (
+                  <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5 min-w-0">
+                    <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                    <p className="text-sm font-semibold text-neutral-900 break-words">{row[f] || '-'}</p>
                   </div>
                 ))}
               </div>
