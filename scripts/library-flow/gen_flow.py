@@ -377,7 +377,7 @@ for i, l in enumerate(open(os.path.join(S, 'wreport_base_combos.tsv'), encoding=
     c, d, m, sm, f = (l.rstrip('\n').split('\t') + [''] * 5)[:5]
     base_rows.append((int(c), {'大': d, '中': m, '小': sm, '機': f}))
 print('[wreport_base] uncovered =', entry_tree.write_draft(base_rows, os.path.join(OUT, 'entry_flow_wreport_base.md')))
-entry = {'wreport_base': entry_tree.to_json()}
+entry = {'wreport_base': entry_tree.to_json(base_rows)}
 J = lambda o: json.dumps(o, ensure_ascii=False)
 lines = ['{']
 for sysname, tabs in data.items():

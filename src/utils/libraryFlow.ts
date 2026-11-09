@@ -178,10 +178,12 @@ function ruleIndex(rows: CaseLike[]) {
 function casesOf<T extends CaseLike>(tab: ViewTab, rows: T[], hits: ReturnType<typeof ruleIndex>) {
   const out = new Map<string, NodeCases<T>>();
   walkNodes(tab.sections.flatMap((s) => s.roots), (n, siblings) => {
-    const exclude = [...(n.kids || []), ...(n.rest ? siblings.filter((s) => s.tone === 'action') : [])].map((k) => hits(k.own));
-    const own: T[] = [];
-    for (const i of hits(n.own)) if (!exclude.some((e) => e.has(i))) own.push(rows[i]);
-    out.set(n.id, { own, com: [...hits(n.com)].map((i) => rows[i]) });
+    const ex = [...(n.kids || []), ...(n.rest ? siblings.filter((s) => s.tone === 'action') : [])];
+    const pick = (rules: Rule[] | undefined, key: 'own' | 'com') => {
+      const excl = ex.map((k) => hits(k[key]));
+      return [...hits(rules)].filter((i) => !excl.some((e) => e.has(i))).map((i) => rows[i]);
+    };
+    out.set(n.id, { own: pick(n.own, 'own'), com: pick(n.com, 'com') });
   });
   return out;
 }
