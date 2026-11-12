@@ -25,6 +25,7 @@ import {
   ExtractElementType,
 } from "@adobe/pdfservices-node-sdk";
 import { PassThrough } from "stream";
+import { randomBytes, timingSafeEqual } from "crypto";
 
 // Loads .env in local dev; Vercel injects env vars at runtime, dotenv.config() is a no-op there
 dotenv.config();
@@ -2298,8 +2299,29 @@ async function renderTableBlock(tableId: string): Promise<string> {
   return `<table class="notion-table">${trs}</table>`;
 }
 
-async function renderBlocksToHtml(blockId: string, depth = 0): Promise<string> {
-  if (!notion || depth > 4) return "";
+// レポート画面用のオプション。指定時のみ data-block-id 付与・Toggle/Column/Mermaid 対応・
+// ブロック一覧（批注の原文比較・孤立判定用）の収集を行う。未指定の既存呼び出しは従来どおり。
+interface ReportRenderOptions {
+  blocks: { id: string; type: string; text: string }[];
+}
+
+// 批注の原文スナップショット・変更比較に使うブロックのテキスト。文字でないブロックは種別名のみ
+function reportBlockText(type: string, c: any): string {
+  if (type === "code") {
+    return c?.language === "mermaid" ? "[Mermaid 図表]" : (c?.rich_text ?? []).map((x: any) => x.plain_text ?? "").join("");
+  }
+  if (type === "image") return "[画像]";
+  if (type === "table") return "[表]";
+  if (type === "divider") return "[区切り線]";
+  if (Array.isArray(c?.rich_text)) return c.rich_text.map((x: any) => x.plain_text ?? "").join("");
+  return `[${type}]`;
+}
+
+async function renderBlocksToHtml(blockId: string, depth = 0, report?: ReportRenderOptions): Promise<string> {
+  if (!notion || depth > (report ? 8 : 4)) return "";
+  const attr = (b: any) => (report ? ` data-block-id="${escapeHtml(b.id)}"` : "");
+  // レポート画面ではブロック自身の文字を span で囲む（子ブロックに下線が伝播しないように）
+  const rt = (c: any) => (report ? `<span class="rb-text">${richTextToHtml(c.rich_text)}</span>` : richTextToHtml(c.rich_text));
   let cursor: string | undefined = undefined;
   let hasMore = true;
   let html = "";
@@ -2314,59 +2336,88 @@ async function renderBlocksToHtml(blockId: string, depth = 0): Promise<string> {
   };
 
   while (hasMore) {
-    const r: any = await notion.blocks.children.list({ block_id: blockId, start_cursor: cursor, page_size: 100 });
+    const listChildren = () =>
+      notion!.blocks.children.list({ block_id: blockId, start_cursor: cursor, page_size: 100 });
+    const r: any = report ? await withNotionRetry("blocks.children.list", listChildren) : await listChildren();
     for (const b of r.results as any[]) {
       const t = b.type;
       const c = b[t];
-      const childHtml = b.has_children && t !== "table" ? await renderBlocksToHtml(b.id, depth + 1) : "";
+      // 文書順に収集する（子より先に親を積む）。分割レイアウトの枠は批注対象外
+      if (report && t !== "column_list" && t !== "column") {
+        report.blocks.push({ id: b.id, type: t, text: reportBlockText(t, c) });
+      }
+      const childHtml = b.has_children && t !== "table" ? await renderBlocksToHtml(b.id, depth + 1, report) : "";
+      // 既存呼び出しでは見出し・段落の子ブロックを出さない（従来どおり）
+      const nested = report ? childHtml : "";
 
       if (t === "bulleted_list_item" || t === "numbered_list_item") {
         const tag = t === "numbered_list_item" ? "ol" : "ul";
         if (listTag && listTag !== tag) flushList();
         listTag = tag;
-        listBuffer += `<li>${richTextToHtml(c.rich_text)}${childHtml}</li>`;
+        listBuffer += `<li${attr(b)}>${rt(c)}${childHtml}</li>`;
         continue;
       }
       flushList();
 
       switch (t) {
         case "paragraph":
-          html += `<p>${richTextToHtml(c.rich_text)}</p>`;
+          html += `<p${attr(b)}>${rt(c)}</p>${nested}`;
           break;
         case "heading_1":
-          html += `<h3>${richTextToHtml(c.rich_text)}</h3>`;
+          html += `<h3${attr(b)}>${rt(c)}</h3>${nested}`;
           break;
         case "heading_2":
-          html += `<h4>${richTextToHtml(c.rich_text)}</h4>`;
+          html += `<h4${attr(b)}>${rt(c)}</h4>${nested}`;
           break;
         case "heading_3":
-          html += `<h5>${richTextToHtml(c.rich_text)}</h5>`;
+          html += `<h5${attr(b)}>${rt(c)}</h5>${nested}`;
           break;
         case "to_do":
-          html += `<p>${c.checked ? "☑" : "☐"} ${richTextToHtml(c.rich_text)}</p>`;
+          html += `<p${attr(b)}>${c.checked ? "☑" : "☐"} ${rt(c)}</p>`;
           break;
         case "quote":
-          html += `<blockquote>${richTextToHtml(c.rich_text)}</blockquote>`;
+          html += `<blockquote${attr(b)}>${rt(c)}</blockquote>`;
           break;
         case "callout":
-          html += `<div class="callout">${richTextToHtml(c.rich_text)}${childHtml}</div>`;
+          html += `<div class="callout"${attr(b)}>${rt(c)}${childHtml}</div>`;
           break;
-        case "code":
-          html += `<pre><code>${escapeHtml((c.rich_text ?? []).map((x: any) => x.plain_text).join(""))}</code></pre>`;
+        case "code": {
+          const code = escapeHtml((c.rich_text ?? []).map((x: any) => x.plain_text).join(""));
+          // Mermaid はクライアント側で図に描画する
+          html += report && c.language === "mermaid"
+            ? `<div class="mermaid-block"${attr(b)}><pre class="mermaid">${code}</pre></div>`
+            : `<pre${attr(b)}><code>${code}</code></pre>`;
           break;
+        }
         case "divider":
-          html += "<hr/>";
+          html += `<hr${attr(b)}/>`;
           break;
         case "image": {
           const url = c.type === "external" ? c.external?.url : c.file?.url;
-          if (url) html += `<img src="${escapeHtml(url)}" alt="" />`;
+          if (url) {
+            html += report
+              ? `<div class="image-block"${attr(b)}><img src="${escapeHtml(url)}" alt="" /></div>`
+              : `<img src="${escapeHtml(url)}" alt="" />`;
+          }
           break;
         }
         case "table":
-          html += await renderTableBlock(b.id);
+          html += report
+            ? `<div class="table-block"${attr(b)}>${await renderTableBlock(b.id)}</div>`
+            : await renderTableBlock(b.id);
           break;
         default:
-          if (c?.rich_text) html += `<p>${richTextToHtml(c.rich_text)}</p>`;
+          if (report && t === "toggle") {
+            html += `<details${attr(b)}><summary>${rt(c)}</summary>${childHtml}</details>`;
+          } else if (report && t === "column_list") {
+            html += `<div class="notion-columns">${childHtml}</div>`;
+          } else if (report && t === "column") {
+            html += `<div class="notion-column">${childHtml}</div>`;
+          } else if (c?.rich_text) {
+            html += `<p${attr(b)}>${rt(c)}</p>${nested}`;
+          } else if (report) {
+            html += `<p class="unsupported-block"${attr(b)}>（未対応のブロック：${escapeHtml(t)}）</p>`;
+          }
           break;
       }
     }
@@ -6338,13 +6389,21 @@ async function queryConfigTable(databaseId: string): Promise<Record<string, Conf
     throw new Error("No data source found in NOTION_ENV_VERSION_DATABASE_ID");
   }
 
-  const r: any = await notion.dataSources.query({
-    data_source_id: dataSourceId,
-    page_size: 100,
-  });
+  // テストURL 等で行が増えるため 100 件を超えてもすべて読む
+  const pages: any[] = [];
+  let cursor: string | undefined = undefined;
+  do {
+    const r: any = await notion.dataSources.query({
+      data_source_id: dataSourceId,
+      page_size: 100,
+      start_cursor: cursor,
+    });
+    pages.push(...(r.results ?? []));
+    cursor = r.has_more ? r.next_cursor : undefined;
+  } while (cursor);
 
   const map: Record<string, ConfigRow> = {};
-  for (const page of r.results ?? []) {
+  for (const page of pages) {
     const p = page?.properties ?? {};
     const key = propertyToPlainText(p["key"]).trim();
     const value = propertyToPlainText(p["value"]).trim();
@@ -6352,6 +6411,22 @@ async function queryConfigTable(databaseId: string): Promise<Record<string, Conf
     if (key && value) map[key] = { value, comment };
   }
   return map;
+}
+
+// <システム>_TESTURL<n> の行をシステム別にまとめる（計画資料・結果報告のテスト環境欄で使う）。
+// value が空の行は queryConfigTable で除かれる。label は comment（空なら表示側で [URL]）
+function collectTestUrls(map: Record<string, ConfigRow>): Record<string, { label: string; url: string }[]> {
+  const grouped: Record<string, { n: number; label: string; url: string }[]> = {};
+  for (const [key, row] of Object.entries(map)) {
+    const m = key.match(/^([A-Z0-9_]+)_TESTURL(\d+)$/);
+    if (!m) continue;
+    (grouped[m[1]] ??= []).push({ n: Number(m[2]), label: row.comment, url: row.value });
+  }
+  const out: Record<string, { label: string; url: string }[]> = {};
+  for (const [prefix, rows] of Object.entries(grouped)) {
+    out[prefix] = rows.sort((a, b) => a.n - b.n).map(({ label, url }) => ({ label, url }));
+  }
+  return out;
 }
 
 // KPI_N_M の行を 上期(_1)/下期(_2) に振り分ける。ラベルは comment 列から取得し、
@@ -6399,7 +6474,8 @@ app.get("/api/config/env-versions", async (_req, res) => {
         envOnly[k === "ios" ? "IOS" : k] = row.value;
       }
     }
-    return res.json({ ...DEFAULT_ENV_VERSIONS, ...envOnly });
+    // testUrls は取得できた時だけ返す（無ければ画面側で「取得できませんでした」と表示）
+    return res.json({ ...DEFAULT_ENV_VERSIONS, ...envOnly, testUrls: collectTestUrls(map) });
   } catch (error) {
     console.error("Env versions query error:", error);
     return res.json({ ...DEFAULT_ENV_VERSIONS });
@@ -7218,6 +7294,1025 @@ app.post("/api/notes/:id/reply", async (req, res) => {
   } catch (error) {
     console.error("Note reply error:", error);
     return res.status(500).json({ error: "Failed to add reply" });
+  }
+});
+
+// ── レポート共有・批注（NOTION_REPORT_DATABASE_ID / NOTION_REPORT_COMMENT_DATABASE_ID） ──
+// レポート本文は Notion が原稿。毎回最新を読み、キャッシュしない（保存即反映のため）。
+// 批注は匿名。返信は批注ページの本文（paragraph ブロック）に保存する。
+
+function reportEnv(res: express.Response): { reportDb: string; commentDb: string } | null {
+  const reportDb = process.env.NOTION_REPORT_DATABASE_ID;
+  const commentDb = process.env.NOTION_REPORT_COMMENT_DATABASE_ID;
+  if (!notion || !reportDb || !commentDb) {
+    res.status(503).json({
+      error: "Notion API credentials not configured",
+      detail: "Please set NOTION_API_KEY, NOTION_REPORT_DATABASE_ID and NOTION_REPORT_COMMENT_DATABASE_ID",
+    });
+    return null;
+  }
+  return { reportDb, commentDb };
+}
+
+// 編集キー：レポートごとのランダムな文字列（Notion「編集キー」列）。一覧から開いた時だけ URL に付く。
+// 共有リンク（キー無し）で開いた人は閲覧・注記のみで、本文の保存・ステータス変更・画像アップロードはできない
+const newReportEditKey = () => randomBytes(16).toString("hex");
+
+function hasReportEditKey(page: any, req: express.Request): boolean {
+  const stored = Buffer.from(propertyToPlainText(page?.properties?.["編集キー"]).trim());
+  const given = Buffer.from(String(req.get("x-report-key") ?? ""));
+  return stored.length > 0 && stored.length === given.length && timingSafeEqual(stored, given);
+}
+
+const reportDataSourceIdCache = new Map<string, string>();
+async function resolveReportDataSourceId(databaseId: string): Promise<string> {
+  const cached = reportDataSourceIdCache.get(databaseId);
+  if (cached) return cached;
+  const database: any = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
+  const id = database?.data_sources?.[0]?.id as string | undefined;
+  if (!id) throw new Error(`No data source found in database ${databaseId}`);
+  reportDataSourceIdCache.set(databaseId, id);
+  return id;
+}
+
+const normalizeNotionId = (id: unknown) => String(id ?? "").replace(/-/g, "").toLowerCase();
+const NOTION_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+// 指定ページが指定 DB の行かを確認する。URL の ID を書き換えて、
+// integration が見られる他の Notion ページ（BUG・案件等）を読み書きさせないため。
+async function retrievePageInDatabase(pageId: string, databaseId: string): Promise<any | null> {
+  if (!NOTION_ID_PATTERN.test(normalizeNotionId(pageId))) return null;
+  const dataSourceId = await resolveReportDataSourceId(databaseId);
+  let page: any;
+  try {
+    page = await withNotionRetry("pages.retrieve", () => notion!.pages.retrieve({ page_id: pageId }));
+  } catch (error: any) {
+    if (error?.code === "object_not_found" || error?.code === "validation_error") return null;
+    throw error;
+  }
+  const parent = page?.parent ?? {};
+  const inDb =
+    normalizeNotionId(parent.data_source_id) === normalizeNotionId(dataSourceId) ||
+    normalizeNotionId(parent.database_id) === normalizeNotionId(databaseId);
+  if (!inDb || page.archived || page.in_trash) return null;
+  return page;
+}
+
+async function queryAllPagesInDataSource(dataSourceId: string, filter?: any): Promise<any[]> {
+  const pages: any[] = [];
+  let cursor: string | undefined = undefined;
+  do {
+    const c = cursor;
+    const r: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: c,
+        page_size: 100,
+        ...(filter ? { filter } : {}),
+      }),
+    );
+    pages.push(...(r.results ?? []));
+    cursor = r.has_more ? r.next_cursor : undefined;
+  } while (cursor);
+  return pages;
+}
+
+// Notion の text オブジェクトは 1 個 2000 文字まで
+function toRichTextChunks(text: string): any[] {
+  const chunks: any[] = [];
+  for (let i = 0; i < text.length; i += 2000) {
+    chunks.push({ type: "text", text: { content: text.slice(i, i + 2000) } });
+  }
+  return chunks;
+}
+
+function parseReportComment(page: any) {
+  const props = page.properties ?? {};
+  return {
+    id: page.id as string,
+    content: propertyToPlainText(props["内容"]),
+    blockId: propertyToPlainText(props["ブロックID"]),
+    snapshot: propertyToPlainText(props["原文"]),
+    blockType: propertyToPlainText(props["ブロック種別"]),
+    resolved: !!props["解決済み"]?.checkbox,
+    createdTime: (props["作成日時"]?.created_time ?? page.created_time ?? "") as string,
+  };
+}
+
+function parseReportReply(block: any) {
+  return {
+    id: block.id as string,
+    text: (block.paragraph?.rich_text ?? []).map((t: any) => t.plain_text ?? "").join(""),
+    createdTime: (block.created_time ?? "") as string,
+  };
+}
+
+// 返信ブロックが批注 DB のページ直下の paragraph であることを確認する
+async function retrieveReplyBlock(blockId: string, commentDb: string): Promise<any | null> {
+  if (!NOTION_ID_PATTERN.test(normalizeNotionId(blockId))) return null;
+  let block: any;
+  try {
+    block = await withNotionRetry("blocks.retrieve", () => notion!.blocks.retrieve({ block_id: blockId }));
+  } catch (error: any) {
+    if (error?.code === "object_not_found" || error?.code === "validation_error") return null;
+    throw error;
+  }
+  if (block?.type !== "paragraph" || block.parent?.type !== "page_id") return null;
+  const page = await retrievePageInDatabase(block.parent.page_id, commentDb);
+  return page ? block : null;
+}
+
+const textOf = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+
+app.get("/api/reports", async (_req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const [reportDs, commentDs] = await Promise.all([
+      resolveReportDataSourceId(env.reportDb),
+      resolveReportDataSourceId(env.commentDb),
+    ]);
+    const [reports, unresolved] = await Promise.all([
+      queryAllPagesInDataSource(reportDs),
+      queryAllPagesInDataSource(commentDs, { property: "解決済み", checkbox: { equals: false } }),
+    ]);
+    // 編集キーが無い（機能追加前に作った）レポートには、ここで発行して保存する
+    for (const p of reports) {
+      if (propertyToPlainText(p.properties?.["編集キー"]).trim()) continue;
+      const key = newReportEditKey();
+      await withNotionRetry("pages.update", () =>
+        notion!.pages.update({ page_id: p.id, properties: { "編集キー": { rich_text: toRichTextChunks(key) } } } as any),
+      );
+      p.properties = { ...p.properties, "編集キー": { type: "rich_text", rich_text: [{ plain_text: key }] } };
+    }
+    const unresolvedCount = new Map<string, number>();
+    for (const c of unresolved) {
+      for (const rel of c.properties?.["レポート"]?.relation ?? []) {
+        const key = normalizeNotionId(rel.id);
+        unresolvedCount.set(key, (unresolvedCount.get(key) ?? 0) + 1);
+      }
+    }
+    const items = reports
+      .map((p: any) => ({
+        id: p.id as string,
+        title: propertyToPlainText(p.properties?.["タイトル"]),
+        status: propertyToPlainText(p.properties?.["ステータス"]),
+        updatedTime: (p.properties?.["更新日時"]?.last_edited_time ?? p.last_edited_time ?? "") as string,
+        unresolvedCount: unresolvedCount.get(normalizeNotionId(p.id)) ?? 0,
+        editKey: propertyToPlainText(p.properties?.["編集キー"]).trim(),
+      }))
+      .sort((a, b) => b.updatedTime.localeCompare(a.updatedTime));
+    return res.json({ items });
+  } catch (error) {
+    console.error("Report list error:", error);
+    return res.status(500).json({ error: "Failed to load reports" });
+  }
+});
+
+app.get("/api/reports/:id", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    const blocks: ReportRenderOptions["blocks"] = [];
+    const html = await renderBlocksToHtml(page.id, 0, { blocks });
+    return res.json({
+      id: page.id,
+      title: propertyToPlainText(page.properties?.["タイトル"]),
+      status: propertyToPlainText(page.properties?.["ステータス"]),
+      updatedTime: page.last_edited_time ?? "",
+      html,
+      blocks,
+    });
+  } catch (error) {
+    console.error("Report detail error:", error);
+    return res.status(500).json({ error: "Failed to load report" });
+  }
+});
+
+app.get("/api/reports/:id/comments", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    const commentDs = await resolveReportDataSourceId(env.commentDb);
+    const comments = await queryAllPagesInDataSource(commentDs, {
+      property: "レポート",
+      relation: { contains: page.id },
+    });
+    return res.json({ comments: comments.map(parseReportComment) });
+  } catch (error) {
+    console.error("Report comments error:", error);
+    return res.status(500).json({ error: "Failed to load comments" });
+  }
+});
+
+app.post("/api/reports/:id/comments", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const { blockId, content, snapshot, blockType } = req.body ?? {};
+  const text = textOf(content);
+  if (!text) return res.status(400).json({ error: "content is required" });
+  if (typeof blockId !== "string" || !NOTION_ID_PATTERN.test(normalizeNotionId(blockId))) {
+    return res.status(400).json({ error: "valid blockId is required" });
+  }
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    const commentDs = await resolveReportDataSourceId(env.commentDb);
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: commentDs } as any,
+        properties: {
+          "内容": { title: toRichTextChunks(text) },
+          "レポート": { relation: [{ id: page.id }] },
+          "ブロックID": { rich_text: toRichTextChunks(blockId) },
+          "原文": { rich_text: toRichTextChunks(String(snapshot ?? "").slice(0, 2000)) },
+          "ブロック種別": { rich_text: toRichTextChunks(String(blockType ?? "")) },
+          "解決済み": { checkbox: false },
+        },
+      } as any),
+    );
+    return res.json({ comment: parseReportComment(created) });
+  } catch (error) {
+    console.error("Report comment create error:", error);
+    return res.status(500).json({ error: "Failed to create comment" });
+  }
+});
+
+app.post("/api/reports", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const title = textOf(req.body?.title);
+  if (!title) return res.status(400).json({ error: "title is required" });
+  const editKey = newReportEditKey();
+  try {
+    const reportDs = await resolveReportDataSourceId(env.reportDb);
+    const created: any = await withNotionRetry("pages.create", () =>
+      notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: reportDs } as any,
+        properties: {
+          "タイトル": { title: toRichTextChunks(title) },
+          "ステータス": { select: { name: "下書き" } },
+          "編集キー": { rich_text: toRichTextChunks(editKey) },
+        },
+      } as any),
+    );
+    return res.json({ id: created.id, editKey });
+  } catch (error) {
+    console.error("Report create error:", error);
+    return res.status(500).json({ error: "Failed to create report" });
+  }
+});
+
+// ステータス（下書き／公開中）の切り替え。rakuraku から変更し、Notion 側の操作を不要にする
+const REPORT_STATUSES = ["下書き", "公開中"];
+
+app.post("/api/reports/:id/status", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const status = req.body?.status;
+  if (!REPORT_STATUSES.includes(status)) return res.status(400).json({ error: "status must be 下書き or 公開中" });
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    if (!hasReportEditKey(page, req)) return res.status(403).json({ error: "Edit key is required" });
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: page.id, properties: { "ステータス": { select: { name: status } } } } as any),
+    );
+    return res.json({ ok: true, status });
+  } catch (error) {
+    console.error("Report status update error:", error);
+    return res.status(500).json({ error: "Failed to update status" });
+  }
+});
+
+// ── レポート編集（Tiptap/ProseMirror JSON ⇔ Notion ブロック） ──
+// 原稿は Notion。編集画面は Notion ブロックを ProseMirror JSON に変換して渡し、
+// 保存時は差分だけを Notion に反映する（既存ブロックの ID を保つため注記が外れない）。
+// Notion に無い書式（文字サイズ・任意の色）は保存できない。色は Notion の 9 色に寄せる。
+
+type PMNode = { type: string; attrs?: Record<string, any>; content?: PMNode[]; text?: string; marks?: { type: string; attrs?: Record<string, any> }[] };
+
+const NOTION_TEXT_HEX: Record<string, string> = {
+  gray: "#787774", brown: "#9F6B53", orange: "#D9730D", yellow: "#CB912F", green: "#448361",
+  blue: "#337EA9", purple: "#9065B0", pink: "#C14C8A", red: "#D44C47",
+};
+const NOTION_BG_HEX: Record<string, string> = {
+  gray: "#F1F1EF", brown: "#F4EEEE", orange: "#FBECDD", yellow: "#FBF3DB", green: "#EDF3EC",
+  blue: "#E7F3F8", purple: "#F6F3F9", pink: "#FAF1F5", red: "#FDEBEC",
+};
+const NAMED_CSS_COLORS: Record<string, string> = {
+  black: "#000000", white: "#ffffff", red: "#ff0000", green: "#008000", blue: "#0000ff", yellow: "#ffff00",
+  orange: "#ffa500", purple: "#800080", pink: "#ffc0cb", brown: "#a52a2a", gray: "#808080", grey: "#808080",
+};
+
+const NOTION_CODE_LANGUAGES = new Set([
+  "abap", "abc", "agda", "arduino", "ascii art", "assembly", "bash", "basic", "bnf", "c", "c#", "c++", "clojure",
+  "coffeescript", "coq", "css", "dart", "dhall", "diff", "docker", "ebnf", "elixir", "elm", "erlang", "f#", "flow",
+  "fortran", "gherkin", "glsl", "go", "graphql", "groovy", "haskell", "hcl", "html", "idris", "java", "javascript",
+  "json", "julia", "kotlin", "latex", "less", "lisp", "livescript", "llvm ir", "lua", "makefile", "markdown", "markup",
+  "matlab", "mathematica", "mermaid", "nix", "notion formula", "objective-c", "ocaml", "pascal", "perl", "php",
+  "plain text", "powershell", "prolog", "protobuf", "purescript", "python", "r", "racket", "reason", "ruby", "rust",
+  "sass", "scala", "scheme", "scss", "shell", "smalltalk", "solidity", "sql", "swift", "toml", "typescript", "vb.net",
+  "verilog", "vhdl", "visual basic", "webassembly", "xml", "yaml", "java/c/c++/c#",
+]);
+
+export function normalizeCodeLanguage(lang: unknown): string {
+  const l = String(lang ?? "").toLowerCase().trim();
+  if (NOTION_CODE_LANGUAGES.has(l)) return l;
+  const alias: Record<string, string> = { js: "javascript", ts: "typescript", py: "python", sh: "shell", yml: "yaml", md: "markdown", text: "plain text", plaintext: "plain text" };
+  return alias[l] ?? "plain text";
+}
+
+function parseCssColor(value: unknown): [number, number, number] | null {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (!v) return null;
+  const hex = NAMED_CSS_COLORS[v] ?? v;
+  let m = hex.match(/^#([0-9a-f]{3})$/);
+  if (m) return [0, 1, 2].map((i) => parseInt(m![1][i] + m![1][i], 16)) as [number, number, number];
+  m = hex.match(/^#([0-9a-f]{6})/);
+  if (m) return [0, 2, 4].map((i) => parseInt(m![1].slice(i, i + 2), 16)) as [number, number, number];
+  m = v.match(/^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+%?))?\s*\)$/);
+  if (m) {
+    if (m[4] !== undefined && parseFloat(m[4]) === 0) return null; // 透明
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  }
+  return null;
+}
+
+function rgbToHsl([r, g, b]: [number, number, number]): [number, number, number] {
+  const rr = r / 255, gg = g / 255, bb = b / 255;
+  const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = max === rr ? (gg - bb) / d + (gg < bb ? 6 : 0) : max === gg ? (bb - rr) / d + 2 : (rr - gg) / d + 4;
+  return [h * 60, s, l];
+}
+
+// 任意の CSS 色を Notion の色名へ寄せる。黒文字・白背景など「色なし」相当は null
+export function nearestNotionColor(value: unknown, kind: "text" | "bg"): string | null {
+  const exact = Object.entries(kind === "text" ? NOTION_TEXT_HEX : NOTION_BG_HEX)
+    .find(([, hexColor]) => hexColor.toLowerCase() === String(value ?? "").trim().toLowerCase());
+  if (exact) return exact[0];
+  const rgb = parseCssColor(value);
+  if (!rgb) return null;
+  const [h, s, l] = rgbToHsl(rgb);
+  if (kind === "text" && l < 0.25) return null;
+  if (kind === "bg" && l > 0.97) return null;
+  if (s < 0.15) return kind === "text" && l < 0.35 ? null : "gray";
+  // 色相の区間で判定する（Notion の 9 色は彩度が低いので距離では不安定）
+  if (h >= 10 && h < 45 && (l < 0.38 || s < 0.45)) return "brown";
+  if (h < 15 || h >= 345) return "red";
+  if (h < 40) return "orange";
+  if (h < 70) return "yellow";
+  if (h < 170) return "green";
+  if (h < 260) return "blue";
+  if (h < 300) return "purple";
+  return "pink";
+}
+
+// Notion rich_text → ProseMirror のインライン
+export function notionRichToPm(rich: any[] = []): PMNode[] {
+  const out: PMNode[] = [];
+  for (const t of rich ?? []) {
+    const text = String(t?.plain_text ?? t?.text?.content ?? "");
+    if (!text) continue;
+    const a = t?.annotations ?? {};
+    const marks: NonNullable<PMNode["marks"]> = [];
+    if (a.bold) marks.push({ type: "bold" });
+    if (a.italic) marks.push({ type: "italic" });
+    if (a.underline) marks.push({ type: "underline" });
+    if (a.strikethrough) marks.push({ type: "strike" });
+    if (a.code) marks.push({ type: "code" });
+    const href = t?.href ?? t?.text?.link?.url;
+    if (href) marks.push({ type: "link", attrs: { href } });
+    const color = String(a.color ?? "default");
+    if (color.endsWith("_background")) {
+      const base = color.replace(/_background$/, "");
+      if (NOTION_BG_HEX[base]) marks.push({ type: "textStyle", attrs: { backgroundColor: NOTION_BG_HEX[base] } });
+    } else if (NOTION_TEXT_HEX[color]) {
+      marks.push({ type: "textStyle", attrs: { color: NOTION_TEXT_HEX[color] } });
+    }
+    text.split("\n").forEach((part, i) => {
+      if (i > 0) out.push({ type: "hardBreak" });
+      if (part) out.push(marks.length ? { type: "text", text: part, marks } : { type: "text", text: part });
+    });
+  }
+  return out;
+}
+
+const isAllowedLink = (href: unknown) => typeof href === "string" && /^(https?:\/\/|mailto:)/i.test(href.trim());
+
+// ProseMirror のインライン → Notion rich_text（同じ書式の連続は結合し、2000 文字ごとに分割）
+export function pmInlineToRich(nodes: PMNode[] = []): any[] {
+  const runs: { content: string; link: string | null; annotations: Record<string, any> }[] = [];
+  for (const n of nodes ?? []) {
+    let content = "";
+    const ann = { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" };
+    let link: string | null = null;
+    if (n.type === "hardBreak") {
+      // 改行は直前の文字と同じ書式に含める（無ければ書式なし）
+      if (runs.length) { runs[runs.length - 1].content += "\n"; continue; }
+      content = "\n";
+    } else if (n.type === "text") {
+      content = String(n.text ?? "");
+      let textColor: string | null = null;
+      let bgColor: string | null = null;
+      for (const m of n.marks ?? []) {
+        if (m.type === "bold") ann.bold = true;
+        else if (m.type === "italic") ann.italic = true;
+        else if (m.type === "underline") ann.underline = true;
+        else if (m.type === "strike") ann.strikethrough = true;
+        else if (m.type === "code") ann.code = true;
+        else if (m.type === "link" && isAllowedLink(m.attrs?.href)) link = String(m.attrs!.href).trim();
+        else if (m.type === "textStyle") {
+          textColor = nearestNotionColor(m.attrs?.color, "text") ?? textColor;
+          bgColor = nearestNotionColor(m.attrs?.backgroundColor, "bg") ?? bgColor;
+        } else if (m.type === "highlight") {
+          bgColor = nearestNotionColor(m.attrs?.color, "bg") ?? "yellow";
+        }
+      }
+      // Notion は 1 つの文字に文字色と背景色を同時に持てないため、背景色を優先
+      ann.color = bgColor ? `${bgColor}_background` : textColor ?? "default";
+    }
+    if (!content) continue;
+    const last = runs[runs.length - 1];
+    if (last && last.link === link && JSON.stringify(last.annotations) === JSON.stringify(ann)) last.content += content;
+    else runs.push({ content, link, annotations: ann });
+  }
+  const rich: any[] = [];
+  for (const r of runs) {
+    for (let i = 0; i < r.content.length; i += 2000) {
+      rich.push({
+        type: "text",
+        text: { content: r.content.slice(i, i + 2000), ...(r.link ? { link: { url: r.link } } : {}) },
+        annotations: r.annotations,
+      });
+    }
+  }
+  return rich.slice(0, 100);
+}
+
+const paragraphOf = (rich: any[]): PMNode => {
+  const content = notionRichToPm(rich);
+  return content.length ? { type: "paragraph", content } : { type: "paragraph" };
+};
+
+const READONLY_LABELS: Record<string, string> = {
+  callout: "コールアウト", column_list: "段組み", bookmark: "ブックマーク", embed: "埋め込み", video: "動画",
+  file: "ファイル", pdf: "PDF", equation: "数式", child_page: "子ページ", child_database: "データベース",
+  synced_block: "同期ブロック", table_of_contents: "目次", link_to_page: "ページリンク", breadcrumb: "パンくず",
+};
+
+async function listAllBlockChildren(blockId: string): Promise<any[]> {
+  const blocks: any[] = [];
+  let cursor: string | undefined = undefined;
+  do {
+    const c = cursor;
+    const r: any = await withNotionRetry("blocks.children.list", () =>
+      notion!.blocks.children.list({ block_id: blockId, start_cursor: c, page_size: 100 }),
+    );
+    blocks.push(...(r.results ?? []));
+    cursor = r.has_more ? r.next_cursor : undefined;
+  } while (cursor);
+  return blocks;
+}
+
+// 編集できないブロック（段組み・コールアウト等）は読み取り専用の塊として表示する
+async function readonlyBlockHtml(b: any): Promise<string> {
+  const c = b[b.type];
+  if (b.type === "column_list") {
+    return `<div class="notion-columns">${await renderBlocksToHtml(b.id, 0, { blocks: [] })}</div>`;
+  }
+  const text = Array.isArray(c?.rich_text) ? richTextToHtml(c.rich_text) : "";
+  const children = b.has_children ? await renderBlocksToHtml(b.id, 0, { blocks: [] }) : "";
+  return `${text ? `<p>${text}</p>` : ""}${children}`;
+}
+
+// Notion のブロック列 → ProseMirror のブロック列（連続するリスト項目はリストにまとめる）
+async function notionBlocksToPm(blocks: any[], depth = 0): Promise<PMNode[]> {
+  const out: PMNode[] = [];
+  const childrenOf = async (b: any) => (b.has_children && depth < 8 ? notionBlocksToPm(await listAllBlockChildren(b.id), depth + 1) : []);
+  const pushListItem = (listType: string, item: PMNode) => {
+    const last = out[out.length - 1];
+    if (last?.type === listType) last.content!.push(item);
+    else out.push({ type: listType, content: [item] });
+  };
+  for (const b of blocks) {
+    const t = b.type;
+    const c = b[t] ?? {};
+    const blockId = b.id;
+    switch (t) {
+      case "paragraph":
+        out.push({ ...paragraphOf(c.rich_text), attrs: { blockId } });
+        break;
+      case "heading_1":
+      case "heading_2":
+      case "heading_3": {
+        const content = notionRichToPm(c.rich_text);
+        out.push({ type: "heading", attrs: { level: Number(t.slice(-1)), blockId }, ...(content.length ? { content } : {}) });
+        break;
+      }
+      case "bulleted_list_item":
+      case "numbered_list_item":
+        pushListItem(t === "bulleted_list_item" ? "bulletList" : "orderedList", {
+          type: "listItem",
+          attrs: { blockId },
+          content: [paragraphOf(c.rich_text), ...(await childrenOf(b))],
+        });
+        break;
+      case "to_do":
+        pushListItem("taskList", {
+          type: "taskItem",
+          attrs: { blockId, checked: !!c.checked },
+          content: [paragraphOf(c.rich_text), ...(await childrenOf(b))],
+        });
+        break;
+      case "quote":
+        out.push({ type: "blockquote", attrs: { blockId }, content: [paragraphOf(c.rich_text), ...(await childrenOf(b))] });
+        break;
+      case "toggle": {
+        const inner = await childrenOf(b);
+        const summary = notionRichToPm(c.rich_text);
+        out.push({
+          type: "details",
+          attrs: { blockId, open: true }, // 編集画面では Toggle を開いた状態で表示
+          content: [
+            { type: "detailsSummary", ...(summary.length ? { content: summary } : {}) },
+            { type: "detailsContent", content: inner.length ? inner : [{ type: "paragraph" }] },
+          ],
+        });
+        break;
+      }
+      case "code": {
+        const code = (c.rich_text ?? []).map((x: any) => x.plain_text ?? "").join("");
+        out.push({ type: "codeBlock", attrs: { blockId, language: c.language ?? "plain text" }, ...(code ? { content: [{ type: "text", text: code }] } : {}) });
+        break;
+      }
+      case "divider":
+        out.push({ type: "horizontalRule", attrs: { blockId } });
+        break;
+      case "image": {
+        const src = c.type === "external" ? c.external?.url : c.file?.url;
+        out.push({ type: "image", attrs: { blockId, src: src ?? "" } });
+        break;
+      }
+      case "table": {
+        const rows = (await listAllBlockChildren(b.id)).filter((r: any) => r.type === "table_row");
+        const width = c.table_width ?? 1;
+        out.push({
+          type: "table",
+          attrs: { blockId },
+          content: rows.map((r: any, ri: number) => ({
+            type: "tableRow",
+            attrs: { blockId: r.id },
+            content: Array.from({ length: width }, (_, ci) => ({
+              type: ri === 0 && c.has_column_header ? "tableHeader" : "tableCell",
+              content: [paragraphOf(r.table_row?.cells?.[ci] ?? [])],
+            })),
+          })),
+        });
+        break;
+      }
+      default:
+        out.push({
+          type: "notionBlock",
+          attrs: { blockId, label: READONLY_LABELS[t] ?? t, html: await readonlyBlockHtml(b) },
+        });
+    }
+  }
+  return out;
+}
+
+// 保存用の中間表現。id があれば既存ブロックの更新候補、無ければ新規作成
+export interface ReportBlockSpec {
+  id: string | null;
+  type: string;            // Notion のブロック種別。"__readonly" は編集不可ブロック
+  body: any;               // Notion へ送る種別ごとの中身（子ブロックは含めない）
+  children: ReportBlockSpec[] | null; // 子ブロックを同期する種別のみ配列
+}
+
+const firstParagraphSplit = (content: PMNode[] = []) => {
+  const [first, ...rest] = content;
+  return first?.type === "paragraph"
+    ? { rich: pmInlineToRich(first.content), rest }
+    : { rich: [], rest: content };
+};
+
+// ProseMirror のブロック列 → Notion ブロックの中間表現
+export function pmNodesToSpecs(nodes: PMNode[] = []): ReportBlockSpec[] {
+  const specs: ReportBlockSpec[] = [];
+  const idOf = (n: PMNode) => (typeof n.attrs?.blockId === "string" && n.attrs.blockId ? n.attrs.blockId : null);
+  for (const n of nodes ?? []) {
+    switch (n.type) {
+      case "paragraph":
+        specs.push({ id: idOf(n), type: "paragraph", body: { rich_text: pmInlineToRich(n.content) }, children: null });
+        break;
+      case "heading": {
+        const level = Math.min(3, Math.max(1, Number(n.attrs?.level) || 1));
+        specs.push({ id: idOf(n), type: `heading_${level}`, body: { rich_text: pmInlineToRich(n.content) }, children: null });
+        break;
+      }
+      case "bulletList":
+      case "orderedList":
+        for (const li of n.content ?? []) {
+          const { rich, rest } = firstParagraphSplit(li.content);
+          specs.push({
+            id: idOf(li),
+            type: n.type === "bulletList" ? "bulleted_list_item" : "numbered_list_item",
+            body: { rich_text: rich },
+            children: pmNodesToSpecs(rest),
+          });
+        }
+        break;
+      case "taskList":
+        for (const li of n.content ?? []) {
+          const { rich, rest } = firstParagraphSplit(li.content);
+          specs.push({ id: idOf(li), type: "to_do", body: { rich_text: rich, checked: !!li.attrs?.checked }, children: pmNodesToSpecs(rest) });
+        }
+        break;
+      case "blockquote": {
+        const { rich, rest } = firstParagraphSplit(n.content);
+        specs.push({ id: idOf(n), type: "quote", body: { rich_text: rich }, children: pmNodesToSpecs(rest) });
+        break;
+      }
+      case "details": {
+        const summary = (n.content ?? []).find((x) => x.type === "detailsSummary");
+        const inner = (n.content ?? []).find((x) => x.type === "detailsContent");
+        specs.push({ id: idOf(n), type: "toggle", body: { rich_text: pmInlineToRich(summary?.content) }, children: pmNodesToSpecs(inner?.content) });
+        break;
+      }
+      case "codeBlock": {
+        const code = (n.content ?? []).map((x) => x.text ?? "").join("");
+        const rich = [];
+        for (let i = 0; i < code.length; i += 2000) rich.push({ type: "text", text: { content: code.slice(i, i + 2000) } });
+        specs.push({ id: idOf(n), type: "code", body: { rich_text: rich, language: normalizeCodeLanguage(n.attrs?.language) }, children: null });
+        break;
+      }
+      case "horizontalRule":
+        specs.push({ id: idOf(n), type: "divider", body: {}, children: null });
+        break;
+      case "image": {
+        const uploadId = n.attrs?.uploadId;
+        const src = String(n.attrs?.src ?? "");
+        const body = uploadId
+          ? { type: "file_upload", file_upload: { id: uploadId } }
+          : /^https?:\/\//i.test(src) ? { type: "external", external: { url: src } } : null;
+        // 既存の画像（ID あり）は内容を送らない。新規で保存できない画像（未アップロード等）は捨てる
+        if (idOf(n) || body) specs.push({ id: idOf(n), type: "image", body: body ?? {}, children: null });
+        break;
+      }
+      case "table": {
+        const rows = n.content ?? [];
+        const width = Math.max(1, ...rows.map((r) => (r.content ?? []).length));
+        const hasHeader = rows.length > 0 && (rows[0].content ?? []).every((cell) => cell.type === "tableHeader");
+        specs.push({
+          id: idOf(n),
+          type: "table",
+          body: { table_width: width, has_column_header: hasHeader, has_row_header: false },
+          children: rows.map((r) => ({
+            id: idOf(r),
+            type: "table_row",
+            body: {
+              cells: Array.from({ length: width }, (_, ci) => {
+                const cell = r.content?.[ci];
+                // セル内の複数段落は改行でつなぐ
+                const inline: PMNode[] = [];
+                (cell?.content ?? []).forEach((p, pi) => {
+                  if (pi > 0) inline.push({ type: "hardBreak" });
+                  inline.push(...(p.content ?? []));
+                });
+                return pmInlineToRich(inline);
+              }),
+            },
+            children: null,
+          })),
+        });
+        break;
+      }
+      case "notionBlock":
+        if (idOf(n)) specs.push({ id: idOf(n), type: "__readonly", body: {}, children: null });
+        break;
+      default:
+        // 想定外のノードは段落として文字だけ残す
+        if (n.content) specs.push({ id: null, type: "paragraph", body: { rich_text: pmInlineToRich(n.content.filter((x) => x.type === "text" || x.type === "hardBreak")) }, children: null });
+    }
+  }
+  return specs;
+}
+
+// 既存ブロックを同じ変換に通した比較用の中身（変更が無ければ更新しない＝メンション等を壊さない）
+function existingBlockBody(b: any): any {
+  const c = b[b.type] ?? {};
+  const canon = (rich: any[]) => pmInlineToRich(notionRichToPm(rich));
+  switch (b.type) {
+    case "to_do": return { rich_text: canon(c.rich_text), checked: !!c.checked };
+    case "code": {
+      const code = (c.rich_text ?? []).map((x: any) => x.plain_text ?? "").join("");
+      const rich = [];
+      for (let i = 0; i < code.length; i += 2000) rich.push({ type: "text", text: { content: code.slice(i, i + 2000) } });
+      return { rich_text: rich, language: normalizeCodeLanguage(c.language) };
+    }
+    case "divider": case "image": return null;
+    case "table": return { table_width: c.table_width, has_column_header: !!c.has_column_header, has_row_header: false };
+    case "table_row": return { cells: (c.cells ?? []).map(canon) };
+    default: return { rich_text: canon(c.rich_text) };
+  }
+}
+
+// 並び順を保てる既存ブロックの組を選ぶ（最長増加部分列）。外れたものは作り直す
+export function longestIncreasing(pairs: { d: number; e: number }[]): Set<number> {
+  const tails: number[] = [];
+  const prev: number[] = new Array(pairs.length).fill(-1);
+  for (let i = 0; i < pairs.length; i++) {
+    let lo = 0, hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (pairs[tails[mid]].e < pairs[i].e) lo = mid + 1; else hi = mid;
+    }
+    if (lo > 0) prev[i] = tails[lo - 1];
+    tails[lo] = i;
+  }
+  const keep = new Set<number>();
+  for (let i = tails.length ? tails[tails.length - 1] : -1; i >= 0; i = prev[i]) keep.add(pairs[i].d);
+  return keep;
+}
+
+function specToRequest(s: ReportBlockSpec): any {
+  if (s.type === "table") {
+    return {
+      object: "block",
+      type: "table",
+      table: { ...s.body, children: (s.children ?? []).map((r) => ({ object: "block", type: "table_row", table_row: r.body })) },
+    };
+  }
+  return { object: "block", type: s.type, [s.type]: s.body };
+}
+
+// 子ブロックを差分同期する。allIds は文書全体に残っている ID（別の場所へ移った読み取り専用ブロックは消さない）
+async function syncReportChildren(parentId: string, desired: ReportBlockSpec[], allIds: Set<string>): Promise<void> {
+  const existing = await listAllBlockChildren(parentId);
+  const exIndex = new Map(existing.map((b, i) => [normalizeNotionId(b.id), i]));
+  const pairs: { d: number; e: number }[] = [];
+  desired.forEach((s, d) => {
+    if (!s.id) return;
+    const e = exIndex.get(normalizeNotionId(s.id));
+    if (e === undefined) return;
+    const b = existing[e];
+    const compatible = s.type === "__readonly" || (b.type === s.type && (s.type !== "table" || b.table?.table_width === s.body.table_width));
+    if (compatible) pairs.push({ d, e });
+  });
+  const keep = longestIncreasing(pairs);
+  const keptExisting = new Map<number, any>();
+  for (const p of pairs) if (keep.has(p.d)) keptExisting.set(p.d, existing[p.e]);
+  const keptIds = new Set([...keptExisting.values()].map((b) => normalizeNotionId(b.id)));
+
+  for (const b of existing) {
+    const id = normalizeNotionId(b.id);
+    if (keptIds.has(id)) continue;
+    const readonlyElsewhere = !["paragraph", "heading_1", "heading_2", "heading_3", "bulleted_list_item", "numbered_list_item",
+      "to_do", "quote", "toggle", "code", "divider", "image", "table", "table_row"].includes(b.type) && allIds.has(id);
+    if (readonlyElsewhere) continue;
+    await withNotionRetry("blocks.delete", () => notion!.blocks.delete({ block_id: b.id }));
+  }
+
+  let prevId: string | null = null;
+  let pending: ReportBlockSpec[] = [];
+  const flush = async () => {
+    for (let i = 0; i < pending.length; i += 100) {
+      const chunk = pending.slice(i, i + 100);
+      const position = prevId ? { type: "after_block", after_block: { id: prevId } } : { type: "start" };
+      const r: any = await withNotionRetry("blocks.children.append", () =>
+        notion!.blocks.children.append({ block_id: parentId, children: chunk.map(specToRequest), position } as any),
+      );
+      const created: any[] = r.results ?? [];
+      for (let k = 0; k < chunk.length; k++) {
+        const spec = chunk[k];
+        const block = created[k];
+        if (block && spec.type !== "table" && spec.children?.length) await syncReportChildren(block.id, spec.children, allIds);
+      }
+      if (created.length) prevId = created[created.length - 1].id;
+    }
+    pending = [];
+  };
+
+  for (let d = 0; d < desired.length; d++) {
+    const s = desired[d];
+    const b = keptExisting.get(d);
+    if (b) {
+      await flush();
+      if (s.type !== "__readonly") {
+        const before = existingBlockBody(b);
+        if (before !== null && JSON.stringify(before) !== JSON.stringify(s.body)) {
+          const body = s.type === "table" ? { has_column_header: s.body.has_column_header } : s.body;
+          await withNotionRetry("blocks.update", () => notion!.blocks.update({ block_id: b.id, [s.type]: body } as any));
+        }
+        if (s.children) await syncReportChildren(b.id, s.children, allIds);
+      }
+      prevId = b.id;
+    } else if (s.type !== "__readonly" && !(s.type === "image" && !s.body?.type)) {
+      pending.push(s);
+    }
+  }
+  await flush();
+}
+
+function collectSpecIds(specs: ReportBlockSpec[], out = new Set<string>()): Set<string> {
+  for (const s of specs) {
+    if (s.id) out.add(normalizeNotionId(s.id));
+    if (s.children) collectSpecIds(s.children, out);
+  }
+  return out;
+}
+
+app.get("/api/reports/:id/doc", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    const content = await notionBlocksToPm(await listAllBlockChildren(page.id));
+    return res.json({ doc: { type: "doc", content: content.length ? content : [{ type: "paragraph" }] } });
+  } catch (error) {
+    console.error("Report doc load error:", error);
+    return res.status(500).json({ error: "Failed to load report document" });
+  }
+});
+
+app.post("/api/reports/:id/doc", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const doc = req.body?.doc;
+  if (doc?.type !== "doc" || !Array.isArray(doc.content)) return res.status(400).json({ error: "doc is required" });
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    if (!hasReportEditKey(page, req)) return res.status(403).json({ error: "Edit key is required" });
+    const specs = pmNodesToSpecs(doc.content);
+    await syncReportChildren(page.id, specs, collectSpecIds(specs));
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Report doc save error:", error);
+    return res.status(500).json({ error: "Failed to save report document" });
+  }
+});
+
+// 編集画面で貼り付け・挿入した画像を Notion にアップロードする（保存時にブロックへ添付）
+const reportImageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+app.post("/api/reports/:id/upload", (req, res, next) => {
+  reportImageUpload.single("file")(req, res, (err: any) => {
+    if (err) return res.status(400).json({ error: err.code === "LIMIT_FILE_SIZE" ? "画像は 5MB までです" : "Upload failed" });
+    next();
+  });
+}, async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file || !file.mimetype.startsWith("image/")) return res.status(400).json({ error: "image file is required" });
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    if (!hasReportEditKey(page, req)) return res.status(403).json({ error: "Edit key is required" });
+    const filename = file.originalname || `image.${file.mimetype.split("/")[1] ?? "png"}`;
+    const created: any = await withNotionRetry("fileUploads.create", () =>
+      (notion as any).fileUploads.create({ mode: "single_part", filename, content_type: file.mimetype }),
+    );
+    await withNotionRetry("fileUploads.send", () =>
+      (notion as any).fileUploads.send({
+        file_upload_id: created.id,
+        file: { filename, data: new Blob([new Uint8Array(file.buffer)], { type: file.mimetype }) },
+      }),
+    );
+    return res.json({ uploadId: created.id });
+  } catch (error) {
+    console.error("Report image upload error:", error);
+    return res.status(500).json({ error: "Failed to upload image" });
+  }
+});
+
+app.post("/api/report-comments/:id/update", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const { content, resolved } = req.body ?? {};
+  const properties: Record<string, any> = {};
+  if (content !== undefined) {
+    const text = textOf(content);
+    if (!text) return res.status(400).json({ error: "content must not be empty" });
+    properties["内容"] = { title: toRichTextChunks(text) };
+  }
+  if (typeof resolved === "boolean") properties["解決済み"] = { checkbox: resolved };
+  if (Object.keys(properties).length === 0) return res.status(400).json({ error: "No fields to update" });
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.commentDb);
+    if (!page) return res.status(404).json({ error: "Comment not found" });
+    const updated: any = await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: page.id, properties }),
+    );
+    return res.json({ comment: parseReportComment(updated) });
+  } catch (error) {
+    console.error("Report comment update error:", error);
+    return res.status(500).json({ error: "Failed to update comment" });
+  }
+});
+
+app.delete("/api/report-comments/:id", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.commentDb);
+    if (!page) return res.status(404).json({ error: "Comment not found" });
+    // アーカイブ（Notion のゴミ箱から復元可能）
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({ page_id: page.id, archived: true }),
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Report comment delete error:", error);
+    return res.status(500).json({ error: "Failed to delete comment" });
+  }
+});
+
+app.get("/api/report-comments/:id/replies", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.commentDb);
+    if (!page) return res.status(404).json({ error: "Comment not found" });
+    const replies: any[] = [];
+    let cursor: string | undefined = undefined;
+    do {
+      const c = cursor;
+      const r: any = await withNotionRetry("blocks.children.list", () =>
+        notion!.blocks.children.list({ block_id: page.id, start_cursor: c, page_size: 100 }),
+      );
+      for (const b of r.results ?? []) if (b.type === "paragraph") replies.push(parseReportReply(b));
+      cursor = r.has_more ? r.next_cursor : undefined;
+    } while (cursor);
+    return res.json({ replies });
+  } catch (error) {
+    console.error("Report replies error:", error);
+    return res.status(500).json({ error: "Failed to load replies" });
+  }
+});
+
+app.post("/api/report-comments/:id/replies", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const text = textOf(req.body?.text);
+  if (!text) return res.status(400).json({ error: "text is required" });
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.commentDb);
+    if (!page) return res.status(404).json({ error: "Comment not found" });
+    const r: any = await withNotionRetry("blocks.children.append", () =>
+      notion!.blocks.children.append({
+        block_id: page.id,
+        children: [{ object: "block", type: "paragraph", paragraph: { rich_text: toRichTextChunks(text) } }],
+      } as any),
+    );
+    return res.json({ reply: parseReportReply(r.results?.[0] ?? {}) });
+  } catch (error) {
+    console.error("Report reply create error:", error);
+    return res.status(500).json({ error: "Failed to add reply" });
+  }
+});
+
+app.post("/api/report-replies/:id/update", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const text = textOf(req.body?.text);
+  if (!text) return res.status(400).json({ error: "text is required" });
+  try {
+    const block = await retrieveReplyBlock(req.params.id, env.commentDb);
+    if (!block) return res.status(404).json({ error: "Reply not found" });
+    const updated: any = await withNotionRetry("blocks.update", () =>
+      notion!.blocks.update({ block_id: block.id, paragraph: { rich_text: toRichTextChunks(text) } } as any),
+    );
+    return res.json({ reply: parseReportReply(updated) });
+  } catch (error) {
+    console.error("Report reply update error:", error);
+    return res.status(500).json({ error: "Failed to update reply" });
+  }
+});
+
+app.delete("/api/report-replies/:id", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const block = await retrieveReplyBlock(req.params.id, env.commentDb);
+    if (!block) return res.status(404).json({ error: "Reply not found" });
+    await withNotionRetry("blocks.delete", () => notion!.blocks.delete({ block_id: block.id }));
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Report reply delete error:", error);
+    return res.status(500).json({ error: "Failed to delete reply" });
   }
 });
 

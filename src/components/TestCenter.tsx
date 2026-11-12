@@ -287,7 +287,10 @@ function replaceToken(source: string, token: string, value: string): string {
   return source.replace(new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), value);
 }
 
-type EnvVersions = { chrome: string; IOS: string; Android: string };
+type TestUrl = { label: string; url: string };
+// testUrls は Notion「test_attribute」表の <システム>_TESTURL<n> 行（値が空の行は除外済み）。
+// 取得できていない間・取得失敗時は undefined
+type EnvVersions = { chrome: string; IOS: string; Android: string; testUrls?: Record<string, TestUrl[]> };
 
 // Notion 取得失敗時のフォールバック。api/index.ts の DEFAULT_ENV_VERSIONS と揃える。
 const DEFAULT_ENV_VERSIONS: EnvVersions = {
@@ -296,34 +299,48 @@ const DEFAULT_ENV_VERSIONS: EnvVersions = {
   Android: '16',
 };
 
+// エリア → test_attribute のキー接頭辞（例: cmdb → CMDB_TESTURL1, CMDB_TESTURL2 …）。
+// テストURL欄の無いエリアは含めない
+const TEST_URL_KEY_PREFIX: Partial<Record<AreaId, string>> = {
+  jmotto: 'JMOTTO',
+  univ: 'UNIV',
+  credit: 'CREDIT',
+  overseas: 'OVERSEAS',
+  'univ-app': 'UNIV_APP',
+  'univ-contents': 'UNIV_CONTENTS',
+  nayose: 'NAYOSE',
+  gyoshu: 'GYOSHU',
+  ros: 'ROS',
+  meikancho: 'MEIKANCHO',
+  'credit-asp': 'CREDIT_ASP',
+  cmdb: 'CMDB',
+};
+
+function testUrlLines(areaId: AreaId, testUrls: EnvVersions['testUrls']): string[] {
+  const prefix = TEST_URL_KEY_PREFIX[areaId];
+  if (!prefix) return [];
+  if (!testUrls) return ['☑ [URL] （テストURLを取得できませんでした）'];
+  const urls = testUrls[prefix] ?? [];
+  if (urls.length === 0) return ['☑ [URL] テスト環境の確認をよろしくお願いします。'];
+  return urls.map(({ label, url }) => `☑ [${label || 'URL'}] ${url}`);
+}
+
 function getDefaultTestEnvironmentHtml(areaId: AreaId, versions: EnvVersions = DEFAULT_ENV_VERSIONS): string {
   const { chrome, IOS, Android } = versions;
+  // テストURL以外の行（ブラウザ・端末・アカウント）。テストURLは test_attribute 表から末尾に付ける
   const byArea: Record<AreaId, string[]> = {
     jmotto: [
       `☑ [ブラウザ] Chrome（${chrome}）`,
-      '☑ [ポータル] https://www1-v2stg100.j-motto.co.jp/web/doLogin',
-      '☑ [ GW ] https://gws85.j-motto.co.jp/cgi-bin/',
-      '□ [ポータル申込画面] https://www1-v2stg100.j-motto.co.jp/web2/entrRegist',
-      '☑ [ J H ] http://172.18.3.205/login',
-      '□ [ WPDL ] https://www1-v2stg101.j-motto.co.jp/00000000/wp/',
     ],
     univ: [
       `☑ [ブラウザ] Chrome (${chrome})`,
       `☑ [ スマホ ] IOS${IOS} ｜ android${Android}`,
-      '☑ [ UNIV2 ] https://54.64.96.104/login',
-      '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     credit: [
       `☑ [ブラウザ] Chrome (${chrome})`,
-      '☑ [利用者] https://test-alb.kigyo-joho.com/login/1DCCyG3Xe1',
-      '☑ [管理者] http://10.240.14.166/login/',
     ],
     overseas: [
       `☑ [ChromeVersion] ${chrome}`,
-      '☑ [管理] http://54.92.97.142/report/inner/index.html',
-      '☑ [利墨] https://140.179.40.134/ssoLogin/login',
-      '☑ [与信・RM] http://172.26.4.109:8080/rismon_ukeire/',
-      '☑ [FNA] https://140.179.40.134/.mypage/fna_login',
     ],
     'jmotto-app': [
       '[本番環境]',
@@ -336,46 +353,36 @@ function getDefaultTestEnvironmentHtml(areaId: AreaId, versions: EnvVersions = D
       '[検証環境]',
       `☑ IOS${IOS}（iphone13）(safari)`,
       `☑ Android${Android}（Pixel 6A）(chrome)`,
-      '☑ [ UNIV２ ] https://18.178.87.210/',
-      '☑ [内部システム] https://testweb3.cybaxuniv.com/admin/sys_login',
     ],
     'univ-contents': [
       `☑ [ブラウザ] Chrome (${chrome})`,
       `☑ [ スマホ ] IOS${IOS} ｜ android${Android}`,
       '☑ [ スマホ ] IOS18 ｜ android12（比較バージョン）',
-      '☑ [ UNIVコンテンツ ] https://www.cybaxuniv.com/',
-      '☑ [ UNIV２ ] https://54.64.96.104/login',
     ],
     'nayose': [
       `☑ [ブラウザ] Chrome（${chrome}）`,
-      '☑ [URL] https://test-nayose.riskmonster.net/login',
-      '☑ [URL] http://172.26.4.109:8080/rismon_ukeire/',
     ],
     'gyoshu': [
       `☑ Chrome（${chrome}）`,
       `☑ IOS${IOS}（iphone13）`,
       `☑ Android${Android}（Pixel 6A）`,
-      '☑ https://test-gyoushu.riskmonster.net/',
     ],
     'ros': [
       `☑ [ブラウザ] Chrome（${chrome}）`,
-      '☑ [URL] http://10.240.14.201:8080/mkt/login.html',
     ],
     'meikancho': [
       `☑ [ブラウザ] Chrome（${chrome}）`,
-      '☑ [URL] （名館長クラウドのテストURLを入力してください）',
     ],
     'credit-asp': [
       `☑ [ブラウザ] Chrome（${chrome}）`,
-      '☑ [URL] （与信ASPのテストURLを入力してください）',
     ],
     'cmdb': [
       `☑ [ブラウザ] Chrome（${chrome}）`,
-      '☑ [URL] https://172.28.14.196/Cmdb/index.do',
-      '☑ [URL] https://172.28.14.196/Cmdb/showManageTop.do',
     ],
   };
-  return byArea[areaId].map((line) => `<div>${safeHtml(line)}</div>`).join('');
+  return [...byArea[areaId], ...testUrlLines(areaId, versions.testUrls)]
+    .map((line) => `<div>${safeHtml(line)}</div>`)
+    .join('');
 }
 
 const AREA_DOC_META: Record<AreaId, AreaDocMeta> = {
@@ -1661,7 +1668,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   );
   const isAreaSelected = !!selectedAreaId;
 
-  // 報告資料の環境バージョン (Chrome / iOS / Android) を Notion から取得。
+  // 報告資料の環境バージョン (Chrome / iOS / Android) とテストURLを Notion から取得。
   // 失敗時は既定値のまま (report が欠けないよう state は初期値を維持)。
   const fetchEnvVersions = useCallback(async () => {
     try {
@@ -1672,6 +1679,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         chrome: data.chrome || DEFAULT_ENV_VERSIONS.chrome,
         IOS: data.IOS || DEFAULT_ENV_VERSIONS.IOS,
         Android: data.Android || DEFAULT_ENV_VERSIONS.Android,
+        testUrls: data.testUrls && typeof data.testUrls === 'object' ? data.testUrls : undefined,
       });
     } catch {
       // 既定値を維持

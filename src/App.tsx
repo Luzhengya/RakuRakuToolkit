@@ -20,13 +20,15 @@ import CaseManagement from './components/CaseManagement';
 import DataCollection from './components/DataCollection';
 import DailyNews from './components/DailyNews';
 import DataStatsPanel from './components/DataStatsPanel';
+import ReportView from './components/ReportView';
+import ReportListPage from './components/ReportListPage';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'data-stats' | 'data-collection' | 'daily-news';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'data-stats' | 'reports' | 'data-collection' | 'daily-news';
 type Category = '文档类' | '管理类' | 'データ収集类';
 
 const CATEGORIES: Category[] = ['文档类', '管理类', 'データ収集类'];
 
-const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-stats', 'data-collection', 'daily-news']);
+const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-stats', 'reports', 'data-collection', 'daily-news']);
 
 function hashToView(): View {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -45,9 +47,34 @@ function useHashRoute(): [View, (v: View) => void] {
   return [view, navigate];
 }
 
+// レポート共有リンク（#/report/<pageId>、編集で開く場合は …/edit）はヘッダー無しで単独表示する
+// 一覧から開いた時だけ ?key=<編集キー> が付く（共有リンクには付かない）
+const reportHashPath = () => location.hash.split('?')[0];
+
+function hashToReportId(): string {
+  const [first, id] = reportHashPath().replace(/^#\/?/, '').split('/');
+  return first === 'report' && id ? id : '';
+}
+
+const isReportEditHash = () => /^#\/?report\/[^/]+\/edit$/.test(reportHashPath());
+const reportEditKeyFromHash = () => new URLSearchParams(location.hash.split('?')[1] ?? '').get('key') ?? '';
+
+function useReportRoute(): string {
+  return useSyncExternalStore(
+    (cb) => { window.addEventListener('hashchange', cb); return () => window.removeEventListener('hashchange', cb); },
+    hashToReportId,
+  );
+}
+
 export default function App() {
   const [view, setView] = useHashRoute();
   const [category, setCategory] = useState<Category>('文档类');
+  const reportId = useReportRoute();
+
+  if (reportId) {
+    const editKey = reportEditKeyFromHash();
+    return <ReportView key={reportId} reportId={reportId} editKey={editKey} initialEdit={!!editKey && isReportEditHash()} />;
+  }
 
   const switchCategory = (cat: Category) => {
     setCategory(cat);
@@ -195,6 +222,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <DataStatsPanel onBack={() => setView('home')} />
+            </motion.div>
+          ) : view === 'reports' ? (
+            <motion.div
+              key="reports"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <ReportListPage onBack={() => setView('home')} />
             </motion.div>
           ) : view === 'data-collection' ? (
             <motion.div

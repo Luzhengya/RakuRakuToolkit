@@ -11,6 +11,7 @@ import {
   Loader2,
   ExternalLink,
   ChevronRight,
+  NotebookPen,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import type { ReactNode } from 'react';
@@ -124,6 +125,14 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <BarChart3 className="text-violet-600" size={24} />,
       onClick: () => onSelectTool('data-stats'),
+    },
+    {
+      id: 'reports',
+      title: 'レポート',
+      description: 'レポートを作成・編集し、共有リンクで注記をもらいます。',
+      category: '管理类',
+      icon: <NotebookPen className="text-orange-600" size={24} />,
+      onClick: () => onSelectTool('reports'),
     },
     {
       id: 'data-collection',
