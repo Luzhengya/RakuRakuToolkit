@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AlertCircle, Loader2, Plus, RefreshCw } from 'lucide-react';
+import { AlertCircle, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { formatDateTime } from './ReportCommentPanel';
 
-// 管理类 > レポート（#/reports）。Notion「レポート」DB の一覧。
+// 管理類 > レポート（#/reports）。Notion「レポート」DB の一覧。
 // 下書きもプレビューできる。ステータスはこの画面で切り替え、共有リンクはレポート画面でコピーする（公開中のみ）。
 
 export interface ReportListItem {
   id: string;
   title: string;
   status: string;
+  author: string;
   updatedTime: string;
   unresolvedCount: number;
   editKey: string;
@@ -23,14 +24,23 @@ export function reportShareUrl(id: string) {
 const reportOwnerHash = (id: string, editKey: string, edit = false) =>
   `#/report/${id.replace(/-/g, '')}${edit ? '/edit' : ''}?key=${encodeURIComponent(editKey)}`;
 
+// 前回入力した作成者（この端末のブラウザにだけ保存）
+const AUTHOR_STORAGE_KEY = 'rakuraku.report.author';
+const loadLastAuthor = () => { try { return localStorage.getItem(AUTHOR_STORAGE_KEY) ?? ''; } catch { return ''; } };
+const saveLastAuthor = (v: string) => { try { localStorage.setItem(AUTHOR_STORAGE_KEY, v); } catch { /* 保存できなくても作成は続ける */ } };
+
 export default function ReportListPage({ onBack }: { onBack: () => void }) {
   const [items, setItems] = useState<ReportListItem[] | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [newAuthor, setNewAuthor] = useState(loadLastAuthor);
   const [saving, setSaving] = useState(false);
   const [statusSavingId, setStatusSavingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // 作成者の入力候補（既存レポートの作成者）
+  const authorOptions = [...new Set((items ?? []).map((r) => r.author).filter(Boolean))].sort();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,7 +61,7 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
 
   // 新規作成：Notion「レポート」DB に下書きで追加し、編集画面（新しいタブ）で開く
   const create = async () => {
-    if (!newTitle.trim() || saving) return;
+    if (!newTitle.trim() || !newAuthor.trim() || saving) return;
     setSaving(true);
     setError('');
     // await の後に開くとポップアップブロックされるため、クリック時点でタブを確保しておく
@@ -60,10 +70,11 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
       const res = await fetch('/api/reports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle.trim() }),
+        body: JSON.stringify({ title: newTitle.trim(), author: newAuthor.trim() }),
       });
       if (!res.ok) throw new Error();
       const data = await res.json();
+      saveLastAuthor(newAuthor.trim());
       setNewTitle('');
       setCreating(false);
       const url = `${location.origin}${location.pathname}${reportOwnerHash(String(data.id), String(data.editKey ?? ''), true)}`;
@@ -93,6 +104,25 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
       setError('ステータスの変更に失敗しました');
     } finally {
       setStatusSavingId(null);
+    }
+  };
+
+  // 削除：Notion でアーカイブする（Notion のゴミ箱から戻せる）
+  const remove = async (r: ReportListItem) => {
+    if (!window.confirm(`「${r.title || '(無題)'}」を削除しますか？`)) return;
+    setDeletingId(r.id);
+    setError('');
+    try {
+      const res = await fetch(`/api/reports/${encodeURIComponent(r.id)}`, {
+        method: 'DELETE',
+        headers: { 'X-Report-Key': r.editKey },
+      });
+      if (!res.ok) throw new Error();
+      setItems((prev) => (prev ?? []).filter((x) => x.id !== r.id));
+    } catch {
+      setError('レポートの削除に失敗しました');
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -134,9 +164,23 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
               placeholder="レポートのタイトル（下書きとして作成します）"
               className="flex-1 text-sm border border-neutral-200 rounded-md px-3 py-1.5 bg-white focus:outline-none focus:border-blue-400"
             />
+            <input
+              value={newAuthor}
+              onChange={(e) => setNewAuthor(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) create();
+                if (e.key === 'Escape') setCreating(false);
+              }}
+              list="report-author-options"
+              placeholder="作成者"
+              className="w-40 text-sm border border-neutral-200 rounded-md px-3 py-1.5 bg-white focus:outline-none focus:border-blue-400"
+            />
+            <datalist id="report-author-options">
+              {authorOptions.map((a) => <option key={a} value={a} />)}
+            </datalist>
             <button
               onClick={create}
-              disabled={saving || !newTitle.trim()}
+              disabled={saving || !newTitle.trim() || !newAuthor.trim()}
               className="text-xs px-3 py-1.5 rounded-md bg-blue-600 text-white disabled:opacity-50"
             >
               {saving ? '作成中...' : '作成'}
@@ -157,9 +201,11 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
             <thead>
               <tr className="text-left text-xs text-neutral-500 border-b border-neutral-100">
                 <th className="px-4 py-2 font-medium">タイトル</th>
+                <th className="px-4 py-2 font-medium w-32">作成者</th>
                 <th className="px-4 py-2 font-medium w-28">ステータス</th>
                 <th className="px-4 py-2 font-medium w-40">更新日時</th>
                 <th className="px-4 py-2 font-medium w-24 text-right">未解決注記</th>
+                <th className="px-4 py-2 w-12" />
               </tr>
             </thead>
             <tbody>
@@ -178,6 +224,7 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
                         {r.title || '(無題)'}
                       </a>
                     </td>
+                    <td className="px-4 py-2.5 text-xs text-neutral-600">{r.author || <span className="text-neutral-300">—</span>}</td>
                     <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1">
                         <select
@@ -201,6 +248,16 @@ export default function ReportListPage({ onBack }: { onBack: () => void }) {
                       {r.unresolvedCount > 0
                         ? <span className="text-xs px-2 py-0.5 rounded bg-orange-50 text-orange-700">{r.unresolvedCount}</span>
                         : <span className="text-xs text-neutral-300">0</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <button
+                        onClick={() => remove(r)}
+                        disabled={deletingId === r.id}
+                        className="p-1 rounded text-neutral-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-50"
+                        title="削除"
+                      >
+                        {deletingId === r.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                      </button>
                     </td>
                   </tr>
                 );

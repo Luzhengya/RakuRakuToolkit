@@ -39,6 +39,7 @@ const GET_CHECKS = [
   ["/api/pdf-status", 200, (d) => ({ ready: d.ready })],
   ["/api/config/env-versions", 200, () => ({})],
   ["/api/config/kpi-targets", 200, (d) => ({ first: d.first?.length, second: d.second?.length })],
+  ["/api/config/report-ai-prompt", 200, (d) => ({ hasPrompt: !!d.prompt })],
   ["/api/testcase-format/systems", 200, (d) => ({ systems: d.systems?.length })],
   ["/api/test-center/overview", 200, (d) => ({ items: d.items?.length })],
   ["/api/test-center/alerts", 200, (d) => ({
