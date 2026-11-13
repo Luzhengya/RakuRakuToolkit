@@ -7,7 +7,8 @@ import BugEditDialog, { type BugSavedResult } from './BugEditDialog';
 type BugListProps = {
   lang: Lang;
   onHome: () => void;
-  onBack: () => void;
+  // 未指定 (管理类の BUG管理 カードから直接開いた場合) は TestCenter の階層を出さない
+  onBack?: () => void;
   initialMonth?: string;
 };
 
@@ -367,10 +368,14 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
       <button type="button" onClick={onHome} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
         {L.home}
       </button>
-      <ChevronSep size={14} className="text-neutral-300 shrink-0" />
-      <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
-        {L.testCenter}
-      </button>
+      {onBack && (
+        <>
+          <ChevronSep size={14} className="text-neutral-300 shrink-0" />
+          <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
+            {L.testCenter}
+          </button>
+        </>
+      )}
       <ChevronSep size={14} className="text-neutral-300 shrink-0" />
       <span className="text-neutral-900 font-medium">{L.title}</span>
     </nav>

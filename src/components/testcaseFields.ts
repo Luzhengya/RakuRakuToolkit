@@ -31,6 +31,13 @@ export const RESULT_COLOR: Record<string, string> = {
   '再確認NG': 'bg-red-50 text-red-700 border-red-200',
 };
 
+// 関連 BUG の表示色。状態はサーバーで代表値に集約済み (複数 BUG は全件 対応完了 で緑)
+export function bugLinkColor(status: string | undefined): string {
+  if (status === '対応完了') return 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100';
+  if (status === '対応不要') return 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100';
+  return 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100';
+}
+
 export const RETEST_OPTIONS = ['', '再確認OK', '再確認NG'] as const;
 
 export function effectiveResult(row: TcRow): string {
