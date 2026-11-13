@@ -7,7 +7,7 @@ import BugEditDialog, { type BugSavedResult } from './BugEditDialog';
 type BugListProps = {
   lang: Lang;
   onHome: () => void;
-  // 未指定 (管理类の BUG管理 カードから直接開いた場合) は TestCenter の階層を出さない
+  // 未指定 (管理類の BUG管理 カードから直接開いた場合) は TestCenter の階層を出さない
   onBack?: () => void;
   initialMonth?: string;
 };

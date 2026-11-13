@@ -4,16 +4,16 @@ A multi-functional tool suite built with React + TypeScript + Express, providing
 
 ## Features
 
-### 文档类 — Document Tools
+### ドキュメント類 — Document Tools
 - **Excel → Markdown** — Convert Excel files to Markdown tables, with image extraction and shape text recognition
 - **PDF → Word** — Convert PDF files to editable Word documents
 - **PDF Merge** — Upload multiple PDFs, drag to reorder, then merge and download as a single file
 - **PDF Editor** — Click text regions in a PDF to edit content (supports Chinese and Japanese), then download the modified file
 
-### 管理类 — Management Tools
+### 管理類 — Management Tools
 - **Test Center** — Testing management dashboard, organized by area/module
 
-### データ収集类 — Data Collection Tools
+### データ収集類 — Data Collection Tools
 - **データ収集** — Automatically collect news and web content (时事速报, 界面新闻, etc.) filtered by keyword, date, and region
 
 ## Tech Stack

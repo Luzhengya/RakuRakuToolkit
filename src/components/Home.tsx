@@ -13,6 +13,7 @@ import {
   ChevronRight,
   NotebookPen,
   Bug,
+  Send,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import type { ReactNode } from 'react';
@@ -21,19 +22,19 @@ interface Tool {
   id: string;
   title: string;
   description: string;
-  category: '文档类' | '管理类' | 'データ収集类';
+  category: 'ドキュメント類' | '管理類' | 'データ収集類';
   icon: ReactNode;
   onClick: () => void;
 }
 
 const CATEGORY_META: Record<string, { heading: string; sub: string }> = {
-  文档类:      { heading: '文档工具',     sub: '文件格式转换、合并与编辑' },
-  管理类:      { heading: '管理工具',     sub: '项目与测试过程管理' },
-  データ収集类: { heading: 'データ収集ツール', sub: 'ウェブ情報の自動収集と整理' },
+  ドキュメント類:      { heading: 'ドキュメントツール', sub: 'ファイル形式の変換・結合・編集' },
+  管理類:      { heading: '管理ツール',   sub: 'プロジェクトとテスト工程の管理' },
+  データ収集類: { heading: 'データ収集ツール', sub: 'ウェブ情報の自動収集と整理' },
 };
 
 interface HomeProps {
-  category: '文档类' | '管理类' | 'データ収集类';
+  category: 'ドキュメント類' | '管理類' | 'データ収集類';
   onSelectTool: (id: string) => void;
 }
 
@@ -41,49 +42,57 @@ export default function Home({ category, onSelectTool }: HomeProps) {
   const allTools: Tool[] = [
     {
       id: 'excel-to-md',
-      title: 'Excel转Markdown',
-      description: '将Excel文件转换为精简的Markdown表格，支持图片提取和形状文字识别。',
-      category: '文档类',
+      title: 'Excel→Markdown変換',
+      description: 'ExcelファイルをシンプルなMarkdownの表に変換します。画像の抽出や図形内の文字認識にも対応しています。',
+      category: 'ドキュメント類',
       icon: <FileSpreadsheet className="text-green-600" size={24} />,
       onClick: () => onSelectTool('excel-to-md'),
     },
     {
       id: 'pdf-to-word',
-      title: 'PDF转Word',
-      description: '将PDF文件转换为可编辑的Word文档，保持原有文件名。',
-      category: '文档类',
+      title: 'PDF→Word変換',
+      description: 'PDFファイルを編集可能なWord文書に変換します。ファイル名は元のまま保持します。',
+      category: 'ドキュメント類',
       icon: <FilePdf className="text-red-600" size={24} />,
       onClick: () => onSelectTool('pdf-to-word'),
     },
     {
       id: 'pdf-merge',
-      title: 'PDF合并',
-      description: '上传多个PDF文件，拖拽调整合并顺序，一键合并成单个PDF文件下载。',
-      category: '文档类',
+      title: 'PDF結合',
+      description: '複数のPDFファイルをアップロードし、ドラッグで順番を並べ替えて、1つのPDFにまとめてダウンロードします。',
+      category: 'ドキュメント類',
       icon: <Layers className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('pdf-merge'),
     },
     {
       id: 'pdf-edit',
-      title: 'PDF编辑',
-      description: '上传PDF文件，直接点击文字区域修改内容，支持中日文，完成后下载修改版。',
-      category: '文档类',
+      title: 'PDF編集',
+      description: 'PDFファイルをアップロードし、文字の部分をクリックして直接修正できます。日本語・中国語に対応し、修正後のファイルをダウンロードできます。',
+      category: 'ドキュメント類',
       icon: <FilePen className="text-violet-600" size={24} />,
       onClick: () => onSelectTool('pdf-edit'),
     },
     {
       id: 'pdf-edit-table',
-      title: 'PDF编辑 (表格対応)',
+      title: 'PDF編集（表対応）',
       description: '表を自動認識し、セル単位で編集できます。文字を書き換えても表の幅は変わりません。',
-      category: '文档类',
+      category: 'ドキュメント類',
       icon: <FilePen className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('pdf-edit-table'),
     },
     {
+      id: 'hennge-transfer',
+      title: 'HENNGE Transfer',
+      description: 'ファイル転送ツールです。HENNGE Transfer を新しいタブで開きます。',
+      category: 'ドキュメント類',
+      icon: <Send className="text-sky-600" size={24} />,
+      onClick: () => window.open('https://transfer.hennge.com/', '_blank', 'noopener'),
+    },
+    {
       id: 'test-center',
       title: 'Test Center',
-      description: '进入测试中心管理画面，按区域管理测试模块。',
-      category: '管理类',
+      description: 'テストセンターの管理画面を開き、エリアごとにテストモジュールを管理します。',
+      category: '管理類',
       icon: <LayoutGrid className="text-sky-600" size={24} />,
       onClick: () => onSelectTool('test-center'),
     },
@@ -91,7 +100,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'case-management',
       title: '案件管理',
       description: '案件の新規作成・編集・削除をツリー形式で管理します。',
-      category: '管理类',
+      category: '管理類',
       icon: <FolderTree className="text-orange-600" size={24} />,
       onClick: () => onSelectTool('case-management'),
     },
@@ -99,7 +108,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'bug-list',
       title: 'BUG管理',
       description: '全システムの BUG を一覧で確認・登録・編集します。',
-      category: '管理类',
+      category: '管理類',
       icon: <Bug className="text-red-600" size={24} />,
       onClick: () => onSelectTool('bug-list'),
     },
@@ -107,7 +116,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'testcase-library',
       title: 'TestCase Library',
       description: 'システムごとの基礎テストケースライブラリを閲覧します。',
-      category: '管理类',
+      category: '管理類',
       icon: <ClipboardList className="text-emerald-600" size={24} />,
       onClick: () => onSelectTool('testcase-library'),
     },
@@ -115,7 +124,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'testcase-organize',
       title: 'Testcase Format',
       description: '上传测试用例 CSV，整形为标准 Excel 格式并按需求分组汇总测试结果。',
-      category: '管理类',
+      category: '管理類',
       icon: <ClipboardList className="text-teal-600" size={24} />,
       onClick: () => onSelectTool('testcase-organize'),
     },
@@ -123,7 +132,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'testcase-view',
       title: 'TestCase',
       description: 'Testcase Format で登録したテストケースを、月次・CMDB番号・分類などで絞り込んで確認します。',
-      category: '管理类',
+      category: '管理類',
       icon: <ClipboardList className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('testcase-view'),
     },
@@ -131,7 +140,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'data-stats',
       title: 'データ統計',
       description: '需求池・品質問題・Checklist・AI実績などのデータ統計を管理します。',
-      category: '管理类',
+      category: '管理類',
       icon: <BarChart3 className="text-violet-600" size={24} />,
       onClick: () => onSelectTool('data-stats'),
     },
@@ -139,7 +148,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'reports',
       title: 'レポート',
       description: 'レポートを作成・編集し、共有リンクで注記をもらいます。',
-      category: '管理类',
+      category: '管理類',
       icon: <NotebookPen className="text-orange-600" size={24} />,
       onClick: () => onSelectTool('reports'),
     },
@@ -147,7 +156,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'data-collection',
       title: '不安情報収集',
       description: '月次不安情報を集計・検索し、詳細確認やCSV出力ができます。',
-      category: 'データ収集类',
+      category: 'データ収集類',
       icon: <LayoutGrid className="text-emerald-600" size={24} />,
       onClick: () => onSelectTool('data-collection'),
     },
@@ -155,7 +164,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       id: 'daily-news',
       title: '毎日ニュース',
       description: '毎日のニュースを収集・整理します（開発中）。',
-      category: 'データ収集类',
+      category: 'データ収集類',
       icon: <Newspaper className="text-amber-600" size={24} />,
       onClick: () => onSelectTool('daily-news'),
     },
@@ -198,7 +207,7 @@ export default function Home({ category, onSelectTool }: HomeProps) {
             <div className="w-12 h-12 rounded-full bg-neutral-50 flex items-center justify-center">
               <Loader2 size={24} />
             </div>
-            <p className="text-sm font-medium">更多工具开发中...</p>
+            <p className="text-sm font-medium">その他のツールを開発中...</p>
           </div>
         </motion.div>
       </AnimatePresence>
@@ -234,7 +243,7 @@ function ToolCard({ title, description, category, icon, onClick }: any) {
 
       <div className="flex items-center justify-end mt-2 pt-4 border-t border-neutral-50">
         <div className="flex items-center gap-1 text-sm font-bold text-neutral-900 group-hover:translate-x-1 transition-transform">
-          进入 <ChevronRight size={16} />
+          開く <ChevronRight size={16} />
         </div>
       </div>
     </motion.div>
