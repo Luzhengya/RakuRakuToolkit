@@ -12,6 +12,7 @@ import {
   ExternalLink,
   ChevronRight,
   NotebookPen,
+  Bug,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import type { ReactNode } from 'react';
@@ -87,6 +88,30 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       onClick: () => onSelectTool('test-center'),
     },
     {
+      id: 'case-management',
+      title: '案件管理',
+      description: '案件の新規作成・編集・削除をツリー形式で管理します。',
+      category: '管理类',
+      icon: <FolderTree className="text-orange-600" size={24} />,
+      onClick: () => onSelectTool('case-management'),
+    },
+    {
+      id: 'bug-list',
+      title: 'BUG管理',
+      description: '全システムの BUG を一覧で確認・登録・編集します。',
+      category: '管理类',
+      icon: <Bug className="text-red-600" size={24} />,
+      onClick: () => onSelectTool('bug-list'),
+    },
+    {
+      id: 'testcase-library',
+      title: 'TestCase Library',
+      description: 'システムごとの基礎テストケースライブラリを閲覧します。',
+      category: '管理类',
+      icon: <ClipboardList className="text-emerald-600" size={24} />,
+      onClick: () => onSelectTool('testcase-library'),
+    },
+    {
       id: 'testcase-organize',
       title: 'Testcase Format',
       description: '上传测试用例 CSV，整形为标准 Excel 格式并按需求分组汇总测试结果。',
@@ -101,22 +126,6 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       category: '管理类',
       icon: <ClipboardList className="text-indigo-600" size={24} />,
       onClick: () => onSelectTool('testcase-view'),
-    },
-    {
-      id: 'testcase-library',
-      title: 'TestCase Library',
-      description: 'システムごとの基礎テストケースライブラリを閲覧します。',
-      category: '管理类',
-      icon: <ClipboardList className="text-emerald-600" size={24} />,
-      onClick: () => onSelectTool('testcase-library'),
-    },
-    {
-      id: 'case-management',
-      title: '案件管理',
-      description: '案件の新規作成・編集・削除をツリー形式で管理します。',
-      category: '管理类',
-      icon: <FolderTree className="text-orange-600" size={24} />,
-      onClick: () => onSelectTool('case-management'),
     },
     {
       id: 'data-stats',

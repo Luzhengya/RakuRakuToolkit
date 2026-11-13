@@ -4,7 +4,7 @@ import UcCheckGrid from './UcCheckGrid';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
   UC_EDITABLE_FIELDS, UC_HIGHLIGHT_FIELDS, UC_PRIMARY_FIELDS, UC_SECONDARY_FIELDS,
-  isUnivContents, tcLabel, type TcRow,
+  bugLinkColor, isUnivContents, tcLabel, type TcRow,
 } from './testcaseFields';
 
 const EDITABLE_FIELDS = new Set([
@@ -147,7 +147,7 @@ export default function TestcaseDetailDialog({
               NO.{row['ケース番号'] || '-'}
             </h3>
             {row._bugNo && (
-              <span className="inline-flex items-center rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-[10px] font-bold tabular-nums shrink-0">
+              <span title={row._bugStatus || '状態未設定'} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold tabular-nums shrink-0 ${bugLinkColor(row._bugStatus)}`}>
                 BUG #{row._bugNo}
               </span>
             )}

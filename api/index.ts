@@ -2624,6 +2624,21 @@ function readStatusOptions(dbSchema: Record<string, any>): string[] {
   return [];
 }
 
+// SDK v5 ではプロパティ定義は data source 側にある (databases.retrieve には properties が無い)
+async function loadProgressStatusOptions(): Promise<string[]> {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!notion || !databaseId) return [];
+  try {
+    const db: any = await notion.databases.retrieve({ database_id: databaseId });
+    const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+    if (!dataSourceId) return [];
+    const ds: any = await (notion as any).dataSources.retrieve({ data_source_id: dataSourceId });
+    return readStatusOptions(ds?.properties ?? {});
+  } catch {
+    return []; // 選択肢は補助情報なので取れなくても画面は使える
+  }
+}
+
 app.get("/api/test-center/case-schedule/:id", async (req, res) => {
   if (!notion) {
     return res.status(503).json({ error: "Notion API credentials not configured" });
@@ -2634,14 +2649,7 @@ app.get("/api/test-center/case-schedule/:id", async (req, res) => {
     const page = await notion.pages.retrieve({ page_id: pageId });
     const properties = (page as any)?.properties ?? {};
     const fields = readCaseSchedule(properties);
-    let statusOptions: string[] = [];
-    const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
-    if (databaseId) {
-      try {
-        const db = await notion.databases.retrieve({ database_id: databaseId });
-        statusOptions = readStatusOptions((db as any)?.properties ?? {});
-      } catch { /* ignore — options are a convenience */ }
-    }
+    const statusOptions = await loadProgressStatusOptions();
     return res.json({ fields, statusOptions });
   } catch (error) {
     console.error("Case schedule fetch error for %s:", pageId, error);
@@ -2695,14 +2703,7 @@ app.post("/api/test-center/case-schedule/:id", async (req, res) => {
     await notion.pages.update({ page_id: pageId, properties: nextProperties } as any);
     invalidateProgressCache();
     const updated = await notion.pages.retrieve({ page_id: pageId });
-    let statusOptions: string[] = [];
-    const dbId = process.env.NOTION_PROGRESS_DATABASE_ID;
-    if (dbId) {
-      try {
-        const db = await notion.databases.retrieve({ database_id: dbId });
-        statusOptions = readStatusOptions((db as any)?.properties ?? {});
-      } catch { /* ignore */ }
-    }
+    const statusOptions = await loadProgressStatusOptions();
     return res.json({ ok: true, fields: readCaseSchedule((updated as any)?.properties ?? {}), statusOptions });
   } catch (error) {
     console.error("Case schedule update error for %s:", pageId, error);
@@ -5392,7 +5393,7 @@ app.get("/api/test-center/case-testcases/:caseId", async (req, res) => {
         const bugMap = await loadTransferredBugs(bugDbId, system, year);
         for (const row of items) {
           const bug = bugMap.get((row["ケース番号"] || "").trim());
-          if (bug) { row._bugId = bug.id; row._bugNo = bug.no; }
+          if (bug) { row._bugId = bug.id; row._bugNo = bug.no; row._bugStatus = bug.status; }
         }
       } catch { /* bug status is best-effort */ }
     }
@@ -5466,12 +5467,20 @@ function bugMatchKey(system: string, year: string, caseNo: string): string {
 }
 
 // 指定システム・年度の「ケース番号 → 移管済み BUG」を作る
+// 1ケースに複数 BUG がある場合の代表状態: 未解決が1件でもあればそれ、全件 対応完了 なら 対応完了、それ以外は 対応不要
+function mergeBugLinkStatus(a: string, b: string): string {
+  const closed = new Set(["対応完了", "対応不要"]);
+  if (!closed.has(a)) return a;
+  if (!closed.has(b)) return b;
+  return a === "対応完了" && b === "対応完了" ? "対応完了" : "対応不要";
+}
+
 async function loadTransferredBugs(
   databaseId: string,
   system: string,
   year: string,
-): Promise<Map<string, { id: string; no: string }>> {
-  const map = new Map<string, { id: string; no: string }>();
+): Promise<Map<string, { id: string; no: string; status: string }>> {
+  const map = new Map<string, { id: string; no: string; status: string }>();
   const bugs = await queryAllBugItems(databaseId);
   for (const b of bugs) {
     const raw = (b.caseNumber ?? "").trim();
@@ -5484,7 +5493,9 @@ async function loadTransferredBugs(
     // ケース番号はカンマ or 改行で複数格納されている場合がある
     const caseNos = raw.split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
     for (const cn of caseNos) {
-      if (!map.has(cn)) map.set(cn, { id: b.id, no: b.no });
+      const cur = map.get(cn);
+      if (!cur) map.set(cn, { id: b.id, no: b.no, status: b.status });
+      else cur.status = mergeBugLinkStatus(cur.status, b.status);
     }
   }
   return map;
@@ -5501,7 +5512,7 @@ app.get("/api/testcase/bug-status", async (req, res) => {
   }
   try {
     const map = await loadTransferredBugs(databaseId, system, year);
-    const transferred: Record<string, { id: string; no: string }> = {};
+    const transferred: Record<string, { id: string; no: string; status: string }> = {};
     for (const [k, v] of map) transferred[k] = v;
     return res.json({ transferred });
   } catch (error) {
@@ -6781,6 +6792,309 @@ app.post("/api/testcase/create", async (req, res) => {
   } catch (error) {
     console.error("Testcase create error:", error);
     return res.status(500).json({ error: error instanceof Error ? error.message : "作成に失敗しました" });
+  }
+});
+
+// ── TestCase インポート (テンプレート Excel → {システム}{年度} テーブル) ──
+// ケース番号 空欄 = 「CMDB番号-連番」で自動採番。
+// 記入あり = 同じ ケース番号 + CMDB番号 の既存行があれば重複として「新規追加 / 上書き」を選ばせる。
+
+const TC_IMPORT_COLUMNS = [
+  "ケース番号", "システム", "月次", "CMDB番号",
+  "大分類", "中分類", "小分類", "機能名", "要件名",
+  "テスト内容", "前提条件", "ステップ", "予期結果",
+  "ポイント", "優先級", "カテゴリ", "テスト結果", "再テスト結果", "備考",
+] as const;
+const TC_IMPORT_REQUIRED = new Set(["システム", "月次", "CMDB番号", "テスト内容", "予期結果"]);
+// カテゴリは TestCase Library「wreport_base」(海外調書利用者) の値に揃える
+const TC_IMPORT_LISTS: Record<string, string[]> = {
+  "月次": Array.from({ length: 12 }, (_, i) => String(i + 1)),
+  "優先級": ["高", "中", "低"],
+  "カテゴリ": [
+    "初期状態確認", "画面項目確認", "画面遷移確認",
+    "機能確認（正常系）", "機能確認（異常系）",
+    "単項目チェック（正常系）", "単項目チェック（異常系）",
+    "組合せ項目チェック（正常系）", "組合せ項目チェック（異常系）",
+    "権限・セキュリティ認証", "Cookie・記憶機能", "API確認",
+  ],
+  "テスト結果": ["OK", "テスト不可", "NG"],
+  "再テスト結果": ["再確認OK", "再確認NG"],
+};
+const TC_IMPORT_HINT =
+  "ケース番号を空欄にすると「CMDB番号-連番」で自動採番して登録します。" +
+  "ケース番号を記入した場合は、同じケース番号・CMDB番号の既存ケースがあるか重複判定します。";
+
+// インポート可能なシステム (TestCase 画面の候補と同じ除外 + 別テンプレートの UnivContents)
+async function loadImportSystems(): Promise<string[]> {
+  const databaseId = process.env.NOTION_PROGRESS_DATABASE_ID;
+  if (!databaseId) return [];
+  const EXCLUDE = new Set(["全体システム", "脆弱性診断", UNIV_CONTENTS_SYSTEM]);
+  const set = new Set<string>();
+  for (const it of await queryAllProgressItems(databaseId)) {
+    const s = (it.system || "").trim();
+    if (s && !s.includes("改善") && !EXCLUDE.has(s)) set.add(s);
+  }
+  return Array.from(set).sort();
+}
+
+type TcImportRow = { rowNo: number; values: Record<string, string> };
+
+// 1行ずつの入力チェック。エラーは「N行目: …」の文字列で返す
+function validateImportRows(rows: TcImportRow[], systems: string[]): string[] {
+  const errors: string[] = [];
+  const lists: Record<string, string[]> = { ...TC_IMPORT_LISTS, "システム": systems };
+  const seen = new Map<string, number>();
+  for (const { rowNo, values } of rows) {
+    for (const f of TC_IMPORT_REQUIRED) {
+      if (!values[f]) errors.push(`${rowNo}行目: ${f} は必須です`);
+    }
+    for (const [f, list] of Object.entries(lists)) {
+      if (values[f] && !list.includes(values[f])) errors.push(`${rowNo}行目: ${f}「${values[f]}」は選択肢にありません`);
+    }
+    const caseNo = values["ケース番号"];
+    if (caseNo) {
+      const key = `${values["システム"]}|${caseNo}`;
+      if (seen.has(key)) errors.push(`${rowNo}行目: ケース番号 ${caseNo} がファイル内で重複しています (${seen.get(key)}行目)`);
+      else seen.set(key, rowNo);
+    }
+  }
+  return errors;
+}
+
+// システムごとの既存ケース (ケース番号 → page)。表が無ければ空
+async function loadImportIndexes(systems: string[], year: number, create: boolean) {
+  const parentPageId = process.env.NOTION_TESTCASE_PARENT_PAGE_ID;
+  if (!notion || !parentPageId) throw new Error("Notion 未設定 (NOTION_TESTCASE_PARENT_PAGE_ID)");
+  const out = new Map<string, { dataSourceId: string | null; index: Map<string, any> }>();
+  for (const system of systems) {
+    const dbTitle = `${system}${year}`;
+    let dataSourceId: string | null = null;
+    if (create) {
+      dataSourceId = (await ensureTestcaseDatabase(parentPageId, dbTitle, TESTCASE_NOTION_FIELDS)).dataSourceId;
+    } else {
+      const dbId = await findTestcaseDatabaseId(parentPageId, dbTitle);
+      if (dbId) {
+        const db: any = await notion.databases.retrieve({ database_id: dbId });
+        dataSourceId = db?.data_sources?.[0]?.id ?? null;
+      }
+    }
+    out.set(system, { dataSourceId, index: dataSourceId ? await loadTestcaseIndex(dataSourceId) : new Map() });
+  }
+  return out;
+}
+
+const CMDB_FIELD = TESTCASE_NOTION_FIELDS.find((f) => f.name === "CMDB番号")!;
+
+// 既存行との突き合わせ。duplicate = 上書き/新規追加の選択対象、エラーは CMDB番号違いの番号衝突
+function findImportDuplicates(
+  rows: TcImportRow[],
+  indexes: Map<string, { index: Map<string, any> }>,
+): { duplicates: Map<number, any>; errors: string[] } {
+  const duplicates = new Map<number, any>();
+  const errors: string[] = [];
+  for (const { rowNo, values } of rows) {
+    const caseNo = values["ケース番号"];
+    if (!caseNo) continue;
+    const page = indexes.get(values["システム"])?.index.get(caseNo);
+    if (!page) continue;
+    const cmdb = readTcPlain(page, CMDB_FIELD).trim();
+    if (cmdb === values["CMDB番号"]) duplicates.set(rowNo, page);
+    else errors.push(`${rowNo}行目: ケース番号 ${caseNo} は CMDB番号「${cmdb || "未設定"}」の既存ケースで使われています`);
+  }
+  return { duplicates, errors };
+}
+
+function readImportWorkbookRows(ws: ExcelJS.Worksheet): TcImportRow[] {
+  const colOf = new Map<string, number>();
+  ws.getRow(1).eachCell((cell, col) => {
+    const name = cell.text.replace(/\*$/, "").trim();
+    if (name) colOf.set(name, col);
+  });
+  const missing = TC_IMPORT_COLUMNS.filter((c) => !colOf.has(c));
+  if (missing.length) throw new Error(`テンプレートの列が見つかりません: ${missing.join("、")}`);
+  const rows: TcImportRow[] = [];
+  for (let r = 2; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r);
+    const values: Record<string, string> = {};
+    for (const c of TC_IMPORT_COLUMNS) values[c] = row.getCell(colOf.get(c)!).text.trim();
+    if (Object.values(values).some(Boolean)) rows.push({ rowNo: r, values });
+  }
+  return rows;
+}
+
+app.get("/api/testcase/import-template", async (_req, res) => {
+  try {
+    const systems = await loadImportSystems();
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("テストケース");
+    const listWs = wb.addWorksheet("リスト", { state: "veryHidden" });
+    const help = wb.addWorksheet("記入方法");
+
+    ws.columns = TC_IMPORT_COLUMNS.map((c) => ({
+      header: TC_IMPORT_REQUIRED.has(c) ? `${c}*` : c,
+      key: c,
+      width: ["テスト内容", "前提条件", "ステップ", "予期結果", "備考"].includes(c) ? 40 : 16,
+    }));
+    const head = ws.getRow(1);
+    head.font = { bold: true };
+    head.eachCell((cell) => {
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFDDEBF7" } };
+    });
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+
+    // 選択肢は非表示シートに置いて範囲参照する (インライン指定は 255 文字制限があるため)
+    const lists: Record<string, string[]> = { "システム": systems, ...TC_IMPORT_LISTS };
+    Object.entries(lists).forEach(([name, list], i) => {
+      const col = i + 1;
+      listWs.getCell(1, col).value = name;
+      list.forEach((v, j) => { listWs.getCell(j + 2, col).value = v; });
+      const letter = listWs.getColumn(col).letter;
+      const target = ws.getColumn(TC_IMPORT_COLUMNS.indexOf(name as any) + 1).letter;
+      (ws as any).dataValidations.add(`${target}2:${target}1000`, {
+        type: "list",
+        allowBlank: true,
+        formulae: [`リスト!$${letter}$2:$${letter}$${Math.max(list.length, 1) + 1}`],
+        showErrorMessage: true,
+        errorTitle: name,
+        error: `${name} は一覧から選択してください`,
+      });
+    });
+
+    help.getColumn(1).width = 110;
+    [
+      "TestCase インポート 記入方法",
+      "",
+      TC_IMPORT_HINT,
+      "・重複した場合は、画面で行ごとに「新規追加（新しい番号で登録）」か「上書き」を選択します。",
+      "・上書きでは、空欄の項目は既存の値を保持します。",
+      "・* の項目は必須です。システム・月次・優先級・カテゴリ・テスト結果・再テスト結果は一覧から選択してください。",
+      "・年度はインポート画面で選択した年度の表（{システム}{年度}）に登録します。",
+      "・1行でもエラーがある場合は、ファイル全体を登録しません。",
+    ].forEach((t, i) => {
+      const c = help.getCell(i + 1, 1);
+      c.value = t;
+      if (i === 0) c.font = { bold: true, size: 14 };
+    });
+
+    const buffer = Buffer.from(await wb.xlsx.writeBuffer());
+    res.set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.set(
+      "Content-Disposition",
+      `attachment; filename="testcase_import.xlsx"; filename*=UTF-8''${encodeURIComponent("TestCaseインポートテンプレート.xlsx")}`,
+    );
+    return res.send(buffer);
+  } catch (error) {
+    console.error("Testcase import template error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "テンプレートの作成に失敗しました" });
+  }
+});
+
+// アップロードされた Excel を読み、入力チェックと重複判定だけ行う (登録はしない)
+app.post("/api/testcase/import-check", upload.single("file"), async (req, res) => {
+  const year = Number(String(req.body?.year ?? "").trim());
+  if (!req.file) return res.status(400).json({ error: "ファイルを選択してください" });
+  if (!Number.isFinite(year) || year <= 0) return res.status(400).json({ error: "year は必須です" });
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(req.file.buffer as any);
+    const ws = wb.getWorksheet("テストケース") ?? wb.worksheets[0];
+    if (!ws) return res.status(400).json({ error: "シートがありません" });
+    const rows = readImportWorkbookRows(ws);
+    if (rows.length === 0) return res.status(400).json({ error: "登録するデータがありません" });
+
+    const errors = validateImportRows(rows, await loadImportSystems());
+    if (errors.length) return res.json({ rows, duplicates: [], errors });
+
+    const indexes = await loadImportIndexes([...new Set(rows.map((r) => r.values["システム"]))], year, false);
+    const dup = findImportDuplicates(rows, indexes);
+    const duplicates = rows
+      .filter((r) => dup.duplicates.has(r.rowNo))
+      .map((r) => ({
+        rowNo: r.rowNo,
+        caseNo: r.values["ケース番号"],
+        cmdbNo: r.values["CMDB番号"],
+        system: r.values["システム"],
+        existingContent: readTcPlain(dup.duplicates.get(r.rowNo), TESTCASE_NOTION_FIELDS.find((f) => f.name === "テスト内容")!),
+      }));
+    return res.json({ rows, duplicates, errors: dup.errors });
+  } catch (error) {
+    console.error("Testcase import check error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "読み込みに失敗しました" });
+  }
+});
+
+// 登録。rows は import-check の結果、overwrite は上書きする行番号 (それ以外の重複行は新規採番)
+app.post("/api/testcase/import", async (req, res) => {
+  const year = Number(String(req.body?.year ?? "").trim());
+  const rawRows = req.body?.rows;
+  const overwrite = new Set<number>((req.body?.overwrite ?? []).map(Number));
+  if (!Number.isFinite(year) || year <= 0) return res.status(400).json({ error: "year は必須です" });
+  if (!Array.isArray(rawRows) || rawRows.length === 0) return res.status(400).json({ error: "rows は必須です" });
+  const rows: TcImportRow[] = rawRows.map((r: any) => {
+    const values: Record<string, string> = {};
+    for (const c of TC_IMPORT_COLUMNS) values[c] = String(r?.values?.[c] ?? "").trim();
+    return { rowNo: Number(r?.rowNo), values };
+  });
+  try {
+    const errors = validateImportRows(rows, await loadImportSystems());
+    if (errors.length) return res.status(400).json({ error: errors.join("\n") });
+    const indexes = await loadImportIndexes([...new Set(rows.map((r) => r.values["システム"]))], year, true);
+    const dup = findImportDuplicates(rows, indexes);
+    if (dup.errors.length) return res.status(400).json({ error: dup.errors.join("\n") });
+
+    // 採番用: システム|CMDB番号 → 使用済みの最大連番 (既存 + ファイル内で番号指定のもの)
+    const maxSeq = new Map<string, number>();
+    const bump = (system: string, caseNo: string) => {
+      const m = caseNo.match(/^(.+)-(\d+)$/);
+      if (!m) return;
+      const key = `${system}|${m[1]}`;
+      maxSeq.set(key, Math.max(maxSeq.get(key) ?? 0, Number(m[2])));
+    };
+    for (const [system, { index }] of indexes) for (const caseNo of index.keys()) bump(system, caseNo);
+    for (const r of rows) if (r.values["ケース番号"]) bump(r.values["システム"], r.values["ケース番号"]);
+
+    const today = new Date().toISOString().slice(0, 10);
+    let created = 0;
+    let updated = 0;
+    for (const { rowNo, values } of rows) {
+      const system = values["システム"];
+      const target = indexes.get(system)!;
+      const existing = dup.duplicates.get(rowNo);
+      if (existing && overwrite.has(rowNo)) {
+        // 上書き: 空欄は既存値を保持。ケース番号/システム/CMDB番号 はキーなので触らない
+        const props: Record<string, any> = {};
+        for (const f of TESTCASE_NOTION_FIELDS) {
+          if (["ケース番号", "システム", "CMDB番号"].includes(f.name)) continue;
+          const v = values[f.name];
+          if (v) props[f.name] = buildTcPropertyValue(f, v, false);
+        }
+        props["更新日"] = buildTcPropertyValue(TESTCASE_NOTION_FIELDS.find((f) => f.name === "更新日")!, today, false);
+        await withNotionRetry("pages.update", () => notion!.pages.update({ page_id: existing.id, properties: props } as any));
+        updated++;
+        continue;
+      }
+      let caseNo = values["ケース番号"];
+      if (!caseNo || existing) {
+        const key = `${system}|${values["CMDB番号"]}`;
+        const next = (maxSeq.get(key) ?? 0) + 1;
+        maxSeq.set(key, next);
+        caseNo = `${values["CMDB番号"]}-${next}`;
+      }
+      const fixed: Record<string, string> = { "ケース番号": caseNo, "バージョン": "1", "作成日": today };
+      const props: Record<string, any> = {};
+      for (const f of TESTCASE_NOTION_FIELDS) {
+        props[f.name] = buildTcPropertyValue(f, fixed[f.name] ?? values[f.name] ?? "", false);
+      }
+      await withNotionRetry("pages.create", () => notion!.pages.create({
+        parent: { type: "data_source_id", data_source_id: target.dataSourceId! } as any,
+        properties: props,
+      } as any));
+      created++;
+    }
+    return res.json({ ok: true, created, updated });
+  } catch (error) {
+    console.error("Testcase import error:", error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : "登録に失敗しました" });
   }
 });
 

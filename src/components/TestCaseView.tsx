@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, Plus, RefreshCw, X, Trash2, Pencil, Save } from 'lucide-react';
+import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, Plus, RefreshCw, X, Trash2, Pencil, Save, Upload } from 'lucide-react';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
 import NewTestcaseDialog from './NewTestcaseDialog';
+import ImportTestcaseDialog from './ImportTestcaseDialog';
 import UcCheckGrid from './UcCheckGrid';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
   UC_CHECK_ITEMS, UC_EDITABLE_FIELDS, UC_HIGHLIGHT_FIELDS, UC_PRIMARY_FIELDS, UC_SECONDARY_FIELDS,
-  effectiveResult, isUnivContents, tcLabel, ucCheckShort, type TcRow,
+  bugLinkColor, effectiveResult, isUnivContents, tcLabel, ucCheckShort, type TcRow,
 } from './testcaseFields';
 
 type ListResponse = {
@@ -85,9 +86,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [exporting, setExporting] = useState(false);
   // ケース新規作成 (ライブラリに無いケースを1件追加)
   const [newOpen, setNewOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // ケース番号 → 移管済み BUG。BUG 表を引いて判定するので、BUG を削除すれば自動的に戻る
-  const [transferred, setTransferred] = useState<Record<string, { id: string; no: string }>>({});
+  const [transferred, setTransferred] = useState<Record<string, { id: string; no: string; status?: string }>>({});
   // ダイアログの表示モード: 詳細 / BUG移管フォーム / 移管済み BUG の内容
   const [dialogMode, setDialogMode] = useState<'detail' | 'transfer' | 'bug'>('detail');
 
@@ -99,6 +101,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [fMajor, setFMajor] = useState('');
   const [fMiddle, setFMiddle] = useState('');
   const [fMinor, setFMinor] = useState('');
+  // 備考: '' = すべて / 'filled' = 記入あり (空白のみは空扱い)
+  const [fNote, setFNote] = useState('');
 
   // UnivContents はブラウザ検証リストの別テンプレートで表示する (関連処理は共通)
   const uc = isUnivContents(system);
@@ -179,13 +183,14 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       if (fMajor && (r['大分類'] || '') !== fMajor) return false;
       if (fMiddle && (r['中分類'] || '') !== fMiddle) return false;
       if (fMinor && (r['小分類'] || '') !== fMinor) return false;
+      if (fNote === 'filled' && !(r['備考'] || '').trim()) return false;
       if (keywords.length) {
         const haystack = keywordFields.map((f) => r[f] || '').join(' ').toLowerCase();
         if (!keywords.every((k) => haystack.includes(k))) return false;
       }
       return true;
     });
-  }, [rows, fMonth, fKeyword, fResult, fVersion, fMajor, fMiddle, fMinor, keywordFields]);
+  }, [rows, fMonth, fKeyword, fResult, fVersion, fMajor, fMiddle, fMinor, fNote, keywordFields]);
 
   const sorted = useMemo(() => {
     if (!sortCol || !sortDir) return filtered;
@@ -226,9 +231,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     return { total, ok, un, block, ng };
   }, [filtered]);
 
-  const hasFilter = fKeyword || fResult || fVersion || fMajor || fMiddle || fMinor;
+  const hasFilter = fKeyword || fResult || fVersion || fMajor || fMiddle || fMinor || fNote;
   const clearFilters = () => {
-    setFKeyword(''); setFResult(''); setFVersion(''); setFMajor(''); setFMiddle(''); setFMinor('');
+    setFKeyword(''); setFResult(''); setFVersion(''); setFMajor(''); setFMiddle(''); setFMinor(''); setFNote('');
   };
 
   const openDetail = (r: TcRow, mode: 'detail' | 'transfer' | 'bug' = 'detail') => {
@@ -427,6 +432,15 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           </button>
           <button
             type="button"
+            onClick={() => setImportOpen(true)}
+            title="テンプレート Excel からケースを一括登録"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 transition-colors"
+          >
+            <Upload size={14} />
+            インポート
+          </button>
+          <button
+            type="button"
             onClick={() => setNewOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-sm font-medium text-white hover:bg-neutral-800 transition-colors"
           >
@@ -460,6 +474,19 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             // 作成先の表を表示する。表示中と同じ表なら取り直す
             if (r.system === system && r.year === year) fetchList();
             else { setSystem(r.system); setYear(r.year); }
+          }}
+        />
+      )}
+
+      {importOpen && (
+        <ImportTestcaseDialog
+          year={year}
+          onClose={() => setImportOpen(false)}
+          onImported={(r) => {
+            setImportOpen(false);
+            setNotice(`インポートしました（新規 ${r.created}件 / 上書き ${r.updated}件）`);
+            fetchList();
+            reloadTransferred();
           }}
         />
       )}
@@ -534,6 +561,13 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           </select>
         </label>
         </>)}
+        <label className="space-y-1">
+          <span className="block text-[11px] font-semibold text-neutral-500">備考</span>
+          <select value={fNote} onChange={(e) => setFNote(e.target.value)} className={selectCls}>
+            <option value="">すべて</option>
+            <option value="filled">記入あり</option>
+          </select>
+        </label>
         {hasFilter && (
           <button
             type="button"
@@ -556,9 +590,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           {rows.length === 0 ? 'データがありません' : '条件に一致するデータがありません'}
         </div>
       ) : (
-        <div className="overflow-x-auto border border-neutral-200 rounded-xl bg-white">
+        // 縦スクロールも枠内で行い、見出し行を sticky で固定する (overflow-x だけだと sticky が効かない)
+        <div className="overflow-auto max-h-[calc(100vh-180px)] border border-neutral-200 rounded-xl bg-white">
           <table className="w-full border-collapse">
-            <thead>
+            <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#e5e5e5]">
               <tr>
                 {listColumns.map((c) => (
                   <th
@@ -627,8 +662,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         <button
                           type="button"
                           onClick={() => openDetail(r, 'bug')}
-                          title="移管済みの BUG を表示"
-                          className="px-2 py-1 rounded border border-red-200 bg-red-50 text-xs text-red-600 hover:bg-red-100 whitespace-nowrap"
+                          title={`移管済みの BUG を表示（${transferred[(r['ケース番号'] || '').trim()].status || '状態未設定'}）`}
+                          className={`px-2 py-1 rounded border text-xs whitespace-nowrap ${bugLinkColor(transferred[(r['ケース番号'] || '').trim()].status)}`}
                         >
                           移管済み No.{transferred[(r['ケース番号'] || '').trim()].no || '-'}
                         </button>
@@ -662,7 +697,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           </table>
           {/* ページネーション */}
           {totalPages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t border-neutral-100">
+            <div className="sticky bottom-0 left-0 bg-white flex items-center justify-between px-4 py-3 border-t border-neutral-100">
               <span className="text-xs text-neutral-400">{sorted.length} 件中 {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, sorted.length)} 件</span>
               <div className="flex items-center gap-1">
                 <button
@@ -769,7 +804,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       onClick={() => setDialogMode('bug')}
                       disabled={editing}
                       title={editing ? '編集中は操作できません。保存またはキャンセルしてください' : '移管済みの BUG を表示'}
-                      className="px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 text-sm text-red-600 hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                      className={`px-2.5 py-1.5 rounded-lg border text-sm disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap ${bugLinkColor(transferred[(detail['ケース番号'] || '').trim()].status)}`}
                     >
                       移管済み No.{transferred[(detail['ケース番号'] || '').trim()].no || '-'}
                     </button>

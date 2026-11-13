@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, ClipboardList, Loader2 } from 'lucide-react';
 import TestcaseDetailDialog from './TestcaseDetailDialog';
-import { RESULT_COLOR, effectiveResult, isUnivContents, tcLabel, type TcRow } from './testcaseFields';
+import { RESULT_COLOR, bugLinkColor, effectiveResult, isUnivContents, tcLabel, type TcRow } from './testcaseFields';
 
 type Response = {
   items: TcRow[];
@@ -125,7 +125,7 @@ function TestcaseTable({ data, onDetailIndex }: { data: Response; onDetailIndex:
                   return (
                     <td key={c} className={td0}>
                       {bugNo ? (
-                        <span className="inline-block rounded-full bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 text-[10px] font-bold tabular-nums">
+                        <span title={r._bugStatus || '状態未設定'} className={`inline-block rounded-full border px-2 py-0.5 text-[10px] font-bold tabular-nums ${bugLinkColor(r._bugStatus)}`}>
                           #{bugNo}
                         </span>
                       ) : '-'}
