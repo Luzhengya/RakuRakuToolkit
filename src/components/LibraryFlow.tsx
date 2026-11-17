@@ -1,5 +1,6 @@
-import { Route } from 'lucide-react';
-import type { EntryNode, NodeCases, Tone, ViewTab } from '../utils/libraryFlow';
+import { useState } from 'react';
+import { Minus, Plus, Route } from 'lucide-react';
+import { walkNodes, type EntryNode, type NodeCases, type Tone, type ViewTab } from '../utils/libraryFlow';
 import type { TcRow } from './testcaseFields';
 
 // 画面遷移をツリーで表示する (親を左、子を右に縦並び。system_flow.html と同じ見た目)。
@@ -21,12 +22,15 @@ type Props = {
   onPath: (id: string) => void;
 };
 
-function Branch({ n, cases, selected, onToggle, onPath }: Props & { n: EntryNode }) {
+type Fold = { folded: (id: string) => boolean; onFold: (id: string) => void };
+
+function Branch({ n, cases, selected, onToggle, onPath, folded, onFold }: Props & Fold & { n: EntryNode }) {
   const c = cases.get(n.id);
   const own = c?.own.length ?? 0;
   const com = c?.com.length ?? 0;
   const on = selected.has(n.id);
   const kids = n.kids || [];
+  const closed = kids.length > 0 && folded(n.id);
   return (
     <div className="flex items-start">
       <div
@@ -45,7 +49,7 @@ function Branch({ n, cases, selected, onToggle, onPath }: Props & { n: EntryNode
             {n.ref ? '→ ' : ''}{n.tone === 'action' && !n.ref ? '［機能］' : ''}{n.label}
           </span>
           <span className="block text-[10px] text-neutral-500 tabular-nums">
-            {own}件{n.com ? `＋共通${com}件` : ''}
+            {own}件{n.com ? `＋共通${com}件` : ''}{closed ? `（子${kids.length}）` : ''}
           </span>
         </button>
         <button
@@ -56,8 +60,18 @@ function Branch({ n, cases, selected, onToggle, onPath }: Props & { n: EntryNode
         >
           <Route size={11} />
         </button>
+        {kids.length > 0 && (
+          <button
+            type="button"
+            onClick={() => onFold(n.id)}
+            title={closed ? '子ノードを展開' : '子ノードを折りたたむ'}
+            className="absolute right-0.5 bottom-0.5 p-0.5 rounded text-neutral-400 hover:text-neutral-800 hover:bg-white/70"
+          >
+            {closed ? <Plus size={11} /> : <Minus size={11} />}
+          </button>
+        )}
       </div>
-      {kids.length > 0 && (
+      {kids.length > 0 && !closed && (
         <div className="flex flex-col">
           {kids.map((k, i) => {
             const first = i === 0;
@@ -73,7 +87,7 @@ function Branch({ n, cases, selected, onToggle, onPath }: Props & { n: EntryNode
                 )}
                 <span className="absolute left-0 top-[17px] w-[18px] border-t-[1.5px] border-neutral-500" />
                 <span className="absolute left-[15px] top-[11px] text-[10px] text-neutral-500 leading-none">▸</span>
-                <Branch n={k} cases={cases} selected={selected} onToggle={onToggle} onPath={onPath} />
+                <Branch n={k} cases={cases} selected={selected} onToggle={onToggle} onPath={onPath} folded={folded} onFold={onFold} />
               </div>
             );
           })}
@@ -89,6 +103,22 @@ export default function LibraryFlow({ tabs, tabIndex, onTab, ...props }: Props &
   onTab: (i: number) => void;
 }) {
   const tab = tabs[tabIndex];
+  // 折りたたんだノード。ノード id はタブごとに振られるため、タブ名と組にして持つ（タブを切り替えても保持）
+  const [closed, setClosed] = useState<Set<string>>(new Set());
+  const key = (id: string) => `${tab?.title}\u0000${id}`;
+  const folded = (id: string) => closed.has(key(id));
+  const onFold = (id: string) => setClosed((s) => {
+    const next = new Set(s);
+    if (!next.delete(key(id))) next.add(key(id));
+    return next;
+  });
+  const foldAll = (fold: boolean) => setClosed((s) => {
+    const next = new Set(s);
+    walkNodes(tab?.sections.flatMap((x) => x.roots) ?? [], (n) => {
+      if (n.kids?.length) (fold ? next.add(key(n.id)) : next.delete(key(n.id)));
+    });
+    return next;
+  });
   return (
     <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
       <div className="flex flex-wrap gap-1.5 p-3 border-b border-neutral-200">
@@ -102,6 +132,22 @@ export default function LibraryFlow({ tabs, tabIndex, onTab, ...props }: Props &
             {t.title}
           </button>
         ))}
+        <div className="ml-auto flex gap-1.5">
+          <button
+            type="button"
+            onClick={() => foldAll(false)}
+            className="px-2.5 py-1 rounded-lg text-xs border bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"
+          >
+            すべて展開
+          </button>
+          <button
+            type="button"
+            onClick={() => foldAll(true)}
+            className="px-2.5 py-1 rounded-lg text-xs border bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50"
+          >
+            すべて折りたたむ
+          </button>
+        </div>
       </div>
       <div className="overflow-auto max-h-[60vh] p-4 space-y-3">
         {tab?.sections.map((s, i) => (
@@ -110,13 +156,14 @@ export default function LibraryFlow({ tabs, tabIndex, onTab, ...props }: Props &
               <p className="text-xs font-bold mb-1.5 px-2.5 py-0.5 border-l-4 border-[#5b9bd5] bg-neutral-100">{s.title}</p>
             )}
             <div className="space-y-1.5">
-              {s.roots.map((r) => <Branch key={r.id} n={r} {...props} />)}
+              {s.roots.map((r) => <Branch key={r.id} n={r} {...props} folded={folded} onFold={onFold} />)}
             </div>
           </div>
         ))}
       </div>
       <p className="px-4 py-2 border-t border-neutral-100 text-[11px] text-neutral-400">
         ノードをクリックで選択／解除（複数選択可）。<Route size={10} className="inline -mt-0.5" /> でそのノードまでの経路をまとめて選択。
+        <Minus size={10} className="inline -mt-0.5" />／<Plus size={10} className="inline -mt-0.5" /> で子ノードを折りたたみ／展開。
         件数は現在の絞り込み条件で数えています。「＋共通」は大分類「共通」の同じ画面のケースです。
       </p>
     </div>
