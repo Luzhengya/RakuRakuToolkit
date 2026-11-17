@@ -6508,6 +6508,22 @@ app.get("/api/config/kpi-targets", async (_req, res) => {
   }
 });
 
+// レポート編集の「AI文書整理」で本文の前に付ける提示詞 (test_attribute の prompt1 行)。
+// 取得できない時は空文字を返し、画面側でボタンを無効にする
+app.get("/api/config/report-ai-prompt", async (_req, res) => {
+  const databaseId = process.env.NOTION_ENV_VERSION_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.json({ prompt: "" });
+  }
+  try {
+    const map = await queryConfigTable(databaseId);
+    return res.json({ prompt: map["prompt1"]?.value ?? "" });
+  } catch (error) {
+    console.error("Report AI prompt query error:", error);
+    return res.json({ prompt: "" });
+  }
+});
+
 // ── TestCase Library ──────────────────────────────────────────────────
 // 基礎ケースライブラリ。NOTION_TESTCASE_LIBRARY_PARENT_ID 配下の子データベースを参照する。
 
@@ -7773,6 +7789,7 @@ app.get("/api/reports", async (_req, res) => {
         id: p.id as string,
         title: propertyToPlainText(p.properties?.["タイトル"]),
         status: propertyToPlainText(p.properties?.["ステータス"]),
+        author: propertyToPlainText(p.properties?.["作成者"]).trim(),
         updatedTime: (p.properties?.["更新日時"]?.last_edited_time ?? p.last_edited_time ?? "") as string,
         unresolvedCount: unresolvedCount.get(normalizeNotionId(p.id)) ?? 0,
         editKey: propertyToPlainText(p.properties?.["編集キー"]).trim(),
@@ -7863,6 +7880,8 @@ app.post("/api/reports", async (req, res) => {
   if (!env) return;
   const title = textOf(req.body?.title);
   if (!title) return res.status(400).json({ error: "title is required" });
+  const author = textOf(req.body?.author);
+  if (!author) return res.status(400).json({ error: "author is required" });
   const editKey = newReportEditKey();
   try {
     const reportDs = await resolveReportDataSourceId(env.reportDb);
@@ -7873,6 +7892,7 @@ app.post("/api/reports", async (req, res) => {
           "タイトル": { title: toRichTextChunks(title) },
           "ステータス": { select: { name: "下書き" } },
           "編集キー": { rich_text: toRichTextChunks(editKey) },
+          "作成者": { rich_text: toRichTextChunks(author) },
         },
       } as any),
     );
@@ -7902,6 +7922,22 @@ app.post("/api/reports/:id/status", async (req, res) => {
   } catch (error) {
     console.error("Report status update error:", error);
     return res.status(500).json({ error: "Failed to update status" });
+  }
+});
+
+// レポートの削除（Notion でアーカイブ。Notion のゴミ箱から戻せる）。紐づく注記はそのまま残す
+app.delete("/api/reports/:id", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    if (!hasReportEditKey(page, req)) return res.status(403).json({ error: "Edit key is required" });
+    await withNotionRetry("pages.update", () => notion!.pages.update({ page_id: page.id, archived: true } as any));
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error("Report delete error:", error);
+    return res.status(500).json({ error: "Failed to delete report" });
   }
 });
 

@@ -16,6 +16,7 @@ import {
   ListChecks, ListCollapse, ListOrdered, Loader2, Minus, Pilcrow, Quote, Redo2, Strikethrough, Table as TableIcon,
   Underline as UnderlineIcon, Undo2,
 } from 'lucide-react';
+import { reportToPlainText } from '../utils/reportPlainText';
 
 // レポートの編集画面（Tiptap）。読み込み・保存は Notion 原稿との変換をサーバーで行う。
 // 各ブロックは Notion のブロック ID（blockId）を持ち、保存は差分のみ（注記を保つため）。
@@ -184,7 +185,19 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [dirty, setDirty] = useState(false);
+  // 「AI文書整理」で本文の前に付ける提示詞（null: 読み込み中、'': 取得できず）
+  const [aiPrompt, setAiPrompt] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // クリック時に待つと新しいタブがポップアップブロックされるため、先に読んでおく
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/config/report-ai-prompt')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => { if (alive) setAiPrompt(String(d.prompt ?? '')); })
+      .catch(() => { if (alive) setAiPrompt(''); });
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -295,6 +308,15 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
     onCancel();
   };
 
+  // 提示詞＋本文をクリップボードへ入れて DeepSeek を新しいタブで開く（貼り付け・送信は利用者が行う）
+  const openAiOrganize = () => {
+    if (!editor || !aiPrompt) return;
+    setSaveError('');
+    navigator.clipboard.writeText(`${aiPrompt}\n\n${reportToPlainText(editor.getJSON())}`)
+      .catch(() => setSaveError('コピーに失敗しました'));
+    window.open('https://chat.deepseek.com/', '_blank', 'noopener');
+  };
+
   // 未保存のままタブを閉じようとしたら確認
   useEffect(() => {
     if (!dirty) return;
@@ -319,6 +341,14 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
         {saveError && <span className="text-xs text-red-500">{saveError}</span>}
         {!saveError && dirty && <span className="text-xs text-neutral-400">未保存の変更があります</span>}
         <div className="ml-auto flex gap-2">
+          <button
+            onClick={openAiOrganize}
+            disabled={saving || !aiPrompt || editor.isEmpty}
+            title={aiPrompt === null ? '提示詞を読み込み中です' : !aiPrompt ? 'test_attribute の prompt1 を取得できませんでした' : '提示詞と本文をコピーして DeepSeek を開きます'}
+            className="text-sm px-4 py-1.5 rounded-md text-blue-600 hover:bg-blue-50 disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            AI文書整理
+          </button>
           <button onClick={cancel} disabled={saving} className="text-sm px-4 py-1.5 rounded-md text-neutral-600 hover:bg-neutral-100">キャンセル</button>
           <button
             onClick={save}

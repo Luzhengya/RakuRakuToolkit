@@ -25,9 +25,9 @@ import ReportListPage from './components/ReportListPage';
 import BugList from './components/BugList';
 
 type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'data-stats' | 'reports' | 'bug-list' | 'data-collection' | 'daily-news';
-type Category = '文档类' | '管理类' | 'データ収集类';
+type Category = 'ドキュメント類' | '管理類' | 'データ収集類';
 
-const CATEGORIES: Category[] = ['文档类', '管理类', 'データ収集类'];
+const CATEGORIES: Category[] = ['ドキュメント類', '管理類', 'データ収集類'];
 
 const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-stats', 'reports', 'bug-list', 'data-collection', 'daily-news']);
 
@@ -69,7 +69,7 @@ function useReportRoute(): string {
 
 export default function App() {
   const [view, setView] = useHashRoute();
-  const [category, setCategory] = useState<Category>('文档类');
+  const [category, setCategory] = useState<Category>('ドキュメント類');
   const reportId = useReportRoute();
 
   if (reportId) {
