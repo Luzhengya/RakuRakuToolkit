@@ -19,7 +19,9 @@ function htmlToText(html: string): string {
   return html
     .replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr)>/gi, '\n')
     .replace(/<\/t[dh]>/gi, '\t')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^>]*>/g, '')
+    // 入れ子の崩れたタグ（例: <<b>script>）の残りも消す。実体参照の < > は次の行で文字に戻す
+    .replace(/[<>]/g, '')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
     .replace(/\t\n/g, '\n')
     .trim();
