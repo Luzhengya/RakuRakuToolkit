@@ -235,9 +235,10 @@ COMMON = [
 ENTRY_TABS = [('利墨', [LM]), ('RM会員', [J]), ('FNA', [FNA]), ('非会員', [X]), ('共通', COMMON)]
 
 
-def tabs(rows):
+def tabs(rows, entry_tabs=None):
     """開発確認用 は遷移を持たないので、データにある中分類ごとに1ノードを作る。
-    ケースが1件も無いノード（子孫も含めて0件）は出さない（case が増えたら再生成で出る）"""
+    ケースが1件も無いノード（子孫も含めて0件）は出さない（case が増えたら再生成で出る）。
+    need_own のノード（［調査機関切替］）は、共通側だけで自身のケースが無ければ出さない"""
     chus = sorted({r['中'] for _, r in rows if r['大'] == '開発確認用'})
     dev = [N(c, own=[C(大='開発確認用', 中=c)]) for c in chus]
     has = lambda n: any(hit(r, x) for _, r in rows for x in n['own'] + n['com'])
@@ -247,26 +248,26 @@ def tabs(rows):
         for n in nodes:
             kids = prune(n['kids'])
             # 旧の申込画面 の下の Step2〜4 は本線と同じなので、その商品の旧の申込画面の case が無ければ枝ごと出さない
-            if n['label'].startswith('旧の申込画面') and not has(dict(n, com=[])):
+            if (n['label'].startswith('旧の申込画面') or n.get('need_own')) and not has(dict(n, com=[])):
                 continue
             if kids or has(n):
                 out.append(dict(n, kids=kids))
         return out
-    return [(t, prune(roots)) for t, roots in ENTRY_TABS + [('開発確認用', dev)]]
+    return [(t, prune(roots)) for t, roots in (entry_tabs or ENTRY_TABS) + [('開発確認用', dev)]]
 
 
 # ── 出力 ────────────────────────────────────
 def _tone(n, depth, tab):
     if n['fn']:
         return 'action'
-    if depth == 0 and tab not in ('共通', '開発確認用'):
+    if depth == 0 and tab not in ('共通', '開発確認用') and n['own']:
         return 'entry'
-    if n['label'].startswith('トップページ'):
+    if n['label'].startswith('トップページ') or n['label'] == 'メニュー':
         return 'menu'
     return 'screen'
 
 
-def to_json(rows):
+def to_json(rows, entry_tabs=None):
     """アプリ用：タブ → ルートノード列。id はタブ内のパス"""
     def conv(n, nid, depth, tab):
         o = {'id': nid, 'label': n['label'], 'tone': _tone(n, depth, tab)}
@@ -280,10 +281,10 @@ def to_json(rows):
         if n['kids']:
             o['kids'] = [conv(k, f'{nid}.{i}', depth + 1, tab) for i, k in enumerate(n['kids'])]
         return o
-    return [{'title': t, 'roots': [conv(r, f'n{i}', 0, t) for i, r in enumerate(roots)]} for t, roots in tabs(rows)]
+    return [{'title': t, 'roots': [conv(r, f'n{i}', 0, t) for i, r in enumerate(roots)]} for t, roots in tabs(rows, entry_tabs)]
 
 
-def write_draft(rows, path):
+def write_draft(rows, path, entry_tabs=None, head=None):
     """確認用 MD（件数つき）。rows = [(件数, {大,中,小,機})]"""
     match = lambda rules: {i for i, (c, r) in enumerate(rows) if any(hit(r, x) for x in rules)}
     ncount = lambda ids: sum(rows[i][0] for i in ids)
@@ -300,11 +301,11 @@ def write_draft(rows, path):
         for k in n['kids']:
             walk(k, depth + 1, n['kids'])
 
-    out = ['# 利用者システム（wreport_base）入口別フロー', '',
-           '- 入口は大分類の【】（【利墨】【RM】【FNA】【非会員】）で決まる。',
-           '- 「n件＋共通m件」＝商品自身のケース＋共通【入口】（または共通）の同じ画面のケース。',
-           '- ［機能］＝画面内の機能・遷移。画面ノードの件数は、子ノードに当たらない残り。', '']
-    for title, roots in tabs(rows):
+    out = list(head or ['# 利用者システム（wreport_base）入口別フロー', '',
+                        '- 入口は大分類の【】（【利墨】【RM】【FNA】【非会員】）で決まる。',
+                        '- 「n件＋共通m件」＝商品自身のケース＋共通【入口】（または共通）の同じ画面のケース。',
+                        '- ［機能］＝画面内の機能・遷移。画面ノードの件数は、子ノードに当たらない残り。', ''])
+    for title, roots in tabs(rows, entry_tabs):
         out.append(f'## Tab：{title}\n')
         for r in roots:
             walk(r, 0)
