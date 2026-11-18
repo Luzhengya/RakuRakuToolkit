@@ -89,7 +89,8 @@ const STATUS_COLOR: Record<string, string> = {
   'ブロック': 'bg-red-50 text-red-700',
 };
 
-const EXCLUDED_SYSTEMS = new Set(['改善対応', '管理作業', '全体システム', '月次改善タスク']);
+// BUG一覧のシステム選択肢もこの除外に合わせる
+export const EXCLUDED_SYSTEMS = new Set(['改善対応', '管理作業', '全体システム', '月次改善タスク']);
 
 function parseMonthKey(p: { month: string; projectName: string }): number {
   const src = p.month || p.projectName;
@@ -430,12 +431,12 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
-      <nav className="flex items-center gap-1.5 text-sm">
-        <button onClick={onBack} className="text-blue-600 hover:text-blue-800 hover:underline">ホーム</button>
-        <span className="text-neutral-400">&gt;&gt;</span>
-        <button onClick={() => { setViewMode('tree'); setSelectedAssignee(null); }} className="text-blue-600 hover:text-blue-800 hover:underline">案件管理</button>
-        <span className="text-neutral-400">&gt;&gt;</span>
-        <span className="text-neutral-700 font-medium">{viewMode === 'tree' ? 'ツリー' : '担当者'}</span>
+      <nav className="flex items-center gap-2 text-sm">
+        <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
+        <span className="text-neutral-400">{'>>'}</span>
+        <button type="button" onClick={() => { setViewMode('tree'); setSelectedAssignee(null); }} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">案件管理</button>
+        <span className="text-neutral-400">{'>>'}</span>
+        <span className="text-neutral-900 font-medium">{viewMode === 'tree' ? 'ツリー' : '担当者'}</span>
       </nav>
 
       {/* Header */}
