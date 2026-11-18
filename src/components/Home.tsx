@@ -14,6 +14,7 @@ import {
   NotebookPen,
   Bug,
   Send,
+  ShieldCheck,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import type { ReactNode } from 'react';
@@ -73,20 +74,28 @@ export default function Home({ category, onSelectTool }: HomeProps) {
       onClick: () => onSelectTool('pdf-edit'),
     },
     {
-      id: 'pdf-edit-table',
-      title: 'PDF編集（表対応）',
-      description: '表を自動認識し、セル単位で編集できます。文字を書き換えても表の幅は変わりません。',
-      category: 'ドキュメント類',
-      icon: <FilePen className="text-indigo-600" size={24} />,
-      onClick: () => onSelectTool('pdf-edit-table'),
-    },
-    {
       id: 'hennge-transfer',
       title: 'HENNGE Transfer',
       description: 'ファイル転送ツールです。HENNGE Transfer を新しいタブで開きます。',
       category: 'ドキュメント類',
       icon: <Send className="text-sky-600" size={24} />,
       onClick: () => window.open('https://transfer.hennge.com/', '_blank', 'noopener'),
+    },
+    {
+      id: 'safe-ai',
+      title: 'Safe AI',
+      description: 'リスクモンスター社内のAIであり、情報漏えいのリスクはなく、安心してデータを処理できるAIです。',
+      category: 'ドキュメント類',
+      icon: <ShieldCheck className="text-emerald-600" size={24} />,
+      onClick: () => window.open('https://sag-m-a4ruxh.gw.safeai.jp/#', '_blank', 'noopener'),
+    },
+    {
+      id: 'pdf-edit-table',
+      title: 'PDF編集（表対応）',
+      description: 'テスト中',
+      category: 'ドキュメント類',
+      icon: <FilePen className="text-indigo-600" size={24} />,
+      onClick: () => onSelectTool('pdf-edit-table'),
     },
     {
       id: 'test-center',
