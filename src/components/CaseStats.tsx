@@ -1454,11 +1454,11 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     <>
     <div className="space-y-6">
       {/* Breadcrumb */}
-      <nav className="flex items-center gap-1.5 text-sm text-neutral-500">
-        <button type="button" onClick={onHome} className="hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
-        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
-        <button type="button" onClick={onBack} className="hover:text-neutral-900 hover:underline transition-colors">TestCenter</button>
-        <ChevronRight size={14} className="text-neutral-300 shrink-0" />
+      <nav className="flex items-center gap-2 text-sm">
+        <button type="button" onClick={onHome} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
+        <span className="text-neutral-400">{'>>'}</span>
+        <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">TestCenter</button>
+        <span className="text-neutral-400">{'>>'}</span>
         <span className="text-neutral-900 font-medium">案件一覧</span>
       </nav>
 

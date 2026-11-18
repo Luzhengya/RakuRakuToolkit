@@ -64,21 +64,21 @@ export default function TestCaseLibrary({ onBack }: { onBack: () => void }) {
   }, []);
 
   const breadcrumb = (
-    <nav className="flex items-center gap-1.5 text-sm mb-4">
-      <button onClick={onBack} className="text-neutral-400 hover:text-neutral-700">ホーム</button>
-      <ChevronRight size={14} className="text-neutral-300" />
+    <nav className="flex items-center gap-2 text-sm mb-4">
+      <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
+      <span className="text-neutral-400">{'>>'}</span>
       {selectedSystem ? (
         <>
-          <button onClick={() => setSelectedSystem(null)} className="text-neutral-400 hover:text-neutral-700">
+          <button type="button" onClick={() => setSelectedSystem(null)} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
             TestCase Library
           </button>
-          <ChevronRight size={14} className="text-neutral-300" />
-          <span className="text-neutral-800 font-semibold">
+          <span className="text-neutral-400">{'>>'}</span>
+          <span className="text-neutral-900 font-medium">
             {SYSTEM_DISPLAY_NAME[selectedSystem] || selectedSystem}
           </span>
         </>
       ) : (
-        <span className="text-neutral-800 font-semibold">TestCase Library</span>
+        <span className="text-neutral-900 font-medium">TestCase Library</span>
       )}
     </nav>
   );

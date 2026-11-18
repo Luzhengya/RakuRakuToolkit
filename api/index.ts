@@ -2065,6 +2065,8 @@ type BugItem = {
   caseNumber: string;
   browserVersion: string;
   appVersion: string;
+  // テスト案件名 relation の先頭 (編集で案件を変えるときの現在値)
+  caseId: string;
 };
 
 function rollupToText(prop: any): string {
@@ -2118,6 +2120,7 @@ function parseBugItem(page: any, relMap: Map<string, string>): BugItem {
     caseNumber: propertyToPlainText(p["ケース番号"]),
     browserVersion: propertyToPlainText(p["ブラウザ / バージョン"]),
     appVersion: propertyToPlainText(p["アプリバージョン"]),
+    caseId: relIds[0] ?? "",
   };
 }
 
@@ -2469,8 +2472,9 @@ app.get("/api/test-center/bugs/by-case/:caseId", async (req, res) => {
 });
 
 // 画面から編集できる BUG の項目 (リクエストのキー → Notion の属性名)。
-// No・テスト案件名・ケース番号 は採番・関連付けに使うため対象外
+// No は採番に使うため対象外。テスト案件名は caseId で別扱い
 const BUG_EDITABLE_FIELDS: Record<string, string> = {
+  caseNumber: "ケース番号",
   bugDesc: "Bug説明",
   actualResult: "実際結果",
   reproSteps: "再現ステップ",
@@ -2507,12 +2511,26 @@ app.post("/api/test-center/bugs/:id/update", async (req, res) => {
     if (rejected.length) {
       return res.status(400).json({ error: `更新できない項目です: ${rejected.join("、")}` });
     }
+    // 案件の変更。システムが変わるときは No を新しいシステムで採番し直す
+    let renumbered: string | null = null;
+    const newCaseId = String(body.caseId ?? "").trim();
+    const curCaseIds: string[] = (properties["テスト案件名"]?.relation ?? []).map((r: any) => r.id);
+    if (newCaseId && curCaseIds[0] !== newCaseId) {
+      next["テスト案件名"] = { relation: [{ id: newCaseId }] };
+      const oldSystem = rollupToText(properties["システム"]).split(",")[0].trim();
+      if ((await caseSystemOf(newCaseId)) !== oldSystem) {
+        renumbered = await finalizeBugNo(newCaseId);
+        const noProp = buildBugProperty(properties["No"], renumbered);
+        if (noProp === null) return res.status(400).json({ error: "更新できない項目です: No" });
+        next["No"] = noProp;
+      }
+    }
     if (Object.keys(next).length === 0) {
       return res.status(400).json({ error: "No updatable fields provided" });
     }
     await notion.pages.update({ page_id: req.params.id, properties: next });
     invalidateBugCache();
-    return res.json({ success: true });
+    return res.json({ success: true, renumbered });
   } catch (error) {
     console.error("Bug update error:", error);
     return res.status(500).json({ error: error instanceof Error ? error.message : "Failed to update bug" });

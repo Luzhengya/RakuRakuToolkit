@@ -1,6 +1,7 @@
 // BUG 一覧からの新規作成・編集ダイアログ。
 // 新規: 案件を選ぶと システム/月次 (rollup) と No が決まる。No の確定は保存時にサーバーで行う。
-// 編集: No・テスト案件名・ケース番号 は読み取り専用。本文 (詳細説明・截图) は Notion で編集する。
+// 編集: テスト案件は同じシステム内で変更可 (候補は元の案件の月次で絞った状態から始める)。
+//       ケース番号は変更可、No は読み取り専用。本文 (詳細説明・截图) は Notion で編集する。
 import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, ExternalLink, Loader2, Save, X } from 'lucide-react';
 import { ScreenshotButtons, ScreenshotThumbs, useBugScreenshots } from './BugScreenshots';
@@ -20,14 +21,16 @@ export type BugEditableFields = {
   browserVersion: string;
   appVersion: string;
   remarks: string;
+  caseNumber: string;
 };
 
 export type EditableBug = BugEditableFields & {
   id: string;
   no: string;
   system: string;
+  month?: string;
   testCaseName: string;
-  caseNumber: string;
+  caseId?: string;
 };
 
 interface Candidate {
@@ -45,7 +48,7 @@ interface NewContext {
 
 const FIELD_KEYS: (keyof BugEditableFields)[] = [
   'bugDesc', 'actualResult', 'reproSteps', 'expectedResult', 'module', 'judgment', 'status',
-  'priority', 'execDate', 'assignee', 'browserVersion', 'appVersion', 'remarks',
+  'priority', 'execDate', 'assignee', 'browserVersion', 'appVersion', 'remarks', 'caseNumber',
 ];
 
 // 実施者はログイン情報が無いので、このブラウザで前回入れた値を既定にする
@@ -74,6 +77,8 @@ export type BugSavedResult = {
   isNew: boolean;
   fields: Partial<BugEditableFields>;
   notice: string;
+  /** 編集で案件を変えた (システム・月次・No が変わるので一覧側で取り直す) */
+  caseChanged?: boolean;
 };
 
 export default function BugEditDialog({
@@ -100,11 +105,11 @@ export default function BugEditDialog({
   });
   const set = (k: keyof BugEditableFields, v: string) => setForm((p) => ({ ...p, [k]: v }));
 
-  // 新規: 案件の選択と No の候補
-  const [caseFilterSystem, setCaseFilterSystem] = useState(initialSystem);
-  const [caseFilterMonth, setCaseFilterMonth] = useState(initialMonthKey);
+  // 案件の選択と No の候補。編集時はシステムを元の案件のものに固定し、月次は元の案件の月次から始める
+  const [caseFilterSystem, setCaseFilterSystem] = useState(isNew ? initialSystem : bug!.system);
+  const [caseFilterMonth, setCaseFilterMonth] = useState(isNew ? initialMonthKey : monthKeyOf(bug!.month ?? ''));
   const [caseKeyword, setCaseKeyword] = useState('');
-  const [selectedCase, setSelectedCase] = useState('');
+  const [selectedCase, setSelectedCase] = useState(bug?.caseId ?? '');
   const [nextNo, setNextNo] = useState('');
   const [nextNoLoading, setNextNoLoading] = useState(false);
   const [detailDesc, setDetailDesc] = useState('');
@@ -134,6 +139,13 @@ export default function BugEditDialog({
             appVersion: d.defaults.appVersion,
             assignee: readAssignee(),
           }));
+        } else {
+          // BUG 側の rollup 表記と案件候補の表記がずれても元の案件が残るよう、候補側の値で絞り込む
+          const orig = d.candidates.find((c) => c.id === bug?.caseId);
+          if (orig) {
+            setCaseFilterSystem(orig.system);
+            setCaseFilterMonth(monthKeyOf(orig.month));
+          }
         }
       })
       .catch((e) => { if (alive) setError(errorOf(e, '取得に失敗しました')); })
@@ -154,7 +166,7 @@ export default function BugEditDialog({
   // 案件を選んだら、そのシステムでの No 候補を出す (確定は保存時)
   useEffect(() => {
     setNextNo('');
-    if (!selectedCase) return;
+    if (!isNew || !selectedCase) return;
     let alive = true;
     setNextNoLoading(true);
     fetch(`/api/test-center/bugs/next-no?caseId=${encodeURIComponent(selectedCase)}`)
@@ -163,7 +175,7 @@ export default function BugEditDialog({
       .catch(() => {})
       .finally(() => { if (alive) setNextNoLoading(false); });
     return () => { alive = false; };
-  }, [selectedCase]);
+  }, [isNew, selectedCase]);
 
   const candidateSystems = useMemo(
     () => Array.from(new Set((ctx?.candidates ?? []).map((c) => c.system).filter(Boolean))).sort(),
@@ -219,16 +231,20 @@ export default function BugEditDialog({
         // 変わった項目だけ送る
         const changed: Partial<BugEditableFields> = {};
         for (const k of FIELD_KEYS) if (form[k] !== (bug![k] ?? '')) changed[k] = form[k];
-        if (Object.keys(changed).length === 0) { onClose(); return; }
+        // 案件は選び直したときだけ送る (候補に無く未選択になった場合は変更なし扱い)
+        const caseChanged = !!selectedCase && selectedCase !== (bug!.caseId ?? '');
+        if (Object.keys(changed).length === 0 && !caseChanged) { onClose(); return; }
         const res = await fetch(`/api/test-center/bugs/${encodeURIComponent(bug!.id)}/update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(changed),
+          body: JSON.stringify(caseChanged ? { ...changed, caseId: selectedCase } : changed),
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error((body as { error?: string }).error || '更新に失敗しました');
         if (changed.assignee !== undefined) saveAssignee(changed.assignee);
-        onSaved({ bugId: bug!.id, isNew: false, fields: changed, notice: '' });
+        const renumbered = (body as { renumbered?: string | null }).renumbered;
+        const notice = renumbered ? `システムが変わったため No.${bug!.no || '-'} → No.${renumbered} に再採番しました` : '';
+        onSaved({ bugId: bug!.id, isNew: false, fields: changed, notice, caseChanged });
       }
     } catch (e) {
       setError(errorOf(e, '保存に失敗しました'));
@@ -354,47 +370,58 @@ export default function BugEditDialog({
             </div>
 
             <div className="space-y-3">
-              {isNew ? (
-                <div className="border border-neutral-200 rounded-lg p-3 space-y-2">
-                  <span className={labelCls}>テスト案件 {req}</span>
-                  <div className="grid grid-cols-2 gap-2">
+              {!isNew && (
+                <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
+                  <div className="px-3 py-2 flex items-start gap-3">
+                    <span className="text-neutral-400 w-20 shrink-0">No</span>
+                    <span className="text-neutral-700 break-words min-w-0">{bug!.no || '-'}</span>
+                  </div>
+                  <label className="px-3 py-2 flex items-center gap-3">
+                    <span className="text-neutral-400 w-20 shrink-0">ケース番号</span>
+                    <input type="text" value={form.caseNumber} onChange={(e) => set('caseNumber', e.target.value)} className={inputCls} />
+                  </label>
+                </div>
+              )}
+              <div className="border border-neutral-200 rounded-lg p-3 space-y-2">
+                <span className={labelCls}>テスト案件 {isNew && req}</span>
+                {/* 元の案件が候補に無い (絞り込みで外れた等) ときだけ現在の案件名を出す */}
+                {!isNew && !selectedCase && <p className="text-xs text-neutral-500 break-words">現在：{bug!.testCaseName || '-'}</p>}
+                <div className="grid grid-cols-2 gap-2">
+                  {isNew ? (
                     <select value={caseFilterSystem} onChange={(e) => setCaseFilterSystem(e.target.value)} className={inputCls}>
                       <option value="">全システム</option>
                       {candidateSystems.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
-                    <select value={caseFilterMonth} onChange={(e) => setCaseFilterMonth(e.target.value)} className={inputCls}>
-                      <option value="">全期間</option>
-                      {candidateMonths.map((m) => <option key={m} value={m}>{`${m.slice(0, 4)}/${m.slice(4)}`}</option>)}
+                  ) : (
+                    <select value={caseFilterSystem} disabled className={`${inputCls} bg-neutral-50 text-neutral-500`}>
+                      <option value={caseFilterSystem}>{caseFilterSystem || '-'}</option>
                     </select>
-                  </div>
-                  <input
-                    type="text"
-                    value={caseKeyword}
-                    onChange={(e) => setCaseKeyword(e.target.value)}
-                    placeholder="案件名で絞り込み"
-                    className={inputCls}
-                  />
-                  <select value={selectedCase} onChange={(e) => setSelectedCase(e.target.value)} className={inputCls}>
-                    <option value="">選択してください（{filteredCandidates.length}件）</option>
-                    {filteredCandidates.map((c) => (
-                      <option key={c.id} value={c.id}>{c.projectName}{c.month ? `（${c.month}）` : ''}</option>
-                    ))}
+                  )}
+                  <select value={caseFilterMonth} onChange={(e) => setCaseFilterMonth(e.target.value)} className={inputCls}>
+                    <option value="">全期間</option>
+                    {candidateMonths.map((m) => <option key={m} value={m}>{`${m.slice(0, 4)}/${m.slice(4)}`}</option>)}
                   </select>
+                </div>
+                <input
+                  type="text"
+                  value={caseKeyword}
+                  onChange={(e) => setCaseKeyword(e.target.value)}
+                  placeholder="案件名で絞り込み"
+                  className={inputCls}
+                />
+                <select value={selectedCase} onChange={(e) => setSelectedCase(e.target.value)} className={inputCls}>
+                  <option value="">{isNew ? '選択してください' : '変更しない'}（{filteredCandidates.length}件）</option>
+                  {filteredCandidates.map((c) => (
+                    <option key={c.id} value={c.id}>{c.projectName}{c.month ? `（${c.month}）` : ''}</option>
+                  ))}
+                </select>
+                {isNew && (
                   <p className="text-xs text-neutral-500">
                     No：{nextNoLoading ? '採番中...' : nextNo ? <b className="tabular-nums text-neutral-800">{nextNo}</b> : '-'}
                     <span className="text-neutral-400">（自動採番。保存時に確定）</span>
                   </p>
-                </div>
-              ) : (
-                <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
-                  {[['No', bug!.no], ['テスト案件名', bug!.testCaseName], ['ケース番号', bug!.caseNumber]].map(([k, v]) => (
-                    <div key={k} className="px-3 py-2 flex items-start gap-3">
-                      <span className="text-neutral-400 w-20 shrink-0">{k}</span>
-                      <span className="text-neutral-700 break-words min-w-0">{v || '-'}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                )}
+              </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="block space-y-1">
