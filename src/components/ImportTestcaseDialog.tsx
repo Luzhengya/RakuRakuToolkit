@@ -1,5 +1,5 @@
-// TestCase 画面のインポート。テンプレートをダウンロード → 記入した Excel を読み込み →
-// 入力チェック・重複判定 (サーバー) → 重複行ごとに 新規追加/上書き を選んで登録する。
+// TestCase 画面のインポート。テンプレート (または TestCase 画面の Excel 出力) に記入した Excel を読み込み →
+// 入力チェック・既存判定 (サーバー) → 既存ケースは上書き、それ以外は自動採番で追加する。
 import { useState } from 'react';
 import { AlertCircle, Download, Loader2, Upload, X } from 'lucide-react';
 
@@ -17,8 +17,6 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
-  // 上書きする行番号。含まれない重複行は新しい番号で追加する
-  const [overwrite, setOverwrite] = useState<Set<number>>(new Set());
 
   const downloadTemplate = async () => {
     setBusy('template');
@@ -46,7 +44,7 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
     setBusy('check');
     setError(null);
     setFileName(file.name);
-    setRows([]); setErrors([]); setDuplicates([]); setOverwrite(new Set());
+    setRows([]); setErrors([]); setDuplicates([]);
     try {
       const fd = new FormData();
       fd.append('file', file);
@@ -71,7 +69,7 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
       const res = await fetch('/api/testcase/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ year, rows, overwrite: [...overwrite] }),
+        body: JSON.stringify({ year, rows }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((body as { error?: string }).error || '登録に失敗しました');
@@ -81,12 +79,6 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
       setBusy('');
     }
   };
-
-  const toggle = (rowNo: number, on: boolean) => setOverwrite((prev) => {
-    const next = new Set(prev);
-    if (on) next.add(rowNo); else next.delete(rowNo);
-    return next;
-  });
 
   const canImport = rows.length > 0 && errors.length === 0 && !busy;
   const btn = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed';
@@ -103,9 +95,9 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
 
         <div className="p-5 space-y-4 overflow-y-auto">
           <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 text-sm text-sky-800 space-y-1">
-            <p>ケース番号を空欄にすると「CMDB番号-連番」で自動採番して登録します。</p>
-            <p>ケース番号を記入した場合は、同じケース番号・CMDB番号の既存ケースがあるか重複判定します。</p>
-            <p className="text-xs text-sky-700">重複した行は「新規追加（新しい番号で登録）」か「上書き（空欄の項目は既存値を保持）」を選択できます。</p>
+            <p>同じケース番号・CMDB番号の既存ケースがあれば上書きします（記入のある項目だけ更新・バージョン +1）。</p>
+            <p>既存に無いケース番号・空欄の行は「CMDB番号-連番」で自動採番して追加します。</p>
+            <p className="text-xs text-sky-700">TestCase 画面の「Excel出力」と同じ形式です。出力したファイルに結果を記入してそのまま取り込めます。</p>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -145,18 +137,14 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
           {rows.length > 0 && errors.length === 0 && (
             <p className="text-sm text-neutral-700">
               読み込み {rows.length}件
-              {duplicates.length > 0 && <>（うち重複 {duplicates.length}件: 上書き {overwrite.size} / 新規追加 {duplicates.length - overwrite.size}）</>}
+              （上書き {duplicates.length}件 / 新規追加 {rows.length - duplicates.length}件）
             </p>
           )}
 
           {errors.length === 0 && duplicates.length > 0 && (
             <div className="border border-amber-200 rounded-lg">
               <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-2">
-                <span className="text-sm font-bold text-amber-800">重複ケース</span>
-                <div className="flex gap-2 text-xs">
-                  <button type="button" onClick={() => setOverwrite(new Set())} className="text-amber-700 hover:underline">すべて新規追加</button>
-                  <button type="button" onClick={() => setOverwrite(new Set(duplicates.map((d) => d.rowNo)))} className="text-amber-700 hover:underline">すべて上書き</button>
-                </div>
+                <span className="text-sm font-bold text-amber-800">上書きするケース</span>
               </div>
               <table className="w-full text-xs">
                 <thead>
@@ -165,7 +153,6 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
                     <th className="px-3 py-1.5">システム</th>
                     <th className="px-3 py-1.5">ケース番号</th>
                     <th className="px-3 py-1.5">既存のテスト内容</th>
-                    <th className="px-3 py-1.5">処理</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -175,10 +162,6 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
                       <td className="px-3 py-1.5">{d.system}</td>
                       <td className="px-3 py-1.5 tabular-nums">{d.caseNo}</td>
                       <td className="px-3 py-1.5 max-w-[280px] truncate" title={d.existingContent}>{d.existingContent || '-'}</td>
-                      <td className="px-3 py-1.5 whitespace-nowrap">
-                        <label className="mr-3"><input type="radio" checked={!overwrite.has(d.rowNo)} onChange={() => toggle(d.rowNo, false)} /> 新規追加</label>
-                        <label><input type="radio" checked={overwrite.has(d.rowNo)} onChange={() => toggle(d.rowNo, true)} /> 上書き</label>
-                      </td>
                     </tr>
                   ))}
                 </tbody>

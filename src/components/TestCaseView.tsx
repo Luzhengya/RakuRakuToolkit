@@ -624,7 +624,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                             <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${RESULT_COLOR[v] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
                               {v}
                             </span>
-                          ) : '-'}
+                          ) : c === 'テスト結果' ? <span className="text-xs text-neutral-500">未実施</span> : '-'}
                         </td>
                       );
                     }
@@ -994,7 +994,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                           <span className={`inline-block rounded-full border px-3 py-1 text-sm font-bold ${RESULT_COLOR[detail[f]] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
                             {detail[f]}
                           </span>
-                        ) : <span className="text-sm text-neutral-400">-</span>
+                        ) : <span className="text-sm text-neutral-500">未実施</span>
                       ) : (
                         <p className={`font-bold text-neutral-900 ${uc ? 'text-sm break-words' : 'text-lg'}`}>{detail[f] || '-'}</p>
                       )}
