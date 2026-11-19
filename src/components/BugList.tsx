@@ -133,15 +133,15 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
     false
       ? {
           home: '首页', testCenter: 'TestCenter', title: 'BUG一览',
-          keyword: '关键字', keywordPh: 'NO / 测试案件名 / BUG概要',
+          keyword: '关键字', keywordPh: 'NO / 测试案件名 / 测试内容',
           system: '系统区分', year: '年份', month: '月份', judgment: '判定', status: '状态',
           all: '全部', clear: '清除条件', search: '检索', result: '检索结果', count: '件', exportHtml: '导出 HTML',
           sumTotal: '合计件数', sumNg: 'NG件数', sumIncomplete: '未完成', sumDone: '已完成',
-          colNo: 'NO', colSystem: '系统区分', colCase: '测试案件名', colDesc: 'BUG概要',
+          colNo: 'NO', colSystem: '系统区分', colCase: '测试案件名', colDesc: '测试内容',
           colJudg: '判定', colStatus: '状态', colPriority: '优先度', colDate: '测试时间', colAssignee: '测试担当者', colMonth: '月份',
           noData: '暂无符合条件的数据。', loading: '加载中...',
           dReproSteps: '再现手顺', dExpected: '预定结果', dActual: '实际结果', dRemarks: '备注',
-          dCase: '测试案件名', dDesc: 'BUG概要', dChild: '子页面内容', dChildEmpty: '无子页面内容',
+          dCase: '案件名', dDesc: '测试内容', dChild: '补充说明', dChildEmpty: '无补充说明',
           close: '关闭', caseNo: '案例编号',
           filterLabel: '筛选条件', detail: '详细条件', detailSet: '设定中', assignee: '担当者',
           groupByCase: '按案件分组', listView: '列表显示', noCase: '（无案件）',
@@ -149,15 +149,15 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
         }
       : {
           home: 'ホーム', testCenter: 'TestCenter', title: 'BUG一覧',
-          keyword: 'キーワード', keywordPh: 'NO / テスト案件名 / BUG説明',
+          keyword: 'キーワード', keywordPh: 'NO / テスト案件名 / テスト内容',
           system: 'システム', year: '年度', month: '月次', judgment: '判定', status: 'ステータス',
           all: 'すべて', clear: '条件クリア', search: '検索', result: '検索結果', count: '件', exportHtml: 'HTML出力',
           sumTotal: '合計件数', sumNg: 'NG件数', sumIncomplete: '未完了', sumDone: '完了',
-          colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'BUG説明',
+          colNo: 'NO', colSystem: 'システム', colCase: 'テスト案件名', colDesc: 'テスト内容',
           colJudg: '判定', colStatus: 'ステータス', colPriority: '優先度', colDate: '実施日', colAssignee: '担当者', colMonth: '月次',
           noData: '条件に一致するデータがありません。', loading: '読み込み中...',
           dReproSteps: '再現ステップ', dExpected: '予定結果', dActual: '実際結果', dRemarks: '備考欄',
-          dCase: 'テスト案件名', dDesc: 'BUG説明', dChild: '子ページ内容', dChildEmpty: '子ページの内容はありません',
+          dCase: '案件名', dDesc: 'テスト内容', dChild: '補充説明', dChildEmpty: '補充説明はありません',
           close: '閉じる', caseNo: 'ケース番号',
           filterLabel: '絞り込み', detail: '詳細条件', detailSet: '設定中', assignee: '担当者',
           groupByCase: '案件別表示', listView: '一覧表示', noCase: '（案件なし）',
@@ -806,63 +806,54 @@ export default function BugList({ lang, onHome, onBack, initialMonth = '' }: Bug
                                 削除
                               </button>
                             </div>
-                            {/* Bug core info */}
-                            <div className="px-5 py-4 space-y-4">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* 左: 案件名・テスト内容・再現/予定/実際・補充説明・備考 / 右: 実施日・担当者・月次・ケース番号 */}
+                            <div className="px-5 py-4 grid grid-cols-1 md:grid-cols-4 gap-5">
+                              <div className="md:col-span-3 space-y-4 min-w-0">
                                 <Field label={L.dCase} value={bug.testCaseName} />
-                                <Field label={L.colSystem} value={bug.system} />
-                              </div>
-                              <Field label={L.dDesc} value={bug.bugDesc} block />
-                            </div>
+                                <Field label={L.dDesc} value={bug.bugDesc} block />
 
-                            {/* Repro / Expected / Actual — grouped as comparison */}
-                            <div className="mx-5 mb-4 border border-neutral-200 rounded-lg bg-white overflow-hidden">
-                              <div className="px-4 py-3 border-b border-neutral-100">
-                                <Field label={L.dReproSteps} value={bug.reproSteps} block pre />
-                              </div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-neutral-100">
-                                <div className="px-4 py-3">
-                                  <Field label={L.dExpected} value={bug.expectedResult} block />
+                                {/* Repro / Expected / Actual — grouped as comparison */}
+                                <div className="border border-neutral-200 rounded-lg bg-white overflow-hidden">
+                                  <div className="px-4 py-3 border-b border-neutral-100">
+                                    <Field label={L.dReproSteps} value={bug.reproSteps} block pre />
+                                  </div>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-neutral-100">
+                                    <div className="px-4 py-3">
+                                      <Field label={L.dExpected} value={bug.expectedResult} block />
+                                    </div>
+                                    <div className="px-4 py-3">
+                                      <Field label={L.dActual} value={bug.actualResult} block />
+                                    </div>
+                                  </div>
                                 </div>
-                                <div className="px-4 py-3">
-                                  <Field label={L.dActual} value={bug.actualResult} block />
-                                </div>
-                              </div>
-                            </div>
 
-                            {/* Metadata row */}
-                            <div className="px-5 pb-4">
-                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                {/* 補充説明 (子ページの内容) */}
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-medium text-neutral-400">{L.dChild}</p>
+                                  {childLoading ? (
+                                    <p className="text-sm text-neutral-400 flex items-center gap-2">
+                                      <Loader2 size={14} className="animate-spin" />
+                                      {L.loading}
+                                    </p>
+                                  ) : childHtml.trim() ? (
+                                    <div
+                                      className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white [&_img]:max-w-full [&_img]:max-h-[400px] [&_img]:rounded-lg [&_img]:object-contain [&_img]:my-2"
+                                      dangerouslySetInnerHTML={{ __html: childHtml }}
+                                    />
+                                  ) : (
+                                    <p className="text-sm text-neutral-400">{L.dChildEmpty}</p>
+                                  )}
+                                </div>
+
+                                {bug.remarks && <Field label={L.dRemarks} value={bug.remarks} block />}
+                              </div>
+
+                              <div className="space-y-4 md:border-l md:border-neutral-200 md:pl-5">
                                 <Field label={L.colDate} value={fmtDate(bug.execDate)} />
                                 <Field label={L.colAssignee} value={bug.assignee} />
                                 <Field label={L.colMonth} value={bug.month} />
                                 {bug.caseNumber && <Field label={L.caseNo} value={bug.caseNumber} />}
                               </div>
-                            </div>
-
-                            {/* Remarks */}
-                            {bug.remarks && (
-                              <div className="px-5 pb-4">
-                                <Field label={L.dRemarks} value={bug.remarks} block />
-                              </div>
-                            )}
-
-                            {/* Child page content */}
-                            <div className="mx-5 mb-4 pt-3 border-t border-neutral-200 space-y-1.5">
-                              <p className="text-xs font-medium text-neutral-400">{L.dChild}</p>
-                              {childLoading ? (
-                                <p className="text-sm text-neutral-400 flex items-center gap-2">
-                                  <Loader2 size={14} className="animate-spin" />
-                                  {L.loading}
-                                </p>
-                              ) : childHtml.trim() ? (
-                                <div
-                                  className="notion-content text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white [&_img]:max-w-full [&_img]:max-h-[400px] [&_img]:rounded-lg [&_img]:object-contain [&_img]:my-2"
-                                  dangerouslySetInnerHTML={{ __html: childHtml }}
-                                />
-                              ) : (
-                                <p className="text-sm text-neutral-400">{L.dChildEmpty}</p>
-                              )}
                             </div>
                           </div>
                         )}

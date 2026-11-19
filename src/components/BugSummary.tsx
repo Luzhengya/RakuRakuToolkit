@@ -23,7 +23,7 @@ interface BugItem {
 
 // 左に大きく出す項目 (長文)。ケース情報の配置と揃える
 const PRIMARY: [string, keyof BugItem][] = [
-  ['Bug説明', 'bugDesc'],
+  ['テスト内容', 'bugDesc'],
   ['再現ステップ', 'reproSteps'],
   ['予定結果', 'expectedResult'],
   ['実際結果', 'actualResult'],

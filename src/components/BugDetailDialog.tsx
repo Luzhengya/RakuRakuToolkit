@@ -220,17 +220,17 @@ export default function BugDetailDialog({
                 )}
               </div>
 
-              {/* 子ページ */}
+              {/* 補充説明 (子ページの内容) */}
               {childHtml !== undefined && (
                 <div className="space-y-1">
-                  <p className="text-xs font-bold text-neutral-700">子ページの内容</p>
+                  <p className="text-xs font-bold text-neutral-700">補充説明</p>
                   {childHtml.trim() ? (
                     <div
                       className="text-sm text-neutral-700 border border-neutral-200 rounded-lg p-3 bg-white [&_img]:max-w-full [&_img]:h-auto [&_img]:rounded [&_img]:my-1.5"
                       dangerouslySetInnerHTML={{ __html: childHtml }}
                     />
                   ) : (
-                    <p className="text-sm text-neutral-400">子ページの内容はありません</p>
+                    <p className="text-sm text-neutral-400">補充説明はありません</p>
                   )}
                 </div>
               )}
