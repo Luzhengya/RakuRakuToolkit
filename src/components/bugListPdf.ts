@@ -254,8 +254,8 @@ export function buildBugListHtml(
           moduleCounts: 'モジュール別 件数', priorityBreakdown: '優先度 内訳',
           bugList: 'BUG一览', expandAll: '全部展开', collapseAll: '全部收起',
           caseName: '案件名', module: 'モジュール', envVersion: '環境 / バージョン', execDate: '実施日',
-          bugDesc: 'BUG概要', reproSteps: '再现手顺', expected: '期待结果', actual: '实际结果',
-          screenshots: '详细截图', noChild: '无子页面内容',
+          bugDesc: '测试内容', reproSteps: '再现手顺', expected: '期待结果', actual: '实际结果',
+          screenshots: '补充说明', noChild: '无补充说明',
           all: '全部', count: '件',
         }
       : {
@@ -265,8 +265,8 @@ export function buildBugListHtml(
           moduleCounts: 'モジュール別 件数', priorityBreakdown: '優先度 内訳',
           bugList: '不具合一覧', expandAll: 'すべて展開', collapseAll: 'すべて閉じる',
           caseName: '案件名', module: 'モジュール', envVersion: '環境 / バージョン', execDate: '実施日',
-          bugDesc: 'BUG概要', reproSteps: '再現手順', expected: '期待結果', actual: '実際の結果',
-          screenshots: '詳細スクリーンショット', noChild: '子ページの内容はありません',
+          bugDesc: 'テスト内容', reproSteps: '再現手順', expected: '期待結果', actual: '実際の結果',
+          screenshots: '補充説明', noChild: '補充説明はありません',
           all: 'すべて', count: '件',
         };
 

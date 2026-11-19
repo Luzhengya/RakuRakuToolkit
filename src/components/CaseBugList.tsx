@@ -54,7 +54,7 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
     title: zh ? '关联BUG一览' : '関連バグ一覧',
     no: 'NO',
     caseNo: zh ? '案例编号' : 'ケース番号',
-    desc: zh ? 'BUG概要' : 'BUG説明',
+    desc: zh ? '测试内容' : 'テスト内容',
     judg: zh ? '判定' : '判定',
     status: zh ? '状态' : 'ステータス',
     priority: zh ? '优先度' : '優先度',
@@ -70,8 +70,8 @@ export default function CaseBugList({ caseId, lang }: { caseId: string; lang: La
     confirmResult: zh ? '确认结果' : '確認結果',
     update: zh ? '更新' : '更新',
     saved: zh ? '已更新' : '更新しました',
-    child: zh ? '子页面内容' : '子ページの内容',
-    childEmpty: zh ? '无子页面内容' : '子ページの内容はありません',
+    child: zh ? '补充说明' : '補充説明',
+    childEmpty: zh ? '无补充说明' : '補充説明はありません',
   };
 
   const [items, setItems] = useState<CaseBug[]>(() => cache.get(caseId) ?? []);

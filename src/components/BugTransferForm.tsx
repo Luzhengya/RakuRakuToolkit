@@ -322,7 +322,7 @@ export default function BugTransferForm({
 
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-neutral-700">詳細説明</span>
+                  <span className="text-xs font-bold text-neutral-700">補充説明</span>
                   <ScreenshotButtons shots={shots} />
                 </div>
                 <textarea
@@ -337,7 +337,7 @@ export default function BugTransferForm({
               </div>
 
               <label className="block space-y-1">
-                <span className="text-xs font-bold text-neutral-700">Bug説明</span>
+                <span className="text-xs font-bold text-neutral-700">テスト内容</span>
                 <textarea
                   value={bugDesc}
                   onChange={(e) => setBugDesc(e.target.value)}

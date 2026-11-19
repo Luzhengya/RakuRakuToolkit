@@ -1,7 +1,7 @@
 // BUG 一覧からの新規作成・編集ダイアログ。
 // 新規: 案件を選ぶと システム/月次 (rollup) と No が決まる。No の確定は保存時にサーバーで行う。
 // 編集: テスト案件は同じシステム内で変更可 (候補は元の案件の月次で絞った状態から始める)。
-//       ケース番号は変更可、No は読み取り専用。本文 (詳細説明・截图) は Notion で編集する。
+//       ケース番号は変更可、No は読み取り専用。本文 (補充説明・截图) は Notion で編集する。
 import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, ExternalLink, Loader2, Save, X } from 'lucide-react';
 import { ScreenshotButtons, ScreenshotThumbs, useBugScreenshots } from './BugScreenshots';
@@ -200,9 +200,14 @@ export default function BugEditDialog({
 
   // 必須項目の未入力 (保存ボタンの title にも出す)
   const missing: string[] = [];
-  if (isNew && !selectedCase) missing.push('テスト案件');
-  if (!form.bugDesc.trim()) missing.push('Bug説明');
+  if (isNew && !selectedCase) missing.push('案件番号');
+  if (!form.bugDesc.trim()) missing.push('テスト内容');
+  if (!form.expectedResult.trim()) missing.push('予定結果');
   if (!form.actualResult.trim()) missing.push('実際結果');
+  if (!form.judgment.trim()) missing.push('判定');
+  if (!form.status.trim()) missing.push('ステータス');
+  if (!form.execDate.trim()) missing.push('実施日');
+  if (!form.assignee.trim()) missing.push('実施者');
   const canSave = missing.length === 0 && !saving && !loading && !shots.uploading;
   const saveTitle = missing.length ? `未入力の必須項目: ${missing.join('、')}`
     : shots.uploading ? '截图のアップロード中です' : '';
@@ -225,7 +230,7 @@ export default function BugEditDialog({
         const notes: string[] = [];
         if (r.requestedNo && r.requestedNo !== r.bugNo) notes.push(`No.${r.requestedNo} は使用済みのため No.${r.bugNo} で登録しました`);
         if (r.skipped?.length) notes.push(`次の項目は表側が書き込み不可のため反映されていません: ${r.skipped.join('、')}`);
-        if (r.childrenError) notes.push(`詳細説明・截图の追加に失敗しました: ${r.childrenError}`);
+        if (r.childrenError) notes.push(`補充説明・截图の追加に失敗しました: ${r.childrenError}`);
         onSaved({ bugId: r.bugId, isNew: true, fields: form, notice: notes.join('\n') });
       } else {
         // 変わった項目だけ送る
@@ -320,13 +325,17 @@ export default function BugEditDialog({
         ) : (
           <div className="p-5 overflow-auto grid grid-cols-1 lg:grid-cols-3 gap-5">
             <div className="lg:col-span-2 space-y-4">
-              {textArea('bugDesc', 'Bug説明', 2, true, '一覧に表示される件名です')}
-              {textArea('actualResult', '実際結果', 4, true, '実際に起きたことを記入してください')}
+              {textArea('bugDesc', 'テスト内容', 2, true)}
+              {textArea('reproSteps', '再現ステップ', 3)}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {textArea('expectedResult', '予定結果', 4, true)}
+                {textArea('actualResult', '実際結果', 4, true)}
+              </div>
 
               {isNew ? (
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-neutral-700">詳細説明</span>
+                    <span className="text-xs font-bold text-neutral-700">補充説明</span>
                     <ScreenshotButtons shots={shots} />
                   </div>
                   <textarea
@@ -334,7 +343,6 @@ export default function BugEditDialog({
                     onChange={(e) => setDetailDesc(e.target.value)}
                     onPaste={shots.handlePaste}
                     rows={3}
-                    placeholder="詳細な説明（Ctrl+V で画像を貼り付け可）"
                     className={inputCls}
                   />
                   <ScreenshotThumbs shots={shots} />
@@ -342,7 +350,7 @@ export default function BugEditDialog({
               ) : (
                 <div className="space-y-1">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold text-neutral-700">詳細説明・截图</span>
+                    <span className="text-xs font-bold text-neutral-700">補充説明</span>
                     <a
                       href={`https://www.notion.so/${bug!.id.replace(/-/g, '')}`}
                       target="_blank"
@@ -364,26 +372,23 @@ export default function BugEditDialog({
                 </div>
               )}
 
-              {textArea('reproSteps', '再現ステップ', 3)}
-              {textArea('expectedResult', '予定結果', 3)}
               {textArea('remarks', '備考', 2)}
             </div>
 
             <div className="space-y-3">
-              {!isNew && (
-                <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100 text-xs">
-                  <div className="px-3 py-2 flex items-start gap-3">
-                    <span className="text-neutral-400 w-20 shrink-0">No</span>
-                    <span className="text-neutral-700 break-words min-w-0">{bug!.no || '-'}</span>
-                  </div>
-                  <label className="px-3 py-2 flex items-center gap-3">
-                    <span className="text-neutral-400 w-20 shrink-0">ケース番号</span>
-                    <input type="text" value={form.caseNumber} onChange={(e) => set('caseNumber', e.target.value)} className={inputCls} />
-                  </label>
-                </div>
-              )}
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block space-y-1">
+                  <span className={labelCls}>判定 {req}</span>
+                  {selectWith('judgment', opts.judgment, true)}
+                </label>
+                <label className="block space-y-1">
+                  <span className={labelCls}>ステータス {req}</span>
+                  {selectWith('status', opts.status, true)}
+                </label>
+              </div>
+
               <div className="border border-neutral-200 rounded-lg p-3 space-y-2">
-                <span className={labelCls}>テスト案件 {isNew && req}</span>
+                <span className={labelCls}>案件番号 {isNew && req}</span>
                 {/* 元の案件が候補に無い (絞り込みで外れた等) ときだけ現在の案件名を出す */}
                 {!isNew && !selectedCase && <p className="text-xs text-neutral-500 break-words">現在：{bug!.testCaseName || '-'}</p>}
                 <div className="grid grid-cols-2 gap-2">
@@ -415,23 +420,11 @@ export default function BugEditDialog({
                     <option key={c.id} value={c.id}>{c.projectName}{c.month ? `（${c.month}）` : ''}</option>
                   ))}
                 </select>
-                {isNew && (
-                  <p className="text-xs text-neutral-500">
-                    No：{nextNoLoading ? '採番中...' : nextNo ? <b className="tabular-nums text-neutral-800">{nextNo}</b> : '-'}
-                    <span className="text-neutral-400">（自動採番。保存時に確定）</span>
-                  </p>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block space-y-1">
-                  <span className={labelCls}>判定</span>
-                  {selectWith('judgment', opts.judgment, true)}
-                </label>
-                <label className="block space-y-1">
-                  <span className={labelCls}>ステータス</span>
-                  {selectWith('status', opts.status, true)}
-                </label>
+                <p className="text-xs text-neutral-500">
+                  No：{isNew
+                    ? (nextNoLoading ? '採番中...' : nextNo ? <b className="tabular-nums text-neutral-800">{nextNo}</b> : '-')
+                    : <b className="tabular-nums text-neutral-800">{bug!.no || '-'}</b>}
+                </p>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -447,15 +440,19 @@ export default function BugEditDialog({
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="block space-y-1">
-                  <span className={labelCls}>実施日</span>
-                  <input type="date" value={form.execDate.slice(0, 10)} onChange={(e) => set('execDate', e.target.value)} className={inputCls} />
+                  <span className={labelCls}>実施者 {req}</span>
+                  <input type="text" value={form.assignee} onChange={(e) => set('assignee', e.target.value)} className={inputCls} />
                 </label>
                 <label className="block space-y-1">
-                  <span className={labelCls}>実施者</span>
-                  <input type="text" value={form.assignee} onChange={(e) => set('assignee', e.target.value)} className={inputCls} />
+                  <span className={labelCls}>実施日 {req}</span>
+                  <input type="date" value={form.execDate.slice(0, 10)} onChange={(e) => set('execDate', e.target.value)} className={inputCls} />
                 </label>
               </div>
 
+              <label className="block space-y-1">
+                <span className={labelCls}>関連ケース番号（複数は , 区切り）</span>
+                <input type="text" value={form.caseNumber} onChange={(e) => set('caseNumber', e.target.value)} className={inputCls} />
+              </label>
               <label className="block space-y-1">
                 <span className={labelCls}>ブラウザ / バージョン</span>
                 <input type="text" value={form.browserVersion} onChange={(e) => set('browserVersion', e.target.value)} className={inputCls} />
