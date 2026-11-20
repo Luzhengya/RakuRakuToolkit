@@ -2276,6 +2276,11 @@ function richTextToHtml(rich: any[] = []): string {
       if (a.strikethrough) s = `<s>${s}</s>`;
       if (a.underline) s = `<u>${s}</u>`;
       if (t?.href) s = `<a href="${escapeHtml(t.href)}" target="_blank" rel="noopener">${s}</a>`;
+      // 文字色・背景色（Notion の色名 → 固定の色コード。対照表に無い値は出力しない）
+      const color = String(a.color ?? "default");
+      const bg = color.endsWith("_background") ? NOTION_BG_HEX[color.replace(/_background$/, "")] : undefined;
+      if (bg) s = `<span style="background-color:${bg}">${s}</span>`;
+      else if (NOTION_TEXT_HEX[color]) s = `<span style="color:${NOTION_TEXT_HEX[color]}">${s}</span>`;
       return s;
     })
     .join("");
