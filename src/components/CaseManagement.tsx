@@ -516,7 +516,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
       <nav className="flex items-center gap-2 text-sm">
         <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
         <span className="text-neutral-400">{'>>'}</span>
-        <button type="button" onClick={() => { setViewMode('tree'); setSelectedAssignee(null); }} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">案件管理</button>
+        <button type="button" onClick={() => { setViewMode('tree'); setSelectedAssignee(null); setSelectedParentId(null); setEditingCase(null); }} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">案件管理</button>
         <span className="text-neutral-400">{'>>'}</span>
         <span className="text-neutral-900 font-medium">{viewMode === 'tree' ? 'ツリー' : '担当者'}</span>
       </nav>
