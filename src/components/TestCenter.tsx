@@ -911,7 +911,7 @@ const STATUS_PALETTE: Record<string, string> = {
   '完了': '#10b981',
   '進行中': '#3b82f6',
   'ブロック': '#ef4444',
-  '未着手': '#cbd5e1',
+  '未開始': '#cbd5e1',
 };
 
 function getStatusColor(status: string, fallbackIdx: number): string {
@@ -2058,7 +2058,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
   const statusDistribution = useMemo(() => {
     const counts = new Map<string, number>();
     for (const item of filteredOverview) {
-      const status = (item.status || '未着手').trim() || '未着手';
+      const status = (item.status || '未開始').trim() || '未開始';
       counts.set(status, (counts.get(status) ?? 0) + 1);
     }
     return Array.from(counts.entries()).map(([status, count]) => ({ status, count }));

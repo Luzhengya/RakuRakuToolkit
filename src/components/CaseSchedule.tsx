@@ -23,7 +23,7 @@ function toInputDate(raw: string): string {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  '未着手': 'bg-neutral-100 text-neutral-600',
+  '未開始': 'bg-neutral-100 text-neutral-600',
   '進行中': 'bg-blue-50 text-blue-700',
   '完了': 'bg-emerald-50 text-emerald-700',
   'リリース済み': 'bg-purple-50 text-purple-700',

@@ -82,7 +82,7 @@ interface SystemGroup {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  '未着手': 'bg-neutral-100 text-neutral-600',
+  '未開始': 'bg-neutral-100 text-neutral-600',
   '進行中': 'bg-blue-50 text-blue-700',
   '予定通り完了': 'bg-emerald-50 text-emerald-700',
   '遅延完了': 'bg-amber-50 text-amber-700',
@@ -91,6 +91,51 @@ const STATUS_COLOR: Record<string, string> = {
 
 // BUG一覧のシステム選択肢もこの除外に合わせる
 export const EXCLUDED_SYSTEMS = new Set(['改善対応', '管理作業', '全体システム', '月次改善タスク']);
+
+/* ===== リマインド (常時表示) と進捗マトリクス (親案件・担当者が未選択のときに表示) の判定ルール ===== */
+// Notion の「状態」は空にならず既定が未開始。空で返った場合も未開始として扱う
+const DEFAULT_STATUS = '未開始';
+const STOPPED_STATUS = '停止中';
+const DESIGN_STATUS = '設計書作成中';
+// Notion の status プロパティのグループ名 (/api/case-management/status-options の groups)
+const STATUS_GROUP_COMPLETE = 'Complete';
+// 進捗マトリクスの列 (作業フロー順)。ここに無い状態 (レビュー中・進行中・遅延中 等) は表示しない
+const PROGRESS_COLUMNS: { label: string; statuses: string[]; tint: string }[] = [
+  { label: '未開始', statuses: ['未開始'], tint: 'bg-neutral-50' },
+  { label: 'スケジュール確認中', statuses: ['スケジュール確認中'], tint: 'bg-neutral-50' },
+  { label: '設計書作成中', statuses: ['設計書作成中'], tint: 'bg-blue-50/60' },
+  { label: '実装実施中', statuses: ['実装実施中'], tint: 'bg-blue-50/60' },
+  { label: '完了', statuses: ['予定通り完了', '遅延完了', '停止中', 'テスト実施不要'], tint: 'bg-emerald-50/60' },
+  { label: '追加テスト', statuses: ['追加テスト'], tint: 'bg-amber-50/60' },
+  { label: '再テスト', statuses: ['再テスト'], tint: 'bg-amber-50/60' },
+];
+// 状態 → 期限判定に使う予定日。ここに無い状態は期限判定しない
+const DEADLINE_FIELD_BY_STATUS: Record<string, 'tcDesignCompleteDate' | 'tcExecutionCompleteDate'> = {
+  '設計書作成中': 'tcDesignCompleteDate',
+  '実装実施中': 'tcExecutionCompleteDate',
+  '進行中': 'tcExecutionCompleteDate',
+  '遅延中': 'tcExecutionCompleteDate',
+};
+const DEADLINE_FIELD_LABEL: Record<string, string> = {
+  tcDesignCompleteDate: 'TC設計書完了予定日',
+  tcExecutionCompleteDate: 'TC実施完了予定日',
+};
+// 予定日の何日前から期限間近とするか
+const NEAR_DEADLINE_DAYS = 2;
+// 空なら未記入 (0 は記入済み)
+const ESTIMATE_KEYS = ['designEstimate', 'implementationEstimate', 'executionEstimate', 'reviewEstimate'] as const;
+const ACTUAL_KEYS = ['designActual', 'implActual', 'execActual', 'reviewActual'] as const;
+const TEST_RESULT_KEYS = ['testTotalCount', 'bugCount', 'testBlockedCount', 'pendingConfirmCount', 'unexpectedNgCount'] as const;
+// 実績・テスト結果の記入を求める状態 (この2つは対象月フィルタに従う)
+const RESULT_REQUIRED_STATUSES = new Set(['予定通り完了', '遅延完了']);
+// キーボード操作時のフォーカス表示 (全体サマリー・案件一覧ポップアップ共通)
+const FOCUS_RING = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500';
+const SUMMARY_MONTH_UPCOMING = 'upcoming';
+const SUMMARY_MONTH_ALL = 'all';
+const UNASSIGNED_LABEL = '未決定';
+
+type SummaryCase = ChildCase & { parentName: string; parentSystem: string; parentMonth: string; monthKey: number; normStatus: string };
+type SummaryPopup = { title: string; ids: string[] };
 
 function parseMonthKey(p: { month: string; projectName: string }): number {
   const src = p.month || p.projectName;
@@ -103,50 +148,57 @@ function parseMonthKey(p: { month: string; projectName: string }): number {
   return 0;
 }
 
-type FieldDef = { key: string; label: string; type: 'text' | 'date' | 'number' | 'select' | 'multiselect'; span?: boolean };
-
-const SCHEDULE_FIELDS: FieldDef[] = [
-  { key: 'projectName', label: '案件名', type: 'text', span: true },
-  { key: 'status', label: '状態', type: 'select' },
-  { key: 'assignee', label: '担当者', type: 'multiselect' },
-  { key: 'manager', label: '管理者', type: 'multiselect' },
-  { key: 'releaseDate', label: '本番日', type: 'date' },
-  { key: 'verificationDate', label: '検証日', type: 'date' },
-  { key: 'desiredCompleteDate', label: '完了希望日', type: 'date' },
-  { key: 'tcStartDate', label: 'TC開始予定日', type: 'date' },
-  { key: 'actualStartDate', label: '実際開始日', type: 'date' },
-  { key: 'tcDesignCompleteDate', label: 'TC設計書完了予定日', type: 'date' },
-  { key: 'actualDesignCompleteDate', label: '実際設計書完了日', type: 'date' },
-  { key: 'tcExecutionCompleteDate', label: 'TC実施完了予定日', type: 'date' },
-  { key: 'actualExecutionCompleteDate', label: '実際実施完了日', type: 'date' },
-  { key: 'comment', label: 'コメント', type: 'text', span: true },
+/* ===== 案件編集ダイアログの項目 ===== */
+// キー＝ChildCase のフィールド、値＝表示ラベル (入力欄の aria-label にも使う)
+// 見積総・実績総は Notion の数式 (4項目の合計) のため編集対象にしない
+const EDIT_LABELS: Record<string, string> = {
+  projectName: '案件名',
+  status: '状態',
+  assignee: '担当者',
+  manager: '管理者',
+  tcStartDate: 'TC開始予定日',
+  actualStartDate: '実際開始日',
+  tcDesignCompleteDate: 'TC設計書完了予定日',
+  actualDesignCompleteDate: '実際設計書完了日',
+  tcExecutionCompleteDate: 'TC実施完了予定日',
+  actualExecutionCompleteDate: '実際実施完了日',
+  releaseDate: '本番日',
+  verificationDate: '検証日',
+  desiredCompleteDate: '完了希望日',
+  designEstimate: '工数見積(設計書)',
+  designActual: '工数実績(設計書)',
+  implementationEstimate: '工数見積(実装)',
+  implActual: '工数実績(実装)',
+  executionEstimate: '工数見積(実施)',
+  execActual: '工数実績(実施)',
+  reviewEstimate: 'Review見積工数',
+  reviewActual: 'Review実績工数',
+  developmentEffort: '開発工数',
+  testTotalCount: 'Test総件数',
+  bugCount: 'NG数',
+  testBlockedCount: 'Test不可',
+  pendingConfirmCount: '確認中件数',
+  unexpectedNgCount: '想定外NG数',
+  japanCaseCount: '日本側case数',
+  japanBugCount: '日本側NG数',
+  comment: 'コメント',
+};
+const ALL_EDIT_KEYS = Object.keys(EDIT_LABELS);
+// スケジュール: 段階ごとに予定と実際を並べる
+const EDIT_SCHEDULE_ROWS = [
+  { label: '開始', plan: 'tcStartDate', actual: 'actualStartDate' },
+  { label: '設計書完了', plan: 'tcDesignCompleteDate', actual: 'actualDesignCompleteDate' },
+  { label: '実施完了', plan: 'tcExecutionCompleteDate', actual: 'actualExecutionCompleteDate' },
 ];
-
-const EFFORT_FIELDS: FieldDef[] = [
-  { key: 'estimateTotal', label: '見積総', type: 'number' },
-  { key: 'actualTotal', label: '実績総', type: 'number' },
-  { key: 'developmentEffort', label: '開発工数', type: 'number' },
-  { key: 'designEstimate', label: '工数見積(設計書)', type: 'number' },
-  { key: 'designActual', label: '工数実績(設計書)', type: 'number' },
-  { key: 'implementationEstimate', label: '工数見積(実装)', type: 'number' },
-  { key: 'implActual', label: '工数実績(実装)', type: 'number' },
-  { key: 'executionEstimate', label: '工数見積(実施)', type: 'number' },
-  { key: 'execActual', label: '工数実績(実施)', type: 'number' },
-  { key: 'reviewEstimate', label: 'Review見積工数', type: 'number' },
-  { key: 'reviewActual', label: 'Review実績工数', type: 'number' },
+const EDIT_MILESTONE_KEYS = ['releaseDate', 'verificationDate', 'desiredCompleteDate'];
+// 工数: 工程ごとに見積と実績を並べる
+const EDIT_EFFORT_COLS = [
+  { label: '設計書', estimate: 'designEstimate', actual: 'designActual' },
+  { label: '実装', estimate: 'implementationEstimate', actual: 'implActual' },
+  { label: '実施', estimate: 'executionEstimate', actual: 'execActual' },
+  { label: 'Review', estimate: 'reviewEstimate', actual: 'reviewActual' },
 ];
-
-const TEST_FIELDS: FieldDef[] = [
-  { key: 'testTotalCount', label: 'Test総件数', type: 'number' },
-  { key: 'bugCount', label: 'NG数', type: 'number' },
-  { key: 'testBlockedCount', label: 'Test不可', type: 'number' },
-  { key: 'pendingConfirmCount', label: '確認中件数', type: 'number' },
-  { key: 'unexpectedNgCount', label: '想定外NG数', type: 'number' },
-  { key: 'japanCaseCount', label: '日本側case数', type: 'number' },
-  { key: 'japanBugCount', label: '日本側NG数', type: 'number' },
-];
-
-const ALL_EDIT_FIELDS = [...SCHEDULE_FIELDS, ...EFFORT_FIELDS, ...TEST_FIELDS];
+const EDIT_TEST_KEYS = ['testTotalCount', 'bugCount', 'testBlockedCount', 'pendingConfirmCount', 'unexpectedNgCount', 'japanCaseCount', 'japanBugCount'];
 
 function statusBadge(status: string) {
   const cls = STATUS_COLOR[status.trim()] ?? 'bg-neutral-100 text-neutral-600';
@@ -158,6 +210,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusOptions, setStatusOptions] = useState<string[]>([]);
+  const [statusGroups, setStatusGroups] = useState<Record<string, string[]>>({});
   const [systemOptions, setSystemOptions] = useState<string[]>([]);
 
   const [subRoute, setSubRoute] = useSubRoute();
@@ -236,7 +289,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
   useEffect(() => {
     fetch('/api/case-management/status-options')
       .then((r) => r.ok ? r.json() : { options: [] })
-      .then((d) => setStatusOptions(d.options ?? []))
+      .then((d) => { setStatusOptions(d.options ?? []); setStatusGroups(d.groups ?? {}); })
       .catch(() => {});
     fetch('/api/case-management/system-options')
       .then((r) => r.ok ? r.json() : { options: [] })
@@ -322,6 +375,35 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
     if (!selectedAssignee) return [];
     return assigneeMap.get(selectedAssignee) ?? [];
   }, [assigneeMap, selectedAssignee]);
+
+  // 全体サマリー用: 除外システム以外の全子案件 (月は親案件の month で判定)
+  const [summaryMonth, setSummaryMonth] = useState<string>(SUMMARY_MONTH_UPCOMING);
+  const [summaryPopup, setSummaryPopup] = useState<SummaryPopup | null>(null);
+  const summaryCases = useMemo<SummaryCase[]>(() => {
+    const list: SummaryCase[] = [];
+    for (const parent of tree) {
+      const system = parent.system || '(未設定)';
+      if (EXCLUDED_SYSTEMS.has(system)) continue;
+      const monthKey = parseMonthKey(parent);
+      for (const child of parent.children) {
+        list.push({
+          ...child,
+          parentName: parent.projectName,
+          parentSystem: system,
+          parentMonth: parent.month,
+          monthKey,
+          normStatus: (child.status ?? '').trim() || DEFAULT_STATUS,
+        });
+      }
+    }
+    return list;
+  }, [tree]);
+  // ポップアップは開いた時点の案件IDを保持し、保存後は最新の値で表示する (状態を変えても行が消えないように)
+  const summaryPopupCases = useMemo(() => {
+    if (!summaryPopup) return [];
+    const byId = new Map(summaryCases.map((c) => [c.id, c]));
+    return summaryPopup.ids.map((id) => byId.get(id)).filter((c): c is SummaryCase => !!c);
+  }, [summaryPopup, summaryCases]);
 
   const toggleSystem = (sys: string) => {
     setExpandedSystems((prev) => {
@@ -434,7 +516,7 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
       <nav className="flex items-center gap-2 text-sm">
         <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
         <span className="text-neutral-400">{'>>'}</span>
-        <button type="button" onClick={() => { setViewMode('tree'); setSelectedAssignee(null); }} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">案件管理</button>
+        <button type="button" onClick={() => { setViewMode('tree'); setSelectedAssignee(null); setSelectedParentId(null); setEditingCase(null); }} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">案件管理</button>
         <span className="text-neutral-400">{'>>'}</span>
         <span className="text-neutral-900 font-medium">{viewMode === 'tree' ? 'ツリー' : '担当者'}</span>
       </nav>
@@ -445,14 +527,14 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
         <h2 className="text-xl font-bold">案件管理</h2>
         <div className="ml-auto flex items-center bg-neutral-100 rounded-lg p-0.5">
           <button
-            onClick={() => { setViewMode('tree'); setSelectedAssignee(null); }}
+            onClick={() => { setViewMode('tree'); setSelectedAssignee(null); setSelectedParentId(null); setEditingCase(null); }}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'tree' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'}`}
           >
             <FolderTree size={14} />
             案件ツリー
           </button>
           <button
-            onClick={() => { setViewMode('assignee'); setSelectedParentId(null); setEditingCase(null); }}
+            onClick={() => { setViewMode('assignee'); setSelectedParentId(null); setSelectedAssignee(null); setEditingCase(null); }}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'assignee' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'}`}
           >
             <User size={14} />
@@ -468,18 +550,24 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
         </div>
       )}
 
+      {/* リマインド (両ビュー共通・常時表示)。初回読み込み中だけ隠し、保存後の再読み込みではレイアウトを動かさない */}
+      {(!loading || tree.length > 0) && (
+        <ReminderPanel cases={summaryCases} statusGroups={statusGroups} month={summaryMonth} onOpen={setSummaryPopup} />
+      )}
+
       {loading ? (
         <div className="flex items-center justify-center py-20 text-neutral-400">
           <Loader2 size={20} className="animate-spin mr-2" />
           読み込み中...
         </div>
       ) : (
-        <div className="flex gap-4 items-start">
+        // 進捗マトリクス表示中は左右のカードの高さを揃える
+        <div className={`flex gap-4 ${viewMode === 'tree' && !selectedParent ? 'items-stretch' : 'items-start'}`}>
           {viewMode === 'assignee' ? (
             /* ===== 担当者ビュー ===== */
             <div className="flex-1 min-w-0 space-y-4">
               <ChecklistPanel />
-              <div className="flex gap-4 items-start">
+              <div className={`flex gap-4 ${!selectedAssignee ? 'items-stretch' : 'items-start'}`}>
               {/* 左: 担当者リスト */}
               <aside className="w-72 shrink-0 bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
                 <div className="p-3 border-b border-neutral-100">
@@ -533,9 +621,13 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
               {/* 右: 担当者の案件一覧 */}
               <section className="flex-1 min-w-0">
                 {!selectedAssignee ? (
-                  <div className="bg-white border border-neutral-200 rounded-xl p-10 text-center text-neutral-400 text-sm">
-                    左のリストから担当者を選択してください
-                  </div>
+                  <ProgressMatrix
+                    mode="assignee"
+                    cases={summaryCases}
+                    month={summaryMonth}
+                    onMonthChange={setSummaryMonth}
+                    onOpen={setSummaryPopup}
+                  />
                 ) : (
                   <AssigneePanel
                     email={selectedAssignee}
@@ -640,9 +732,13 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
           {/* 右: 案件リスト */}
           <section className="flex-1 min-w-0">
             {!selectedParent ? (
-              <div className="bg-white border border-neutral-200 rounded-xl p-10 text-center text-neutral-400 text-sm">
-                左のツリーから親案件を選択してください
-              </div>
+              <ProgressMatrix
+                mode="tree"
+                cases={summaryCases}
+                month={summaryMonth}
+                onMonthChange={setSummaryMonth}
+                onOpen={setSummaryPopup}
+              />
             ) : (
               <div className="bg-white border border-neutral-200 rounded-xl shadow-sm">
                 {/* 親ヘッダー */}
@@ -762,6 +858,21 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
           </>
           )}
         </div>
+      )}
+
+      {/* 全体サマリーの案件一覧ポップアップ (編集ダイアログより先に描画し、編集ダイアログを上に重ねる) */}
+      {summaryPopup && (
+        <SummaryCaseDialog
+          title={summaryPopup.title}
+          cases={summaryPopupCases}
+          statusOptions={statusOptions}
+          saving={saving}
+          error={editingCase ? null : formError}
+          active={!editingCase}
+          onStatusChange={(id, status) => handleUpdate(id, { status })}
+          onEdit={(c) => { setEditingCase(c); setFormError(null); }}
+          onClose={() => { setSummaryPopup(null); setFormError(null); }}
+        />
       )}
 
       {/* 編集ダイアログ (ツリー・担当者ビュー共通) */}
@@ -1055,7 +1166,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
     return cases.filter((c) => c.parentMonth === monthFilter);
   }, [cases, monthFilter]);
 
-  const STATUS_ORDER = ['予定通り完了', '遅延完了', '進行中', '未着手'] as const;
+  const STATUS_ORDER = ['予定通り完了', '遅延完了', '進行中', '未開始'] as const;
 
   const statusCount = useMemo(() => {
     const map: Record<string, number> = {};
@@ -1561,22 +1672,19 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
   onSave: (fields: Record<string, string>) => void;
   onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState<Record<string, string>>(() => {
+  const toDraft = (src: ChildCase) => {
     const d: Record<string, string> = {};
-    for (const f of ALL_EDIT_FIELDS) d[f.key] = (item as any)[f.key] ?? '';
+    for (const k of ALL_EDIT_KEYS) d[k] = (src as any)[k] ?? '';
     return d;
-  });
+  };
+  const [draft, setDraft] = useState<Record<string, string>>(() => toDraft(item));
 
-  useEffect(() => {
-    const d: Record<string, string> = {};
-    for (const f of ALL_EDIT_FIELDS) d[f.key] = (item as any)[f.key] ?? '';
-    setDraft(d);
-  }, [item]);
+  useEffect(() => { setDraft(toDraft(item)); }, [item]);
 
   const changed = useMemo(() => {
     const diff: Record<string, string> = {};
-    for (const f of ALL_EDIT_FIELDS) {
-      if (draft[f.key] !== ((item as any)[f.key] ?? '')) diff[f.key] = draft[f.key];
+    for (const k of ALL_EDIT_KEYS) {
+      if (draft[k] !== ((item as any)[k] ?? '')) diff[k] = draft[k];
     }
     return diff;
   }, [draft, item]);
@@ -1591,97 +1699,549 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
     set(key, next.join(', '));
   };
 
-  const renderField = (f: FieldDef) => (
-    <div key={f.key} className={f.span || f.type === 'multiselect' ? 'md:col-span-2' : ''}>
-      <label className="block text-[11px] font-medium text-neutral-500 mb-1">{f.label}</label>
-      {f.type === 'select' ? (
-        <select
-          value={draft[f.key]}
-          onChange={(e) => set(f.key, e.target.value)}
-          className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white"
-        >
-          <option value="">-</option>
-          {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
-      ) : f.type === 'multiselect' ? (
-        <div className="flex flex-wrap gap-2 p-2 border border-neutral-300 rounded-lg bg-white min-h-[36px]">
-          {memberOptions.map((m) => {
-            const selected = draft[f.key].split(',').map((s) => s.trim()).includes(m);
-            return (
-              <label key={m} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs cursor-pointer transition-colors ${
-                selected ? 'bg-neutral-800 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
-              }`}>
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  onChange={() => toggleMulti(f.key, m)}
-                  className="sr-only"
-                />
-                {m}
-              </label>
-            );
-          })}
-          {memberOptions.length === 0 && <span className="text-xs text-neutral-400">メンバー未取得</span>}
-        </div>
-      ) : (
-        <input
-          type={f.type === 'number' ? 'text' : f.type}
-          inputMode={f.type === 'number' ? 'decimal' : undefined}
-          value={draft[f.key]}
-          onChange={(e) => set(f.key, e.target.value)}
-          className="w-full px-2.5 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
-        />
-      )}
-    </div>
+  const inputCls = 'w-full px-2 py-1 text-sm border border-neutral-300 rounded-md focus:border-neutral-500 focus:outline-none bg-white';
+  const labelCls = 'block text-[11px] font-medium text-neutral-500 mb-1';
+  const sectionTitleCls = 'text-xs font-bold mb-2';
+
+  const dateInput = (key: string) => (
+    <input type="date" aria-label={EDIT_LABELS[key]} value={draft[key]} onChange={(e) => set(key, e.target.value)} className={inputCls} />
+  );
+  // 工数・件数は数字だけなので幅を詰め、右寄せで桁を揃える
+  const numberInput = (key: string) => (
+    <input
+      type="text"
+      inputMode="decimal"
+      aria-label={EDIT_LABELS[key]}
+      value={draft[key]}
+      onChange={(e) => set(key, e.target.value)}
+      className={`${inputCls} text-right tabular-nums`}
+    />
   );
 
-  const sectionCls = 'space-y-2';
-  const headingCls = 'text-xs font-bold text-neutral-600 border-b border-neutral-100 pb-1';
+  const memberPicker = (key: string) => (
+    <div>
+      <span className={labelCls}>{EDIT_LABELS[key]}</span>
+      <div role="group" aria-label={EDIT_LABELS[key]} className="flex flex-wrap gap-1.5 p-1.5 border border-neutral-300 rounded-md bg-white min-h-[34px]">
+        {memberOptions.map((m) => {
+          const selected = draft[key].split(',').map((s) => s.trim()).includes(m);
+          return (
+            <label key={m} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs cursor-pointer transition-colors focus-within:ring-2 focus-within:ring-blue-500 ${
+              selected ? 'bg-neutral-800 text-white' : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+            }`}>
+              <input type="checkbox" checked={selected} onChange={() => toggleMulti(key, m)} className="sr-only" />
+              {m}
+            </label>
+          );
+        })}
+        {memberOptions.length === 0 && <span className="text-xs text-neutral-400">メンバー未取得</span>}
+      </div>
+    </div>
+  );
 
   // 背景クリックでは閉じない (入力中の内容を誤って失わないため)
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-    <div className="bg-white rounded-xl shadow-xl w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5 space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <h4 className="text-sm font-bold text-neutral-800 min-w-0 break-words">案件編集：{item.projectName}</h4>
-        <button onClick={onCancel} className="p-1 rounded hover:bg-neutral-100 text-neutral-400 shrink-0">
-          <X size={16} />
-        </button>
-      </div>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="case-edit-dialog-title"
+        className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden"
+      >
+        {/* ヘッダー: 閉じる・保存・キャンセルを常に右上に表示 (本文だけスクロール) */}
+        <div className="px-5 py-3 border-b border-neutral-200 flex items-center gap-3 shrink-0">
+          <h4 id="case-edit-dialog-title" className="flex-1 min-w-0 text-sm font-bold text-neutral-800 truncate" title={item.projectName}>
+            案件編集：{item.projectName}
+          </h4>
+          <button onClick={onCancel} className={`px-3 py-1.5 text-sm rounded-lg border border-neutral-300 hover:bg-neutral-50 ${FOCUS_RING}`}>
+            キャンセル
+          </button>
+          <button
+            onClick={() => onSave(changed)}
+            disabled={saving || Object.keys(changed).length === 0}
+            className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50 ${FOCUS_RING}`}
+          >
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            保存
+          </button>
+          <button
+            onClick={onCancel}
+            aria-label="閉じる"
+            className={`inline-flex h-8 w-8 items-center justify-center rounded hover:bg-neutral-100 text-neutral-400 shrink-0 ${FOCUS_RING}`}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {error && (
+          <p role="alert" className="px-5 py-2 text-xs text-red-600 bg-red-50 border-b border-red-100 flex items-center gap-1 shrink-0">
+            <AlertCircle size={12} />{error}
+          </p>
+        )}
 
-      <div className={sectionCls}>
-        <h5 className={headingCls}>スケジュール</h5>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{SCHEDULE_FIELDS.map(renderField)}</div>
-      </div>
+        <div className="overflow-y-auto px-5 py-4 space-y-4">
+          {/* 基本情報 */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="md:col-span-3">
+              <label htmlFor="case-edit-projectName" className={labelCls}>{EDIT_LABELS.projectName}</label>
+              <input id="case-edit-projectName" type="text" value={draft.projectName} onChange={(e) => set('projectName', e.target.value)} className={inputCls} />
+            </div>
+            <div>
+              <label htmlFor="case-edit-status" className={labelCls}>{EDIT_LABELS.status}</label>
+              <select id="case-edit-status" value={draft.status} onChange={(e) => set('status', e.target.value)} className={inputCls}>
+                <option value="">-</option>
+                {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {memberPicker('assignee')}
+            {memberPicker('manager')}
+          </div>
 
-      <div className={sectionCls}>
-        <h5 className={headingCls}>工数</h5>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{EFFORT_FIELDS.map(renderField)}</div>
-      </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* スケジュール (予定 / 実際) */}
+            <section className="rounded-lg border border-blue-200 bg-blue-50/50 p-3">
+              <h5 className={`${sectionTitleCls} text-blue-800`}>スケジュール</h5>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[11px] text-neutral-500">
+                    <th className="w-20"></th>
+                    <th className="text-left font-medium pb-1 px-1">予定</th>
+                    <th className="text-left font-medium pb-1 px-1">実際</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {EDIT_SCHEDULE_ROWS.map((r) => (
+                    <tr key={r.label}>
+                      <th scope="row" className="text-left text-xs font-medium text-neutral-600 pr-2 py-1 whitespace-nowrap">{r.label}</th>
+                      <td className="px-1 py-1">{dateInput(r.plan)}</td>
+                      <td className="px-1 py-1">{dateInput(r.actual)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-blue-100">
+                {EDIT_MILESTONE_KEYS.map((k) => (
+                  <div key={k}>
+                    <span className={labelCls}>{EDIT_LABELS[k]}</span>
+                    {dateInput(k)}
+                  </div>
+                ))}
+              </div>
+            </section>
 
-      <div className={sectionCls}>
-        <h5 className={headingCls}>テスト結果</h5>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{TEST_FIELDS.map(renderField)}</div>
-      </div>
+            {/* 工数 (見積 / 実績) */}
+            <section className="rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+              <h5 className={`${sectionTitleCls} text-amber-800`}>工数</h5>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-[11px] text-neutral-500">
+                    <th className="w-12"></th>
+                    {EDIT_EFFORT_COLS.map((c) => <th key={c.label} className="text-center font-medium pb-1 px-1">{c.label}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <th scope="row" className="text-left text-xs font-medium text-neutral-600 pr-2 py-1">見積</th>
+                    {EDIT_EFFORT_COLS.map((c) => <td key={c.label} className="px-1 py-1">{numberInput(c.estimate)}</td>)}
+                  </tr>
+                  <tr>
+                    <th scope="row" className="text-left text-xs font-medium text-neutral-600 pr-2 py-1">実績</th>
+                    {EDIT_EFFORT_COLS.map((c) => <td key={c.label} className="px-1 py-1">{numberInput(c.actual)}</td>)}
+                  </tr>
+                </tbody>
+              </table>
+              <div className="mt-2 pt-2 border-t border-amber-100 flex items-center gap-2">
+                <span className="text-xs font-medium text-neutral-600">{EDIT_LABELS.developmentEffort}</span>
+                <div className="w-24">{numberInput('developmentEffort')}</div>
+              </div>
+            </section>
+          </div>
 
-      {error && (
-        <p className="text-xs text-red-500 flex items-center gap-1"><AlertCircle size={12} />{error}</p>
-      )}
+          {/* テスト結果 */}
+          <section>
+            <h5 className={`${sectionTitleCls} text-neutral-600`}>テスト結果</h5>
+            <div className="grid grid-cols-3 md:grid-cols-7 gap-2">
+              {EDIT_TEST_KEYS.map((k) => (
+                <div key={k}>
+                  <span className={`${labelCls} whitespace-nowrap`}>{EDIT_LABELS[k]}</span>
+                  {numberInput(k)}
+                </div>
+              ))}
+            </div>
+          </section>
 
-      <div className="flex justify-end gap-2 pt-1">
-        <button onClick={onCancel} className="px-3 py-1.5 text-sm rounded-lg border border-neutral-300 hover:bg-neutral-50">
-          キャンセル
-        </button>
-        <button
-          onClick={() => onSave(changed)}
-          disabled={saving || Object.keys(changed).length === 0}
-          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
-        >
-          {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-          保存
-        </button>
+          {/* コメント */}
+          <section>
+            <label htmlFor="case-edit-comment" className={`${sectionTitleCls} block text-neutral-600`}>{EDIT_LABELS.comment}</label>
+            <textarea
+              id="case-edit-comment"
+              rows={3}
+              value={draft.comment}
+              onChange={(e) => set('comment', e.target.value)}
+              className={`${inputCls} resize-y`}
+            />
+          </section>
+        </div>
       </div>
     </div>
+  );
+}
+
+/* ===== 全体サマリー (親案件・担当者が未選択のとき) ===== */
+function toYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatMonthKey(key: number): string {
+  return `${Math.floor(key / 100)}/${String(key % 100).padStart(2, '0')}`;
+}
+
+function filterByMonth(cases: SummaryCase[], month: string): SummaryCase[] {
+  if (month === SUMMARY_MONTH_ALL) return cases;
+  if (month === SUMMARY_MONTH_UPCOMING) {
+    const now = new Date();
+    const current = now.getFullYear() * 100 + now.getMonth() + 1;
+    return cases.filter((c) => c.monthKey >= current);
+  }
+  return cases.filter((c) => String(c.monthKey) === month);
+}
+
+function summaryMonthLabel(month: string): string {
+  return month === SUMMARY_MONTH_ALL ? '全期間' : month === SUMMARY_MONTH_UPCOMING ? '当月以降' : formatMonthKey(Number(month));
+}
+
+/* リマインド: 案件の月フィルタに関係なく常に表示 (実績・テスト結果未記入のみ対象月に従う) */
+function ReminderPanel({ cases, statusGroups, month, onOpen }: {
+  cases: SummaryCase[];
+  statusGroups: Record<string, string[]>;
+  month: string;
+  onOpen: (popup: SummaryPopup) => void;
+}) {
+  const alerts = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const limit = new Date(today);
+    limit.setDate(limit.getDate() + NEAR_DEADLINE_DAYS);
+    const todayYmd = toYmd(today);
+    const limitYmd = toYmd(limit);
+    const complete = new Set(statusGroups[STATUS_GROUP_COMPLETE] ?? []);
+    // グループ未取得時はグループ依存の判定を出さない (全件が誤って対象になるため)
+    const groupsReady = complete.size > 0;
+    const isBlank = (v: string | undefined) => !(v ?? '').trim();
+
+    const over: string[] = [];
+    const near: string[] = [];
+    const unplanned: string[] = [];
+    const noEstimate: string[] = [];
+    const noActual: string[] = [];
+    const noTestResult: string[] = [];
+    for (const c of cases) {
+      const s = c.normStatus;
+      const field = DEADLINE_FIELD_BY_STATUS[s];
+      const due = field ? (c[field] ?? '').slice(0, 10) : '';
+      if (due) {
+        if (due < todayYmd) over.push(c.id);
+        else if (due <= limitYmd) near.push(c.id);
+      }
+      const open = groupsReady && !complete.has(s) && s !== STOPPED_STATUS;
+      if (open && (isBlank(c.tcStartDate) || isBlank(c.tcExecutionCompleteDate) || (s === DESIGN_STATUS && isBlank(c.tcDesignCompleteDate)))) {
+        unplanned.push(c.id);
+      }
+      if (open && ESTIMATE_KEYS.some((k) => isBlank(c[k]))) noEstimate.push(c.id);
+    }
+    for (const c of filterByMonth(cases, month)) {
+      if (!RESULT_REQUIRED_STATUSES.has(c.normStatus)) continue;
+      if (ACTUAL_KEYS.some((k) => isBlank(c[k]))) noActual.push(c.id);
+      if (TEST_RESULT_KEYS.some((k) => isBlank(c[k]))) noTestResult.push(c.id);
+    }
+    const monthLabel = summaryMonthLabel(month);
+    return [
+      { label: '期限超過', title: '期限超過', ids: over, accent: 'red' as const, ready: true },
+      { label: '期限間近', title: '期限間近', ids: near, accent: 'amber' as const, ready: true },
+      { label: '未計画', title: '未計画', ids: unplanned, accent: 'amber' as const, ready: groupsReady },
+      { label: '見積未記入', title: '見積未記入', ids: noEstimate, accent: 'amber' as const, ready: groupsReady },
+      { label: '実績未記入', title: `実績未記入（${monthLabel}）`, ids: noActual, accent: 'amber' as const, ready: true },
+      { label: 'テスト結果未記入', title: `テスト結果未記入（${monthLabel}）`, ids: noTestResult, accent: 'amber' as const, ready: true },
+    ];
+  }, [cases, month, statusGroups]);
+
+  return (
+    <div className="bg-white border border-neutral-200 rounded-xl shadow-sm p-4">
+      <h3 className="text-sm font-bold text-neutral-800 mb-3">リマインド</h3>
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+        {alerts.map((a) => (
+          <button
+            key={a.label}
+            disabled={!a.ready || a.ids.length === 0}
+            onClick={() => onOpen({ title: a.title, ids: a.ids })}
+            aria-label={`${a.title} ${a.ready ? `${a.ids.length}件を表示` : '判定不可'}`}
+            className={`text-left rounded-lg enabled:hover:ring-2 enabled:hover:ring-neutral-200 disabled:cursor-default ${FOCUS_RING}`}
+          >
+            <StatCard label={a.label} value={a.ready ? a.ids.length : '-'} accent={a.ready && a.ids.length > 0 ? a.accent : undefined} />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* 進捗マトリクス: 行＝システム (ツリー) / 担当者 (担当者ビュー)、列＝PROGRESS_COLUMNS */
+function ProgressMatrix({ mode, cases, month, onMonthChange, onOpen }: {
+  mode: 'tree' | 'assignee';
+  cases: SummaryCase[];
+  month: string;
+  onMonthChange: (m: string) => void;
+  onOpen: (popup: SummaryPopup) => void;
+}) {
+  const monthOptions = useMemo(
+    () => Array.from(new Set(cases.map((c) => c.monthKey).filter((k) => k > 0))).sort((a, b) => b - a),
+    [cases],
+  );
+
+  // 表示列のいずれかに該当する案件だけを対象にする (合計＝表示列の和)
+  const columnIndexByStatus = useMemo(() => {
+    const map = new Map<string, number>();
+    PROGRESS_COLUMNS.forEach((col, i) => col.statuses.forEach((s) => map.set(s, i)));
+    return map;
+  }, []);
+  const targets = useMemo(
+    () => filterByMonth(cases, month).filter((c) => columnIndexByStatus.has(c.normStatus)),
+    [cases, month, columnIndexByStatus],
+  );
+
+  // 行: ツリーはシステム、担当者ビューは担当者 (複数担当は各人に1件ずつ)。cells[i] は列 i の案件ID
+  const rows = useMemo(() => {
+    const map = new Map<string, string[][]>();
+    const add = (rowKey: string, c: SummaryCase) => {
+      if (!map.has(rowKey)) map.set(rowKey, PROGRESS_COLUMNS.map(() => []));
+      map.get(rowKey)![columnIndexByStatus.get(c.normStatus)!].push(c.id);
+    };
+    for (const c of targets) {
+      if (mode === 'tree') {
+        add(c.parentSystem, c);
+      } else {
+        const emails = c.assignee ? c.assignee.split(',').map((s) => s.trim()).filter(Boolean) : [];
+        if (emails.length === 0) add(UNASSIGNED_LABEL, c);
+        else for (const e of emails) add(e, c);
+      }
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => {
+        if (a === UNASSIGNED_LABEL) return 1;
+        if (b === UNASSIGNED_LABEL) return -1;
+        return a.localeCompare(b);
+      })
+      .map(([key, cells]) => ({ key, cells }));
+  }, [targets, mode, columnIndexByStatus]);
+
+  const columnTotals = useMemo(() => {
+    const totals: string[][] = PROGRESS_COLUMNS.map(() => []);
+    for (const c of targets) totals[columnIndexByStatus.get(c.normStatus)!].push(c.id);
+    return totals;
+  }, [targets, columnIndexByStatus]);
+
+  const rowLabel = (key: string) => (mode === 'assignee' && key !== UNASSIGNED_LABEL ? key.split('@')[0] : key);
+  const monthLabel = summaryMonthLabel(month);
+
+  // 件数セル: クリック領域を 32px 以上確保し、読み上げ用にどのセルかを aria-label で示す
+  const countButton = (ids: string[], title: string) =>
+    ids.length === 0 ? (
+      <span className="inline-flex min-w-8 h-8 items-center justify-center px-2 tabular-nums text-neutral-400">0</span>
+    ) : (
+      <button
+        onClick={() => onOpen({ title, ids })}
+        aria-label={`${title} ${ids.length}件を表示`}
+        className={`inline-flex min-w-8 h-8 items-center justify-center px-2 rounded tabular-nums font-medium text-blue-600 hover:bg-white hover:underline ${FOCUS_RING}`}
+      >
+        {ids.length}
+      </button>
+    );
+
+  return (
+    <div className="h-full bg-white border border-neutral-200 rounded-xl shadow-sm flex flex-col">
+      <div className="px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-bold text-neutral-800">全案件の進捗（{mode === 'tree' ? 'システム別' : '担当者別'}）</h3>
+        <select
+          value={month}
+          onChange={(e) => onMonthChange(e.target.value)}
+          aria-label="対象月"
+          className="px-2.5 py-1 text-xs border border-neutral-200 rounded-lg focus:border-neutral-400 focus:outline-none bg-white"
+        >
+          <option value={SUMMARY_MONTH_UPCOMING}>当月以降</option>
+          <option value={SUMMARY_MONTH_ALL}>全期間</option>
+          {monthOptions.map((k) => <option key={k} value={String(k)}>{formatMonthKey(k)}</option>)}
+        </select>
+      </div>
+      <div className="flex-1 overflow-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-neutral-100 text-[11px] text-neutral-500 font-medium">
+              <th className="sticky left-0 z-10 bg-white text-left px-4 py-2 whitespace-nowrap">{mode === 'tree' ? 'システム' : '担当者'}</th>
+              {PROGRESS_COLUMNS.map((col) => (
+                <th key={col.label} className={`text-center px-2 py-2 whitespace-nowrap ${col.tint}`}>{col.label}</th>
+              ))}
+              <th className="text-center px-3 py-2 whitespace-nowrap">合計</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-100">
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={PROGRESS_COLUMNS.length + 2} className="px-4 py-8 text-center text-neutral-400 text-xs">対象の案件がありません</td>
+              </tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={r.key} className="group/row">
+                  <td className="sticky left-0 z-10 bg-white group-hover/row:bg-neutral-100 px-4 py-1 text-neutral-700 whitespace-nowrap" title={r.key}>{rowLabel(r.key)}</td>
+                  {PROGRESS_COLUMNS.map((col, i) => (
+                    <td key={col.label} className={`px-1 py-1 text-center ${col.tint}`}>
+                      {countButton(r.cells[i], `${rowLabel(r.key)} / ${col.label}（${monthLabel}）`)}
+                    </td>
+                  ))}
+                  <td className="px-2 py-1 text-center group-hover/row:bg-neutral-100">
+                    {countButton(r.cells.flat(), `${rowLabel(r.key)}（${monthLabel}）`)}
+                  </td>
+                </tr>
+              ))
+            )}
+            {/* 合計行は案件単位で数える (担当者別では複数担当の案件を1件とするため、各行の和と一致しないことがある) */}
+            {rows.length > 0 && (
+              <tr className="font-medium border-t border-neutral-200">
+                <td className="sticky left-0 z-10 bg-neutral-50 px-4 py-1 text-neutral-700">合計</td>
+                {PROGRESS_COLUMNS.map((col, i) => (
+                  <td key={col.label} className={`px-1 py-1 text-center ${col.tint}`}>
+                    {countButton(columnTotals[i], `${col.label}（${monthLabel}）`)}
+                  </td>
+                ))}
+                <td className="px-2 py-1 text-center bg-neutral-50">
+                  {countButton(targets.map((c) => c.id), `全案件（${monthLabel}）`)}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SummaryCaseDialog({ title, cases, statusOptions, saving, error, active, onStatusChange, onEdit, onClose }: {
+  title: string;
+  cases: SummaryCase[];
+  statusOptions: string[];
+  saving: boolean;
+  error: string | null;
+  // false の間 (上に編集ダイアログが開いている間) は Esc で閉じない
+  active: boolean;
+  onStatusChange: (id: string, status: string) => void;
+  onEdit: (c: ChildCase) => void;
+  onClose: () => void;
+}) {
+  // 保存中の行だけにローディングを出す
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  useEffect(() => { if (!saving) setPendingId(null); }, [saving]);
+
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [active, onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="summary-case-dialog-title"
+        className="bg-white rounded-xl shadow-xl w-full max-w-5xl max-h-[85vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-3 border-b border-neutral-100 flex items-center justify-between gap-3">
+          <h4 id="summary-case-dialog-title" className="text-sm font-bold text-neutral-800 min-w-0 break-words">{title}：{cases.length} 件</h4>
+          <button
+            onClick={onClose}
+            aria-label="閉じる"
+            autoFocus
+            className={`inline-flex h-8 w-8 items-center justify-center rounded hover:bg-neutral-100 text-neutral-400 shrink-0 ${FOCUS_RING}`}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        {error && (
+          <p className="px-5 pt-2 text-xs text-red-500 flex items-center gap-1"><AlertCircle size={12} />{error}</p>
+        )}
+        <div className="overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_var(--color-neutral-100)]">
+              <tr className="text-[11px] text-neutral-400 font-medium">
+                <th className="text-left px-4 py-2">案件名</th>
+                <th className="text-left px-3 py-2">親案件</th>
+                <th className="text-left px-3 py-2">状態</th>
+                <th className="text-left px-3 py-2">担当者</th>
+                <th className="text-left px-3 py-2">予定日</th>
+                <th className="px-3 py-2 w-10"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-neutral-50">
+              {cases.map((c) => {
+                const field = DEADLINE_FIELD_BY_STATUS[c.normStatus];
+                const due = field ? (c[field] ?? '').slice(0, 10) : '';
+                return (
+                  <tr key={c.id} className="hover:bg-neutral-50/50">
+                    <td className="px-4 py-2 font-medium text-neutral-800 max-w-[260px]">
+                      <span className="block truncate" title={c.projectName}>{c.projectName}</span>
+                    </td>
+                    <td className="px-3 py-2 text-neutral-600 max-w-[200px]">
+                      <span className="block truncate" title={c.parentName}>{c.parentSystem} / {c.parentMonth || '-'}</span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={c.normStatus}
+                          disabled={saving}
+                          aria-label={`${c.projectName}の状態`}
+                          onChange={(e) => {
+                            if (e.target.value === c.normStatus) return;
+                            setPendingId(c.id);
+                            onStatusChange(c.id, e.target.value);
+                          }}
+                          className="px-2 py-1 text-xs border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white disabled:opacity-50"
+                        >
+                          {!statusOptions.includes(c.normStatus) && <option value={c.normStatus}>{c.normStatus}</option>}
+                          {statusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                        {pendingId === c.id && (
+                          <span role="status" aria-label="保存中" className="inline-flex">
+                            <Loader2 size={14} className="animate-spin text-neutral-400" />
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 text-neutral-600 whitespace-nowrap">
+                      {c.assignee ? c.assignee.split(',').map((s) => s.trim().split('@')[0]).join(', ') : '-'}
+                    </td>
+                    <td className="px-3 py-2 text-neutral-600 whitespace-nowrap">
+                      {field ? <span title={DEADLINE_FIELD_LABEL[field]}>{due || '未設定'}</span> : '-'}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button
+                        onClick={() => onEdit(c)}
+                        title="編集"
+                        aria-label={`${c.projectName}を編集`}
+                        className={`inline-flex h-8 w-8 items-center justify-center rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600 ${FOCUS_RING}`}
+                      >
+                        <Pencil size={14} />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
