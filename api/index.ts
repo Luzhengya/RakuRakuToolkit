@@ -3747,7 +3747,14 @@ app.get("/api/case-management/status-options", async (_req, res) => {
     const prop = ds?.properties?.["状態"];
     if (!prop || prop.type !== "status") return res.json({ options: [] });
     const options: string[] = (prop.status?.options ?? []).map((o: any) => o.name).filter(Boolean);
-    return res.json({ options });
+    // グループ (To-do / In progress / Complete) → 所属する選択肢名
+    const nameById = new Map<string, string>((prop.status?.options ?? []).map((o: any) => [o.id, o.name]));
+    const groups: Record<string, string[]> = {};
+    for (const g of prop.status?.groups ?? []) {
+      if (!g?.name) continue;
+      groups[g.name] = (g.option_ids ?? []).map((id: string) => nameById.get(id)).filter(Boolean) as string[];
+    }
+    return res.json({ options, groups });
   } catch {
     return res.json({ options: [] });
   }
