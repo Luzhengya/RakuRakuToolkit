@@ -1713,8 +1713,13 @@ export default function TestCenter({ onBack }: TestCenterProps) {
     }
   };
 
-  const loadAreaData = async (areaId: AreaId) => {
-    setSubRoute([areaId]);
+  // 現在 items に読み込み済みのエリア。URL直接オープン・F5・戻る/進む時の自動読込判定に使う
+  const loadedAreaRef = useRef<AreaId | null>(null);
+
+  const loadAreaData = async (areaId: AreaId, syncRoute = true) => {
+    loadedAreaRef.current = areaId;
+    // URL起点の読込では detail/history などのサブパスを保持するため route を書き換えない
+    if (syncRoute) setSubRoute([areaId]);
     setError(null);
     setItems([]);
     setActiveMonthTab('');
@@ -1734,6 +1739,17 @@ export default function TestCenter({ onBack }: TestCenterProps) {
 
     await fetchAreaFromNotion(areaId);
   };
+
+  // カードクリック以外 (URL直接オープン・F5・戻る/進む) でエリアに入った場合もデータを読み込む
+  useEffect(() => {
+    if (!selectedAreaId) {
+      loadedAreaRef.current = null;
+      return;
+    }
+    if (loadedAreaRef.current === selectedAreaId) return;
+    void loadAreaData(selectedAreaId, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAreaId]);
 
   const jumpToCase = async (areaId: string, _caseId: string) => {
     if (!AREAS.some((a) => a.id === areaId)) return;
