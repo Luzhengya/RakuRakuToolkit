@@ -13,7 +13,7 @@ import CodeBlock from '@tiptap/extension-code-block';
 import { Details, DetailsContent, DetailsSummary } from '@tiptap/extension-details';
 import {
   Bold, ChevronDown, Code, CodeSquare, Eraser, Heading1, Heading2, Heading3, Image as ImageIcon, Italic, Link2, List,
-  ListChecks, ListCollapse, ListOrdered, Loader2, Minus, Pilcrow, Quote, Redo2, Strikethrough, Table as TableIcon,
+  ListChecks, ListCollapse, ListOrdered, Loader2, Minus, Paperclip, Pilcrow, Quote, Redo2, Strikethrough, Table as TableIcon,
   Underline as UnderlineIcon, Undo2,
 } from 'lucide-react';
 import { reportToPlainText } from '../utils/reportPlainText';
@@ -96,6 +96,36 @@ const NotionBlock = Node.create({
   },
 });
 
+// 添付ファイル（Notion のファイルブロック）。編集画面ではファイル名のみ表示し、削除・移動だけできる。
+// 新しく挿入したファイルは tempKey で手元の File を指し、保存時にアップロードして uploadId を持たせる
+const REPORT_FILE_MAX_BYTES = 4 * 1024 * 1024;
+
+const ReportFile = Node.create({
+  name: 'reportFile',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  draggable: true,
+  addAttributes() {
+    return { blockId: { default: null }, name: { default: '' }, tempKey: { default: null }, uploadId: { default: null } };
+  },
+  parseHTML() {
+    return [{ tag: 'div[data-report-file]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes({ 'data-report-file': '' }, HTMLAttributes)];
+  },
+  addNodeView() {
+    return ({ node }) => {
+      const dom = document.createElement('div');
+      dom.className = 're-file';
+      dom.contentEditable = 'false';
+      dom.textContent = `📎 ${node.attrs.name || 'ファイル'}${node.attrs.blockId ? '' : '（保存時にアップロード）'}`;
+      return { dom };
+    };
+  },
+});
+
 function MermaidPreview({ code }: { code: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
@@ -172,6 +202,12 @@ function collectImages(node: JSONContent, out: JSONContent[] = []) {
   return out;
 }
 
+function collectFiles(node: JSONContent, out: JSONContent[] = []) {
+  if (node.type === 'reportFile') out.push(node);
+  node.content?.forEach((child) => collectFiles(child, out));
+  return out;
+}
+
 interface Props {
   reportId: string;
   editKey: string;
@@ -188,6 +224,9 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
   // 「AI文書整理」で本文の前に付ける提示詞（null: 読み込み中、'': 取得できず）
   const [aiPrompt, setAiPrompt] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const attachRef = useRef<HTMLInputElement>(null);
+  // 挿入したがまだアップロードしていないファイル（tempKey → File）
+  const pendingFiles = useRef(new Map<string, File>());
 
   // クリック時に待つと新しいタブがポップアップブロックされるため、先に読んでおく
   useEffect(() => {
@@ -228,6 +267,7 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
       DetailsSummary,
       DetailsContent,
       NotionBlock,
+      ReportFile,
       BlockId,
     ],
     content: initial ?? undefined,
@@ -268,6 +308,20 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
     editor.chain().focus().setImage({ src: await readAsDataUrl(file) }).run();
   };
 
+  const pickFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !editor) return;
+    if (file.size > REPORT_FILE_MAX_BYTES) {
+      setSaveError('ファイルは 4MB までです（大きいファイルは Notion のページに直接追加してください）');
+      return;
+    }
+    setSaveError('');
+    const tempKey = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    pendingFiles.current.set(tempKey, file);
+    editor.chain().focus().insertContent({ type: 'reportFile', attrs: { name: file.name, tempKey } }).run();
+  };
+
   const save = async () => {
     if (!editor || saving) return;
     setSaving(true);
@@ -286,6 +340,20 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || '画像のアップロードに失敗しました');
         img.attrs = { ...img.attrs, uploadId: data.uploadId };
+      }
+      // 新しく挿入したファイルを Notion へアップロード
+      for (const f of collectFiles(doc)) {
+        const tempKey = f.attrs?.tempKey;
+        if (f.attrs?.blockId || f.attrs?.uploadId || !tempKey) continue;
+        const file = pendingFiles.current.get(tempKey);
+        if (!file) throw new Error(`「${f.attrs?.name}」をもう一度挿入してください`);
+        const form = new FormData();
+        form.append('file', file);
+        form.append('filename', file.name);
+        const res = await fetch(`/api/reports/${encodeURIComponent(reportId)}/upload-file`, { method: 'POST', headers: { 'X-Report-Key': editKey }, body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'ファイルのアップロードに失敗しました');
+        f.attrs = { ...f.attrs, uploadId: data.uploadId };
       }
       const res = await fetch(`/api/reports/${encodeURIComponent(reportId)}/doc`, {
         method: 'POST',
@@ -332,8 +400,9 @@ export default function ReportEditor({ reportId, editKey, onSaved, onCancel }: P
 
   return (
     <div className="bg-white border border-neutral-200 rounded-xl shadow-sm">
-      <Toolbar editor={editor} onPickImage={() => fileRef.current?.click()} />
+      <Toolbar editor={editor} onPickImage={() => fileRef.current?.click()} onPickFile={() => attachRef.current?.click()} />
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pickImage} />
+      <input ref={attachRef} type="file" className="hidden" onChange={pickFile} />
       <div className="px-8 py-6">
         <EditorContent editor={editor} />
       </div>
@@ -433,7 +502,7 @@ function ColorMenu({ editor }: { editor: Editor }) {
   );
 }
 
-function Toolbar({ editor, onPickImage }: { editor: Editor; onPickImage: () => void }) {
+function Toolbar({ editor, onPickImage, onPickFile }: { editor: Editor; onPickImage: () => void; onPickFile: () => void }) {
   const chain = () => editor.chain().focus();
   const inTable = editor.isActive('table');
   const setLink = () => {
@@ -474,6 +543,7 @@ function Toolbar({ editor, onPickImage }: { editor: Editor; onPickImage: () => v
       {sep}
       <ToolButton title="表を挿入" onClick={() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}><TableIcon size={16} /></ToolButton>
       <ToolButton title="画像を挿入" onClick={onPickImage}><ImageIcon size={16} /></ToolButton>
+      <ToolButton title="ファイルを挿入（4MB まで。閲覧画面ではダウンロードリンク）" onClick={onPickFile}><Paperclip size={16} /></ToolButton>
       {inTable && (
         <>
           {sep}

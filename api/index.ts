@@ -2313,12 +2313,24 @@ interface ReportRenderOptions {
   blocks: { id: string; type: string; text: string }[];
 }
 
+// Notion のファイル・PDF ブロックのファイル名（name が無ければ URL の末尾）
+function notionFileName(c: any): string {
+  if (c?.name) return String(c.name);
+  try {
+    const url = c?.type === "external" ? c.external?.url : c?.file?.url;
+    return decodeURIComponent(new URL(url).pathname.split("/").pop() || "") || "ファイル";
+  } catch {
+    return "ファイル";
+  }
+}
+
 // 批注の原文スナップショット・変更比較に使うブロックのテキスト。文字でないブロックは種別名のみ
 function reportBlockText(type: string, c: any): string {
   if (type === "code") {
     return c?.language === "mermaid" ? "[Mermaid 図表]" : (c?.rich_text ?? []).map((x: any) => x.plain_text ?? "").join("");
   }
   if (type === "image") return "[画像]";
+  if (type === "file" || type === "pdf") return `[ファイル] ${notionFileName(c)}`;
   if (type === "table") return "[表]";
   if (type === "divider") return "[区切り線]";
   if (Array.isArray(c?.rich_text)) return c.rich_text.map((x: any) => x.plain_text ?? "").join("");
@@ -2409,6 +2421,13 @@ async function renderBlocksToHtml(blockId: string, depth = 0, report?: ReportRen
           }
           break;
         }
+        // ファイル・PDF はファイル名のリンクのみ（クリックでダウンロード）。レポート画面以外では従来どおり出さない
+        case "file":
+        case "pdf":
+          if (report) {
+            html += `<div class="file-block"${attr(b)}><a href="/api/report-files/${encodeURIComponent(b.id)}" download>📎 ${escapeHtml(notionFileName(c))}</a></div>`;
+          }
+          break;
         case "table":
           html += report
             ? `<div class="table-block"${attr(b)}>${await renderTableBlock(b.id)}</div>`
@@ -8265,6 +8284,9 @@ async function notionBlocksToPm(blocks: any[], depth = 0): Promise<PMNode[]> {
         out.push({ type: "image", attrs: { blockId, src: src ?? "" } });
         break;
       }
+      case "file":
+        out.push({ type: "reportFile", attrs: { blockId, name: notionFileName(c) } });
+        break;
       case "table": {
         const rows = (await listAllBlockChildren(b.id)).filter((r: any) => r.type === "table_row");
         const width = c.table_width ?? 1;
@@ -8370,6 +8392,13 @@ export function pmNodesToSpecs(nodes: PMNode[] = []): ReportBlockSpec[] {
         if (idOf(n) || body) specs.push({ id: idOf(n), type: "image", body: body ?? {}, children: null });
         break;
       }
+      case "reportFile": {
+        // 既存のファイル（ID あり）は内容を送らない。アップロードしていない新規ファイルは捨てる
+        const uploadId = n.attrs?.uploadId;
+        const body = uploadId ? { type: "file_upload", file_upload: { id: uploadId } } : null;
+        if (idOf(n) || body) specs.push({ id: idOf(n), type: "file", body: body ?? {}, children: null });
+        break;
+      }
       case "table": {
         const rows = n.content ?? [];
         const width = Math.max(1, ...rows.map((r) => (r.content ?? []).length));
@@ -8421,7 +8450,7 @@ function existingBlockBody(b: any): any {
       for (let i = 0; i < code.length; i += 2000) rich.push({ type: "text", text: { content: code.slice(i, i + 2000) } });
       return { rich_text: rich, language: normalizeCodeLanguage(c.language) };
     }
-    case "divider": case "image": return null;
+    case "divider": case "image": case "file": return null;
     case "table": return { table_width: c.table_width, has_column_header: !!c.has_column_header, has_row_header: false };
     case "table_row": return { cells: (c.cells ?? []).map(canon) };
     default: return { rich_text: canon(c.rich_text) };
@@ -8518,7 +8547,7 @@ async function syncReportChildren(parentId: string, desired: ReportBlockSpec[], 
         if (s.children) await syncReportChildren(b.id, s.children, allIds);
       }
       prevId = b.id;
-    } else if (s.type !== "__readonly" && !(s.type === "image" && !s.body?.type)) {
+    } else if (s.type !== "__readonly" && !((s.type === "image" || s.type === "file") && !s.body?.type)) {
       pending.push(s);
     }
   }
@@ -8583,19 +8612,93 @@ app.post("/api/reports/:id/upload", (req, res, next) => {
     if (!page) return res.status(404).json({ error: "Report not found" });
     if (!hasReportEditKey(page, req)) return res.status(403).json({ error: "Edit key is required" });
     const filename = file.originalname || `image.${file.mimetype.split("/")[1] ?? "png"}`;
-    const created: any = await withNotionRetry("fileUploads.create", () =>
-      (notion as any).fileUploads.create({ mode: "single_part", filename, content_type: file.mimetype }),
-    );
-    await withNotionRetry("fileUploads.send", () =>
-      (notion as any).fileUploads.send({
-        file_upload_id: created.id,
-        file: { filename, data: new Blob([new Uint8Array(file.buffer)], { type: file.mimetype }) },
-      }),
-    );
-    return res.json({ uploadId: created.id });
+    return res.json({ uploadId: await uploadToNotion(filename, file.mimetype, file.buffer) });
   } catch (error) {
     console.error("Report image upload error:", error);
     return res.status(500).json({ error: "Failed to upload image" });
+  }
+});
+
+// Notion へ 1 ファイルをアップロードし、ブロックに添付するための file_upload の ID を返す
+async function uploadToNotion(filename: string, contentType: string, data: Buffer): Promise<string> {
+  const created: any = await withNotionRetry("fileUploads.create", () =>
+    (notion as any).fileUploads.create({ mode: "single_part", filename, content_type: contentType }),
+  );
+  await withNotionRetry("fileUploads.send", () =>
+    (notion as any).fileUploads.send({
+      file_upload_id: created.id,
+      file: { filename, data: new Blob([new Uint8Array(data)], { type: contentType }) },
+    }),
+  );
+  return created.id;
+}
+
+// 編集画面で挿入したファイル（画像以外も可）。Vercel の 1 リクエスト上限（約 4.5MB）に収まるよう 4MB まで
+const REPORT_FILE_MAX_BYTES = 4 * 1024 * 1024;
+const reportFileUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: REPORT_FILE_MAX_BYTES } });
+
+app.post("/api/reports/:id/upload-file", (req, res, next) => {
+  reportFileUpload.single("file")(req, res, (err: any) => {
+    if (err) return res.status(400).json({ error: err.code === "LIMIT_FILE_SIZE" ? "ファイルは 4MB までです" : "Upload failed" });
+    next();
+  });
+}, async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file) return res.status(400).json({ error: "file is required" });
+  // multipart のファイル名は UTF-8 で読めないことがあるため、日本語名はフォームの filename を使う
+  const filename = String(req.body?.filename ?? "").trim().slice(0, 200) || file.originalname || "file";
+  try {
+    const page = await retrievePageInDatabase(req.params.id, env.reportDb);
+    if (!page) return res.status(404).json({ error: "Report not found" });
+    if (!hasReportEditKey(page, req)) return res.status(403).json({ error: "Edit key is required" });
+    return res.json({ uploadId: await uploadToNotion(filename, file.mimetype || "application/octet-stream", file.buffer) });
+  } catch (error: any) {
+    console.error("Report file upload error:", error);
+    if (error?.code === "validation_error") {
+      return res.status(400).json({ error: `「${filename}」は Notion に保存できない形式です` });
+    }
+    return res.status(500).json({ error: "Failed to upload file" });
+  }
+});
+
+// レポート閲覧画面のファイルリンク。そのブロックがレポートのページ内にある場合だけダウンロードさせる
+app.get("/api/report-files/:blockId", async (req, res) => {
+  const env = reportEnv(res);
+  if (!env) return;
+  if (!NOTION_ID_PATTERN.test(normalizeNotionId(req.params.blockId))) return res.status(404).json({ error: "File not found" });
+  try {
+    const retrieve = (id: string) => withNotionRetry("blocks.retrieve", () => notion!.blocks.retrieve({ block_id: id }));
+    const block: any = await retrieve(req.params.blockId);
+    if (block?.type !== "file" && block?.type !== "pdf") return res.status(404).json({ error: "File not found" });
+    let parent = block.parent;
+    for (let i = 0; parent?.type === "block_id" && i < 10; i++) parent = ((await retrieve(parent.block_id)) as any).parent;
+    if (parent?.type !== "page_id" || !(await retrievePageInDatabase(parent.page_id, env.reportDb))) {
+      return res.status(404).json({ error: "File not found" });
+    }
+    const c = block[block.type];
+    const url: string | undefined = c?.type === "external" ? c.external?.url : c?.file?.url;
+    if (!url) return res.status(404).json({ error: "File not found" });
+    if (c.type === "external") return res.redirect(url);
+    const r = await fetch(url);
+    if (!r.ok) return res.status(502).json({ error: "Failed to fetch file" });
+    // Vercel の応答上限を超える大きさ（Notion で直接追加したファイル等）は Notion の URL へ移動する
+    if (Number(r.headers.get("content-length") || 0) > REPORT_FILE_MAX_BYTES) {
+      await r.body?.cancel();
+      return res.redirect(url);
+    }
+    const data = Buffer.from(await r.arrayBuffer());
+    if (data.length > REPORT_FILE_MAX_BYTES) return res.redirect(url);
+    const name = notionFileName(c);
+    const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
+    res.set("Content-Type", r.headers.get("content-type") || "application/octet-stream");
+    res.set("Content-Disposition", `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)}`);
+    return res.send(data);
+  } catch (error: any) {
+    if (error?.code === "object_not_found" || error?.code === "validation_error") return res.status(404).json({ error: "File not found" });
+    console.error("Report file download error:", error);
+    return res.status(500).json({ error: "Failed to download file" });
   }
 });
 
