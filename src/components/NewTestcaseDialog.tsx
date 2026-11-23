@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { AlertCircle, Loader2, Save, X } from 'lucide-react';
 import CasePicker, { type CaseCandidate } from './CasePicker';
+import { ui } from './shared/uiClasses';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 const LONG_FIELDS = ['テスト内容', '前提条件', 'ステップ', '予期結果', '備考'] as const;
 const SHORT_FIELDS = ['大分類', '中分類', '小分類', '機能名', '要件名', 'ポイント', '優先級', 'カテゴリ'] as const;
@@ -19,6 +21,9 @@ export default function NewTestcaseDialog({ initialSystem, onClose, onCreated }:
   const [error, setError] = useState<string | null>(null);
 
   const set = (k: string, v: string) => setForm((p) => ({ ...p, [k]: v }));
+  // Esc で閉じるのは何も入力していないときだけ (入力中に閉じると内容が消えるため)
+  const dirty = !!target || Object.values(form).some((v) => v.trim());
+  useEscapeKey(onClose, !dirty && !saving);
 
   const missing: string[] = [];
   if (!target) missing.push('案件');
@@ -44,41 +49,41 @@ export default function NewTestcaseDialog({ initialSystem, onClose, onCreated }:
     }
   };
 
-  const inputCls = 'w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-800 focus:border-neutral-500 focus:outline-none';
+  const inputCls = `${ui.input} w-full`;
   const label = (f: string) => (
     <span className="text-xs font-bold text-neutral-700">{f} {REQUIRED.has(f) && <span className="text-red-500">*</span>}</span>
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="w-full max-w-5xl max-h-[90vh] bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
-        <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between gap-3 shrink-0">
-          <h3 className="text-lg font-bold text-neutral-900">ケース新規作成</h3>
+    <div className={ui.dialogOverlay}>
+      <div className={`${ui.dialogPanel} max-w-5xl`}>
+        <div className={ui.dialogHeader}>
+          <h3 className={ui.dialogTitle}>ケース新規作成</h3>
           <div className="flex items-center gap-2">
-            <span className="text-[11px] text-neutral-400"><span className="text-red-500">*</span> は必須</span>
+            <span className="text-xs text-neutral-500"><span className="text-red-500">*</span> は必須</span>
             <button
               type="button"
               onClick={save}
               disabled={!canSave}
               title={missing.length ? `未入力の必須項目: ${missing.join('、')}` : ''}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed"
+              className={ui.btnPrimary}
             >
               {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
               保存
             </button>
-            <button type="button" onClick={onClose} disabled={saving} className="p-1 rounded hover:bg-neutral-100 text-neutral-500 disabled:opacity-40">
+            <button type="button" onClick={onClose} disabled={saving} title="閉じる" aria-label="閉じる" className={ui.dialogClose}>
               <X size={18} />
             </button>
           </div>
         </div>
 
         {error && (
-          <div className="mx-5 mt-3 bg-red-50 border border-red-200 rounded-lg p-2.5 text-red-600 text-sm flex items-center gap-2 shrink-0">
+          <div className={`mx-5 mt-3 shrink-0 ${ui.errorBox}`}>
             <AlertCircle size={15} />{error}
           </div>
         )}
 
-        <div className="p-5 overflow-auto grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div className={`${ui.dialogBody} grid grid-cols-1 lg:grid-cols-3 gap-5`}>
           <div className="lg:col-span-2 space-y-4">
             {LONG_FIELDS.map((f) => (
               <label key={f} className="block space-y-1">

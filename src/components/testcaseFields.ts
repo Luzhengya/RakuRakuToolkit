@@ -40,6 +40,15 @@ export function bugLinkColor(status: string | undefined): string {
 
 export const RETEST_OPTIONS = ['', '再確認OK', '再確認NG'] as const;
 
+// ケーステンプレートのカテゴリ。api の TC_IMPORT_LISTS「カテゴリ」と同じ並び (変えるときは両方直す)
+export const TC_CATEGORY_OPTIONS = [
+  '初期状態確認', '画面項目確認', '画面遷移確認',
+  '機能確認（正常系）', '機能確認（異常系）',
+  '単項目チェック（正常系）', '単項目チェック（異常系）',
+  '組合せ項目チェック（正常系）', '組合せ項目チェック（異常系）',
+  '権限・セキュリティ認証', 'Cookie・記憶機能', 'API確認', 'ブラウザテスト',
+] as const;
+
 export function effectiveResult(row: TcRow): string {
   const result = (row['テスト結果'] || '').trim();
   if (result !== 'NG') return result;

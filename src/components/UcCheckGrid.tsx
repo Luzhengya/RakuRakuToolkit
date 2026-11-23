@@ -1,5 +1,6 @@
 // UnivContents の検証項目 ①〜⑦ (OK / NG / 空) を詳細ダイアログに並べる
 import { RESULT_COLOR, UC_CHECK_ITEMS, UC_CHECK_OPTIONS, type TcRow } from './testcaseFields';
+import { ui } from './shared/uiClasses';
 
 export default function UcCheckGrid({ row, draft, editing, onChange }: {
   row: TcRow;
@@ -9,7 +10,7 @@ export default function UcCheckGrid({ row, draft, editing, onChange }: {
 }) {
   return (
     <div className="border border-neutral-200 rounded-lg divide-y divide-neutral-100">
-      <p className="px-3 py-2 text-[11px] font-semibold text-neutral-400">検証項目</p>
+      <p className="px-3 py-2 text-xs font-semibold text-neutral-500">検証項目</p>
       {UC_CHECK_ITEMS.map((f) => {
         const v = editing ? (draft[f] ?? '') : (row[f] || '');
         return (
@@ -19,7 +20,7 @@ export default function UcCheckGrid({ row, draft, editing, onChange }: {
               <select
                 value={v}
                 onChange={(e) => onChange(f, e.target.value)}
-                className="rounded-lg border border-neutral-300 px-2 py-1 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+                className={`${ui.input} py-1`}
               >
                 {UC_CHECK_OPTIONS.map((o) => <option key={o} value={o}>{o || '-'}</option>)}
               </select>

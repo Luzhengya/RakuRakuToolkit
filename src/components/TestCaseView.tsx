@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, ExternalLink, Loader2, Plus, RefreshCw, X, Trash2, Pencil, Save, Upload } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, Bug, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Columns3, Download, ExternalLink, Loader2, Plus, RefreshCw, X, Trash2, Pencil, Save, Upload } from 'lucide-react';
+import { MultiSelect } from './TestCaseLibrary';
+import { ui } from './shared/uiClasses';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import BugTransferForm from './BugTransferForm';
 import BugSummary from './BugSummary';
 import NewTestcaseDialog from './NewTestcaseDialog';
@@ -8,7 +11,7 @@ import UcCheckGrid from './UcCheckGrid';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
   UC_CHECK_ITEMS, UC_EDITABLE_FIELDS, UC_HIGHLIGHT_FIELDS, UC_PRIMARY_FIELDS, UC_SECONDARY_FIELDS,
-  bugLinkColor, effectiveResult, isUnivContents, tcLabel, ucCheckShort, type TcRow,
+  TC_CATEGORY_OPTIONS, bugLinkColor, effectiveResult, isUnivContents, tcLabel, ucCheckShort, type TcRow,
 } from './testcaseFields';
 
 type ListResponse = {
@@ -45,9 +48,26 @@ const UC_CHECK_SET = new Set<string>(UC_CHECK_ITEMS);
 
 // キーワード検索の対象。複数キーワードは空白区切りで AND 検索する
 const KEYWORD_FIELDS = [
-  'CMDB番号', '大分類', '中分類', '小分類', '機能名', 'テスト内容',
+  'ケース番号', 'CMDB番号', '大分類', '中分類', '小分類', '機能名', 'テスト内容',
 ] as const;
-const UC_KEYWORD_FIELDS = ['CMDB番号', 'course_no', 'course_name', '備考'] as const;
+const UC_KEYWORD_FIELDS = ['ケース番号', 'CMDB番号', 'course_no', 'course_name', '備考'] as const;
+
+// テスト結果が空の行を絞り込むための表示値 (Notion には無い値)
+const RESULT_EMPTY = '未実施';
+// ポイントにこの文字を含む行を「指摘対応」として絞り込む (api の SHIMATEKI_MARK と同じ)
+const SHIMATEKI_MARK = '指摘対応';
+// 明細の列の表示/非表示 (ブラウザごとに保存。UnivContents は列が違うので別キー)
+const HIDDEN_COLS_KEY = 'testcaseView.hiddenColumns';
+const hiddenColsKey = (uc: boolean) => `${HIDDEN_COLS_KEY}.${uc ? 'uc' : 'std'}`;
+function loadHiddenCols(uc: boolean): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(hiddenColsKey(uc)) ?? '[]');
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch { return []; }
+}
+function saveHiddenCols(uc: boolean, cols: string[]) {
+  try { localStorage.setItem(hiddenColsKey(uc), JSON.stringify(cols)); } catch { /* 保存できなくても表示には影響しない */ }
+}
 
 // サーバー側で編集を許可している項目 (api の TESTCASE_EDITABLE_FIELDS と対応)
 const EDITABLE_FIELDS = new Set<string>([
@@ -92,17 +112,25 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const [transferred, setTransferred] = useState<Record<string, { id: string; no: string; status?: string }>>({});
   // ダイアログの表示モード: 詳細 / BUG移管フォーム / 移管済み BUG の内容
   const [dialogMode, setDialogMode] = useState<'detail' | 'transfer' | 'bug'>('detail');
+  // Esc で詳細を閉じる。編集中・保存中・BUG 移管の入力中は入力が消えるので閉じない
+  useEscapeKey(() => setDetail(null), !!detail && !editing && !saving && dialogMode !== 'transfer');
 
   // 絞り込み。月次はヘッダ側 (年度の右) に移動し、既定は全年
   const [fMonth, setFMonth] = useState('');
   const [fKeyword, setFKeyword] = useState('');
-  const [fResult, setFResult] = useState('');
+  // 複数選択 (空 = すべて)。テスト結果の空欄は RESULT_EMPTY で選ぶ
+  const [fResults, setFResults] = useState<string[]>([]);
+  const [fShimateki, setFShimateki] = useState(false);
+  const [fCategories, setFCategories] = useState<string[]>([]);
   const [fVersion, setFVersion] = useState('');
   const [fMajor, setFMajor] = useState('');
   const [fMiddle, setFMiddle] = useState('');
   const [fMinor, setFMinor] = useState('');
   // 備考: '' = すべて / 'filled' = 記入あり (空白のみは空扱い)
   const [fNote, setFNote] = useState('');
+  const [fNormal, setFNormal] = useState('');
+  // 詳細条件 (2行目) の開閉。既定は閉じる
+  const [detailOpen, setDetailOpen] = useState(false);
 
   // UnivContents はブラウザ検証リストの別テンプレートで表示する (関連処理は共通)
   const uc = isUnivContents(system);
@@ -114,10 +142,17 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const secondaryFields: readonly string[] = uc ? UC_SECONDARY_FIELDS : SECONDARY_FIELDS;
   const subtitleField = uc ? 'course_name' : '機能名';
 
+  // 列の表示/非表示。先頭列 (ケース番号) は左に固定し、隠せない
+  const fixedColumn = listColumns[0];
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => loadHiddenCols(uc));
+  useEffect(() => { setHiddenCols(loadHiddenCols(uc)); }, [uc]);
+  const updateHiddenCols = (cols: string[]) => { setHiddenCols(cols); saveHiddenCols(uc, cols); };
+  const visibleColumns = listColumns.filter((c) => c === fixedColumn || !hiddenCols.includes(c));
+
   const [sortCol, setSortCol] = useState('');
   const [sortDir, setSortDir] = useState<'asc' | 'desc' | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const PAGE_SIZE = 20;
+  const PAGE_SIZE = 50;
 
   // システム候補 (Testcase Format と同じ、進捗管理表から取得)
   useEffect(() => {
@@ -178,19 +213,23 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     const keywords = fKeyword.trim().toLowerCase().split(/[\s　]+/).filter(Boolean);
     return rows.filter((r) => {
       if (fMonth && (r['月次'] || '') !== fMonth) return false;
-      if (fResult && (r['テスト結果'] || '') !== fResult) return false;
+      if (fResults.length && !fResults.includes((r['テスト結果'] || '').trim() || RESULT_EMPTY)) return false;
+      // 指摘対応・カテゴリ・正常/異常 は UnivContents では出さないので効かせない
+      if (!uc && fShimateki && !(r['ポイント'] || '').includes(SHIMATEKI_MARK)) return false;
+      if (!uc && fCategories.length && !fCategories.includes((r['カテゴリ'] || '').trim())) return false;
       if (fVersion && (r['バージョン'] || '') !== fVersion) return false;
       if (fMajor && (r['大分類'] || '') !== fMajor) return false;
       if (fMiddle && (r['中分類'] || '') !== fMiddle) return false;
       if (fMinor && (r['小分類'] || '') !== fMinor) return false;
       if (fNote === 'filled' && !(r['備考'] || '').trim()) return false;
+      if (!uc && fNormal && (r['正常/異常'] || '').trim() !== fNormal) return false;
       if (keywords.length) {
         const haystack = keywordFields.map((f) => r[f] || '').join(' ').toLowerCase();
         if (!keywords.every((k) => haystack.includes(k))) return false;
       }
       return true;
     });
-  }, [rows, fMonth, fKeyword, fResult, fVersion, fMajor, fMiddle, fMinor, fNote, keywordFields]);
+  }, [rows, fMonth, fKeyword, fResults, fShimateki, fCategories, fVersion, fMajor, fMiddle, fMinor, fNote, fNormal, keywordFields, uc]);
 
   const sorted = useMemo(() => {
     if (!sortCol || !sortDir) return filtered;
@@ -231,9 +270,12 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
     return { total, ok, un, block, ng };
   }, [filtered]);
 
-  const hasFilter = fKeyword || fResult || fVersion || fMajor || fMiddle || fMinor || fNote;
+  // 詳細条件 (閉じていても効く) の件数。閉じたときに見落とさないよう開閉ボタンに出す
+  const detailFilterCount = [fMajor, fMiddle, fMinor, fVersion, fNote, uc ? '' : fNormal].filter(Boolean).length;
+  const hasFilter = !!(fKeyword || fResults.length || fShimateki || fCategories.length) || detailFilterCount > 0;
   const clearFilters = () => {
-    setFKeyword(''); setFResult(''); setFVersion(''); setFMajor(''); setFMiddle(''); setFMinor(''); setFNote('');
+    setFKeyword(''); setFResults([]); setFShimateki(false); setFCategories([]);
+    setFVersion(''); setFMajor(''); setFMiddle(''); setFMinor(''); setFNote(''); setFNormal('');
   };
 
   const openDetail = (r: TcRow, mode: 'detail' | 'transfer' | 'bug' = 'detail') => {
@@ -365,8 +407,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
   const isChanged = (rowId: string, field: string) => !!changedMap[rowId]?.includes(field);
   const changedCount = (rowId: string) => changedMap[rowId]?.length ?? 0;
 
-  const selectCls =
-    'rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none';
+  const selectCls = ui.input;
   const th0 = 'px-3 py-2 text-xs font-semibold text-neutral-500 whitespace-nowrap text-left border-b border-neutral-200';
   const td0 = 'px-3 py-2 text-xs text-neutral-700 whitespace-nowrap border-b border-neutral-100';
 
@@ -414,7 +455,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             type="button"
             onClick={fetchList}
             disabled={loading || !system}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-200 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+            className={ui.btnSecondary}
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             更新
@@ -424,7 +465,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             onClick={exportExcel}
             disabled={exporting || sorted.length === 0}
             title={`Excel出力（絞り込んだ ${sorted.length}件 / Testcase Format と同じ書式）`}
-            className="inline-flex items-center justify-center p-2 rounded-lg border border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 disabled:opacity-50 transition-colors"
+            className={ui.btnIcon}
           >
             {exporting
               ? <Loader2 size={14} className="animate-spin" />
@@ -434,7 +475,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             type="button"
             onClick={() => setImportOpen(true)}
             title="テンプレート Excel からケースを一括登録"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 bg-white text-sm font-medium text-neutral-700 hover:bg-neutral-50 transition-colors"
+            className={ui.btnSecondary}
           >
             <Upload size={14} />
             インポート
@@ -442,7 +483,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           <button
             type="button"
             onClick={() => setNewOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-sm font-medium text-white hover:bg-neutral-800 transition-colors"
+            className={ui.btnPrimary}
           >
             <Plus size={14} />
             新規ケース
@@ -460,7 +501,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
       {notice && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-emerald-700 flex items-center gap-2 text-sm">
           <span className="flex-1">{notice}</span>
-          <button type="button" onClick={() => setNotice(null)} className="text-emerald-600 hover:text-emerald-800"><X size={14} /></button>
+          <button type="button" onClick={() => setNotice(null)} title="閉じる" aria-label="閉じる" className={`text-emerald-600 hover:text-emerald-800 rounded ${ui.focusRing}`}><X size={14} /></button>
         </div>
       )}
 
@@ -507,79 +548,134 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           { label: 'テストNG', value: stats.ng, cls: 'text-red-600' },
         ].map((c) => (
           <div key={c.label} className="bg-white border border-neutral-200 rounded-xl px-4 py-3">
-            <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{c.label}</p>
+            <p className="text-xs text-neutral-500 font-semibold tracking-wider truncate">{c.label}</p>
             <p className={`text-2xl font-bold mt-0.5 tabular-nums ${c.cls}`}>{c.value}</p>
           </div>
         ))}
       </div>
 
-      {/* 絞り込み */}
-      <div className="bg-white border border-neutral-200 rounded-xl px-4 py-3 flex items-end gap-3 flex-wrap">
-        <label className="space-y-1 flex-1 min-w-[260px]">
-          <span className="block text-[11px] font-semibold text-neutral-500">キーワード</span>
-          <input
-            value={fKeyword}
-            onChange={(e) => setFKeyword(e.target.value)}
-            placeholder={uc ? 'CMDB番号・course_no・course_name・備考を検索 (空白区切りで AND)' : 'CMDB番号・分類・機能名・テスト内容を検索 (空白区切りで AND)'}
-            className={selectCls + ' w-full'}
-          />
-        </label>
-        <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">{tcLabel('テスト結果', uc)}</span>
-          <select value={fResult} onChange={(e) => setFResult(e.target.value)} className={selectCls}>
-            <option value="">すべて</option>
-            {optionsOf('テスト結果').map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">バージョン</span>
-          <select value={fVersion} onChange={(e) => setFVersion(e.target.value)} className={selectCls}>
-            <option value="">すべて</option>
-            {optionsOf('バージョン').map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </label>
-        {!uc && (<>
-        <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">大分類</span>
-          <select value={fMajor} onChange={(e) => setFMajor(e.target.value)} className={selectCls}>
-            <option value="">すべて</option>
-            {optionsOf('大分類').map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">中分類</span>
-          <select value={fMiddle} onChange={(e) => setFMiddle(e.target.value)} className={selectCls}>
-            <option value="">すべて</option>
-            {optionsOf('中分類').map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">小分類</span>
-          <select value={fMinor} onChange={(e) => setFMinor(e.target.value)} className={selectCls}>
-            <option value="">すべて</option>
-            {optionsOf('小分類').map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </label>
-        </>)}
-        <label className="space-y-1">
-          <span className="block text-[11px] font-semibold text-neutral-500">備考</span>
-          <select value={fNote} onChange={(e) => setFNote(e.target.value)} className={selectCls}>
-            <option value="">すべて</option>
-            <option value="filled">記入あり</option>
-          </select>
-        </label>
-        {hasFilter && (
+      {/* 絞り込み: 1行目 = よく使う条件 / 2行目 = 詳細条件 (既定は閉じる。閉じていても条件は効く) */}
+      <div className={`${ui.card} px-4 py-3 space-y-3`}>
+        <div className="flex items-end gap-3 flex-wrap">
+          <label className="space-y-1 flex-1 min-w-[260px]">
+            <span className={ui.label}>キーワード</span>
+            <input
+              value={fKeyword}
+              onChange={(e) => setFKeyword(e.target.value)}
+              placeholder={uc ? 'course_id・CMDB番号・course_no・course_name・備考を検索 (空白区切りで AND)' : 'ケース番号・CMDB番号・画面名(中分類)・分類・機能名・テスト内容を検索 (空白区切りで AND)'}
+              className={selectCls + ' w-full'}
+            />
+          </label>
+          <div className="space-y-1 w-40">
+            <span className={ui.label}>{tcLabel('テスト結果', uc)}</span>
+            <MultiSelect
+              options={[RESULT_EMPTY, ...optionsOf('テスト結果').filter((v) => v !== RESULT_EMPTY)]}
+              value={fResults}
+              onChange={setFResults}
+            />
+          </div>
+          {!uc && (<>
+            <div className="space-y-1 w-56">
+              <span className={ui.label}>カテゴリ</span>
+              {/* 候補はケーステンプレートのカテゴリ (データに無い値も選べる) */}
+              <MultiSelect options={[...TC_CATEGORY_OPTIONS]} value={fCategories} onChange={setFCategories} />
+            </div>
+            <label className="flex items-center gap-1.5 pb-2 text-sm text-neutral-700 cursor-pointer select-none" title="ポイントに「指摘対応」を含むケースだけを表示">
+              <input type="checkbox" checked={fShimateki} onChange={(e) => setFShimateki(e.target.checked)} />
+              指摘対応
+            </label>
+          </>)}
+        </div>
+
+        {/* 詳細条件の開閉と条件クリアは別の行に置く */}
+        <div className="flex items-center gap-4">
           <button
             type="button"
-            onClick={clearFilters}
-            className="text-xs text-neutral-500 hover:text-neutral-800 pb-2"
+            onClick={() => setDetailOpen((v) => !v)}
+            aria-expanded={detailOpen}
+            className={`inline-flex items-center gap-1 ${ui.btnText} text-neutral-600`}
           >
-            条件クリア
+            {detailOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            詳細条件{detailFilterCount > 0 && <span className="font-semibold text-neutral-900">（{detailFilterCount}）</span>}
           </button>
+          {hasFilter && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className={ui.btnText}
+            >
+              条件クリア
+            </button>
+          )}
+        </div>
+
+        {detailOpen && (
+          <div className="border-t border-neutral-100 pt-3 space-y-3">
+            {!uc && (
+              // 候補の文字が長くても 1 行に収まるよう 3 等分の幅に固定する
+              <div className="grid grid-cols-3 gap-3">
+                <label className="space-y-1 min-w-0">
+                  <span className={ui.label}>大分類</span>
+                  <select value={fMajor} onChange={(e) => setFMajor(e.target.value)} className={selectCls + ' w-full'}>
+                    <option value="">すべて</option>
+                    {optionsOf('大分類').map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1 min-w-0">
+                  <span className={ui.label}>中分類</span>
+                  <select value={fMiddle} onChange={(e) => setFMiddle(e.target.value)} className={selectCls + ' w-full'}>
+                    <option value="">すべて</option>
+                    {optionsOf('中分類').map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1 min-w-0">
+                  <span className={ui.label}>小分類</span>
+                  <select value={fMinor} onChange={(e) => setFMinor(e.target.value)} className={selectCls + ' w-full'}>
+                    <option value="">すべて</option>
+                    {optionsOf('小分類').map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
+            <div className="flex items-end gap-3 flex-wrap">
+              <label className="space-y-1">
+                <span className={ui.label}>バージョン</span>
+                <select value={fVersion} onChange={(e) => setFVersion(e.target.value)} className={selectCls}>
+                  <option value="">すべて</option>
+                  {optionsOf('バージョン').map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+              <label className="space-y-1">
+                <span className={ui.label}>備考</span>
+                <select value={fNote} onChange={(e) => setFNote(e.target.value)} className={selectCls}>
+                  <option value="">すべて</option>
+                  <option value="filled">記入あり</option>
+                </select>
+              </label>
+              {!uc && (
+                <label className="space-y-1" title="TestCase Library から取り込んだケースのみ値あり">
+                  <span className={ui.label}>正常/異常</span>
+                  <select value={fNormal} onChange={(e) => setFNormal(e.target.value)} className={selectCls}>
+                    <option value="">すべて</option>
+                    {optionsOf('正常/異常').map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
       {/* 明細テーブル */}
+      <div className="flex justify-end">
+        <ColumnMenu
+          columns={listColumns}
+          fixed={fixedColumn}
+          hidden={hiddenCols}
+          labelOf={(c) => (UC_CHECK_SET.has(c) ? c : tcLabel(c, uc))}
+          onChange={updateHiddenCols}
+        />
+      </div>
       {loading ? (
         <div className="bg-white border border-neutral-200 rounded-xl p-10 flex items-center justify-center gap-2 text-neutral-500">
           <Loader2 size={18} className="animate-spin" />
@@ -590,15 +686,17 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
           {rows.length === 0 ? 'データがありません' : '条件に一致するデータがありません'}
         </div>
       ) : (
-        // 縦スクロールも枠内で行い、見出し行を sticky で固定する (overflow-x だけだと sticky が効かない)
-        <div className="overflow-auto max-h-[calc(100vh-180px)] border border-neutral-200 rounded-xl bg-white">
+        // 縦スクロールも枠内で行い、見出し行を sticky で固定する (overflow-x だけだと sticky が効かない)。
+        // ページ送りはスクロール枠の外に置く (枠内の sticky だと固定列や横スクロールバーと重なってケースが隠れるため)
+        <div className={`${ui.card} overflow-hidden`}>
+        <div className="overflow-auto max-h-[calc(100vh-240px)]">
           <table className="w-full border-collapse">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_#e5e5e5]">
               <tr>
-                {listColumns.map((c) => (
+                {visibleColumns.map((c) => (
                   <th
                     key={c}
-                    className={th0 + ' cursor-pointer hover:bg-neutral-50 select-none'}
+                    className={th0 + ' cursor-pointer hover:bg-neutral-50 select-none' + (c === fixedColumn ? ' sticky left-0 z-20 bg-white' : '')}
                     onClick={() => toggleSort(c)}
                     title={UC_CHECK_SET.has(c) ? c : undefined}
                   >
@@ -614,8 +712,13 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             </thead>
             <tbody>
               {paged.map((r) => (
-                <tr key={r.id} className="hover:bg-neutral-50 cursor-pointer" onClick={() => openDetail(r)}>
-                  {listColumns.map((c) => {
+                // 結果が OK (NG→再確認OK を含む) の行は薄いグレーにして、対応が要る行と見分ける
+                <tr
+                  key={r.id}
+                  className={`cursor-pointer ${effectiveResult(r) === 'OK' ? 'bg-neutral-100 hover:bg-neutral-200' : 'bg-white hover:bg-neutral-50'}`}
+                  onClick={() => openDetail(r)}
+                >
+                  {visibleColumns.map((c) => {
                     const v = r[c] || '';
                     if (c === 'テスト結果' || UC_CHECK_SET.has(c)) {
                       return (
@@ -648,7 +751,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         key={c}
                         className={
                           td0 + (wide ? ' max-w-[280px] truncate' : '') +
-                          (red ? ' text-red-600 font-medium' : '')
+                          (red ? ' text-red-600 font-medium' : '') +
+                          // 先頭列は横スクロールしても左に残す。背景は行の色をそのまま使う
+                          (c === fixedColumn ? ' sticky left-0 z-[1] bg-inherit' : '')
                         }
                         title={red ? `${v}（前回アップロードで変更）` : wide ? v : undefined}
                       >
@@ -663,7 +768,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                           type="button"
                           onClick={() => openDetail(r, 'bug')}
                           title={`移管済みの BUG を表示（${transferred[(r['ケース番号'] || '').trim()].status || '状態未設定'}）`}
-                          className={`px-2 py-1 rounded border text-xs whitespace-nowrap ${bugLinkColor(transferred[(r['ケース番号'] || '').trim()].status)}`}
+                          className={`px-2 py-1 rounded-lg border text-xs whitespace-nowrap ${ui.focusRing} ${bugLinkColor(transferred[(r['ケース番号'] || '').trim()].status)}`}
                         >
                           移管済み No.{transferred[(r['ケース番号'] || '').trim()].no || '-'}
                         </button>
@@ -672,7 +777,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                           type="button"
                           onClick={() => openDetail(r, 'transfer')}
                           title="このケースから BUG を作成"
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-neutral-200 text-xs text-neutral-600 hover:bg-neutral-100 whitespace-nowrap"
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-300 bg-white text-xs text-neutral-600 hover:bg-neutral-100 whitespace-nowrap ${ui.focusRing}`}
                         >
                           <Bug size={12} />
                           BUG移管
@@ -683,7 +788,8 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         onClick={() => removeRow(r)}
                         disabled={deletingId === r.id}
                         title="削除"
-                        className="p-1 rounded border border-neutral-200 text-neutral-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200 disabled:opacity-40"
+                        aria-label="削除"
+                        className={`p-1 rounded-lg border border-neutral-300 bg-white text-neutral-400 hover:bg-red-50 hover:text-red-600 hover:border-red-200 disabled:opacity-50 disabled:cursor-not-allowed ${ui.focusRing}`}
                       >
                         {deletingId === r.id
                           ? <Loader2 size={14} className="animate-spin" />
@@ -695,15 +801,16 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               ))}
             </tbody>
           </table>
+        </div>
           {/* ページネーション */}
           {totalPages > 1 && (
-            <div className="sticky bottom-0 left-0 bg-white flex items-center justify-between px-4 py-3 border-t border-neutral-100">
+            <div className="bg-white flex items-center justify-between px-4 py-3 border-t border-neutral-200">
               <span className="text-xs text-neutral-400">{sorted.length} 件中 {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, sorted.length)} 件</span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
-                  className="p-1 rounded hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                  className={`p-1 rounded-lg hover:bg-neutral-100 disabled:opacity-50 disabled:cursor-not-allowed ${ui.focusRing}`}
                 >
                   <ChevronLeft size={14} />
                 </button>
@@ -721,7 +828,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       <button
                         key={p}
                         onClick={() => setCurrentPage(p as number)}
-                        className={`min-w-[28px] h-7 rounded text-xs font-medium ${currentPage === p ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-100 text-neutral-600'}`}
+                        className={`min-w-[28px] h-7 rounded-lg text-xs font-medium ${ui.focusRing} ${currentPage === p ? 'bg-neutral-900 text-white' : 'hover:bg-neutral-100 text-neutral-600'}`}
                       >
                         {p}
                       </button>
@@ -730,7 +837,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 <button
                   onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                   disabled={currentPage === totalPages}
-                  className="p-1 rounded hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed"
+                  className={`p-1 rounded-lg hover:bg-neutral-100 disabled:opacity-50 disabled:cursor-not-allowed ${ui.focusRing}`}
                 >
                   <ChevronRight size={14} />
                 </button>
@@ -742,29 +849,29 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
 
       {/* 詳細ダイアログ (縦に伸ばさず横に広げる) */}
       {detail && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 gap-2">
+        <div className={`${ui.dialogOverlay} gap-2`}>
           {/* 左右の送り。閉じずに前後のケースを見られる */}
           <button
             type="button"
             onClick={() => stepDetail(-1)}
             disabled={editing || detailIndex <= 0 || dialogMode !== 'detail'}
             title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '前のケース'}
-            className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className={ui.dialogNav}
           >
             <ChevronLeft size={20} />
           </button>
 
-          <div className="w-full max-w-6xl max-h-[88vh] bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
+          <div className={`${ui.dialogPanel} max-w-6xl`}>
             {/* ヘッダ: ケース番号はここだけに出す (本文では重複させない) */}
-            <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between gap-3 shrink-0">
+            <div className={ui.dialogHeader}>
               <div className="flex items-baseline gap-3 min-w-0">
                 {dialogMode === 'bug' ? (
-                  <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+                  <h3 className={`${ui.dialogTitle} shrink-0`}>
                     BUG No.{transferred[(detail['ケース番号'] || '').trim()]?.no || '-'}
                   </h3>
                 ) : (
                   <>
-                    <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+                    <h3 className={`${ui.dialogTitle} shrink-0`}>
                       NO.{detail['ケース番号'] || '-'}
                     </h3>
                     {detail[subtitleField] && (
@@ -772,7 +879,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     )}
                     {changedCount(detail.id) > 0 && (
                       <span
-                        className="shrink-0 rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-[11px] font-bold text-red-600"
+                        className="shrink-0 rounded-full bg-red-50 border border-red-200 px-2 py-0.5 text-xs font-bold text-red-600"
                         title="前回のアップロードで値が変わった項目です"
                       >
                         変更 {changedCount(detail.id)}項目
@@ -784,7 +891,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
               <div className="flex items-center gap-2 shrink-0">
                 {/* 何件目か。送りボタンで移動したときに位置が分かる */}
                 {detailIndex >= 0 && sorted.length > 1 && (
-                  <span className="text-[11px] text-neutral-400 tabular-nums">
+                  <span className="text-xs text-neutral-500 tabular-nums">
                     {detailIndex + 1} / {sorted.length}
                   </span>
                 )}
@@ -792,7 +899,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                   <button
                     type="button"
                     onClick={() => setDialogMode('detail')}
-                    className="px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 whitespace-nowrap"
+                    className={ui.btnSecondary}
                   >
                     ケース詳細に戻る
                   </button>
@@ -804,7 +911,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       onClick={() => setDialogMode('bug')}
                       disabled={editing}
                       title={editing ? '編集中は操作できません。保存またはキャンセルしてください' : '移管済みの BUG を表示'}
-                      className={`px-2.5 py-1.5 rounded-lg border text-sm disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap ${bugLinkColor(transferred[(detail['ケース番号'] || '').trim()].status)}`}
+                      className={`px-3 py-1.5 rounded-lg border text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap ${ui.focusRing} ${bugLinkColor(transferred[(detail['ケース番号'] || '').trim()].status)}`}
                     >
                       移管済み No.{transferred[(detail['ケース番号'] || '').trim()].no || '-'}
                     </button>
@@ -814,7 +921,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                       onClick={() => setDialogMode('transfer')}
                       disabled={editing}
                       title={editing ? '編集中は移管できません。保存またはキャンセルしてください' : 'このケースから BUG を作成'}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                      className={ui.btnSecondary}
                     >
                       <Bug size={14} />
                       BUG移管
@@ -828,7 +935,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         type="button"
                         onClick={() => { setEditing(false); setDialogError(null); }}
                         disabled={saving}
-                        className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                        className={ui.btnSecondary}
                       >
                         キャンセル
                       </button>
@@ -836,7 +943,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         type="button"
                         onClick={saveEdit}
                         disabled={saving}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
+                        className={ui.btnPrimary}
                       >
                         {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                         保存
@@ -846,7 +953,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     <button
                       type="button"
                       onClick={startEdit}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+                      className={ui.btnSecondary}
                     >
                       <Pencil size={14} />
                       編集
@@ -856,7 +963,9 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 <button
                   type="button"
                   onClick={() => setDetail(null)}
-                  className="p-1 rounded hover:bg-neutral-100 text-neutral-500"
+                  title="閉じる"
+                  aria-label="閉じる"
+                  className={ui.dialogClose}
                 >
                   <X size={18} />
                 </button>
@@ -864,7 +973,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             </div>
 
             {dialogError && (
-              <div className="mx-5 mt-3 bg-red-50 border border-red-200 rounded-lg p-2.5 text-red-600 text-sm flex items-center gap-2 shrink-0">
+              <div className={`mx-5 mt-3 shrink-0 ${ui.errorBox}`}>
                 <AlertCircle size={15} />
                 {dialogError}
               </div>
@@ -903,7 +1012,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                             alert(e instanceof Error ? e.message : '解除に失敗しました');
                           }
                         }}
-                        className="text-[11px] text-red-500 hover:text-red-700"
+                        className={`text-xs text-red-500 hover:text-red-700 rounded ${ui.focusRing}`}
                       >
                         関連付け解除
                       </button>
@@ -911,7 +1020,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         href={`https://www.notion.so/${(transferred[(detail['ケース番号'] || '').trim()]?.id ?? '').replace(/-/g, '')}`}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 text-[11px] text-neutral-500 hover:text-neutral-800"
+                        className={`inline-flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-800 rounded ${ui.focusRing}`}
                       >
                         <ExternalLink size={12} />
                         Notion で開く（画像の添付や編集はこちら）
@@ -943,7 +1052,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     <p className="text-xs font-bold text-neutral-700 flex items-center gap-2">
                       {f}
                       {isChanged(detail.id, f) && (
-                        <span className="rounded bg-red-50 border border-red-200 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
+                        <span className="rounded bg-red-50 border border-red-200 px-1.5 py-0.5 text-xs font-medium text-red-600">
                           変更あり
                         </span>
                       )}
@@ -953,7 +1062,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         value={draft[f] ?? ''}
                         onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
                         rows={f === 'テスト内容' ? 3 : 4}
-                        className="w-full text-sm border border-neutral-300 rounded-lg p-2 focus:border-neutral-500 focus:outline-none"
+                        className={`${ui.input} w-full p-2`}
                       />
                     ) : (
                       <p className={`text-sm whitespace-pre-wrap border rounded-lg p-3 min-h-[3.5rem] ${
@@ -972,7 +1081,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                 <div className="grid grid-cols-2 gap-3">
                   {highlightFields.map((f) => (
                     <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
-                      <p className="text-[11px] font-semibold text-neutral-400">{tcLabel(f, uc)}</p>
+                      <p className="text-xs font-semibold text-neutral-500">{tcLabel(f, uc)}</p>
                       {editing && f === 'テスト結果' ? (
                         <select
                           value={draft[f] ?? ''}
@@ -1013,10 +1122,10 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
 
                 {(editing ? (draft['テスト結果'] || '') : (detail['テスト結果'] || '')).trim() === 'NG' && (
                   <div className="border border-orange-200 rounded-lg p-3 bg-orange-50/40 space-y-3">
-                    <p className="text-[11px] font-semibold text-orange-500">再テスト</p>
+                    <p className="text-xs font-semibold text-orange-600">再テスト</p>
                     <div className="grid grid-cols-3 gap-3">
                       <div className="space-y-1">
-                        <p className="text-[10px] text-neutral-400">再テスト結果</p>
+                        <p className="text-xs text-neutral-500">再テスト結果</p>
                         {editing ? (
                           <select
                             value={draft['再テスト結果'] ?? ''}
@@ -1036,7 +1145,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         )}
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[10px] text-neutral-400">再実施日</p>
+                        <p className="text-xs text-neutral-500">再実施日</p>
                         {editing ? (
                           <input
                             type="date"
@@ -1049,7 +1158,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                         )}
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[10px] text-neutral-400">再実施者</p>
+                        <p className="text-xs text-neutral-500">再実施者</p>
                         {editing ? (
                           <input
                             value={draft['再実施者'] ?? ''}
@@ -1070,20 +1179,20 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                     const isLong = LONG_TEXT_FIELDS.has(f);
                     return (
                       <div key={f} className="px-3 py-2 flex items-start gap-3">
-                        <p className="text-[11px] text-neutral-400 w-20 shrink-0 pt-0.5">{f}</p>
+                        <p className="text-xs text-neutral-500 w-20 shrink-0 pt-0.5">{f}</p>
                         {canEdit ? (
                           isLong ? (
                             <textarea
                               value={draft[f] ?? ''}
                               onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
                               rows={2}
-                              className="flex-1 text-sm border border-neutral-300 rounded p-1.5 focus:border-neutral-500 focus:outline-none"
+                              className={`${ui.input} flex-1 min-w-0`}
                             />
                           ) : (
                             <input
                               value={draft[f] ?? ''}
                               onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
-                              className="flex-1 text-sm border border-neutral-300 rounded px-2 py-1 focus:border-neutral-500 focus:outline-none"
+                              className={`${ui.input} flex-1 min-w-0`}
                             />
                           )
                         ) : (
@@ -1100,7 +1209,7 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
                   type="button"
                   onClick={() => removeRow(detail)}
                   disabled={deletingId === detail.id}
-                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-red-200 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  className={`${ui.btnDanger} w-full py-2`}
                 >
                   {deletingId === detail.id
                     ? <Loader2 size={14} className="animate-spin" />
@@ -1119,10 +1228,71 @@ export default function TestCaseView({ onBack }: { onBack: () => void }) {
             onClick={() => stepDetail(1)}
             disabled={editing || detailIndex < 0 || detailIndex >= sorted.length - 1 || dialogMode !== 'detail'}
             title={editing ? '編集中は移動できません。保存またはキャンセルしてください' : '次のケース'}
-            className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            className={ui.dialogNav}
           >
             <ChevronRight size={20} />
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 明細の列の表示/非表示メニュー。固定列は外せない
+function ColumnMenu({ columns, fixed, hidden, labelOf, onChange }: {
+  columns: readonly string[];
+  fixed: string;
+  hidden: string[];
+  labelOf: (c: string) => string;
+  onChange: (hidden: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+
+  // 今の列定義に無い (古い保存値の) 列は数えない
+  const hiddenCount = columns.filter((c) => c !== fixed && hidden.includes(c)).length;
+  const toggle = (c: string) => onChange(hidden.includes(c) ? hidden.filter((x) => x !== c) : [...hidden, c]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className={ui.btnSecondary}
+      >
+        <Columns3 size={14} />
+        列表示{hiddenCount > 0 && <span className="text-xs font-normal text-neutral-500">（{hiddenCount}列 非表示）</span>}
+        <ChevronDown size={14} className="text-neutral-400" />
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-56 max-h-96 overflow-y-auto bg-white border border-neutral-200 rounded-lg shadow-lg py-1">
+          {columns.map((c) => (
+            <label
+              key={c}
+              className={`flex items-center gap-2 px-3 py-1.5 text-sm ${c === fixed ? 'text-neutral-400 cursor-not-allowed' : 'text-neutral-700 hover:bg-neutral-50 cursor-pointer'}`}
+            >
+              <input type="checkbox" checked={c === fixed || !hidden.includes(c)} disabled={c === fixed} onChange={() => toggle(c)} />
+              <span className="truncate" title={labelOf(c)}>{labelOf(c)}{c === fixed && '（固定）'}</span>
+            </label>
+          ))}
+          <div className="border-t border-neutral-100 mt-1 pt-1">
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              disabled={hiddenCount === 0}
+              className={`w-full text-left px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-50 disabled:text-neutral-300 disabled:hover:bg-transparent disabled:cursor-not-allowed ${ui.focusRing}`}
+            >
+              初期表示に戻す
+            </button>
+          </div>
         </div>
       )}
     </div>
