@@ -1173,6 +1173,7 @@ app.get("/api/test-center", async (req, res) => {
         implementationEstimate,
         executionEstimate,
         reviewEstimate,
+        verificationDate,
       }) => ({
         id,
         month,
@@ -1198,6 +1199,8 @@ app.get("/api/test-center", async (req, res) => {
         implementationEstimate,
         executionEstimate,
         reviewEstimate,
+        // 一覧の「検証リリース予定日」列 (進捗DBの 検証日)
+        verificationDate,
       }));
 
     return res.json({ area, total: areaItems.length, items: areaItems });
