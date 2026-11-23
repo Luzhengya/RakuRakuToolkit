@@ -2,6 +2,8 @@
 // 入力チェック・既存判定 (サーバー) → 既存ケースは上書き、それ以外は自動採番で追加する。
 import { useState } from 'react';
 import { AlertCircle, Download, Loader2, Upload, X } from 'lucide-react';
+import { ui } from './shared/uiClasses';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 type ImportRow = { rowNo: number; values: Record<string, string> };
 type Duplicate = { rowNo: number; caseNo: string; cmdbNo: string; system: string; existingContent: string };
@@ -130,19 +132,32 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
   };
 
   const canImport = rows.length > 0 && errors.length === 0 && !busy;
-  const btn = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed';
+  const btn = ui.btnSecondary;
+  // 登録中は閉じない (途中で閉じると何件登録されたか分からなくなるため)
+  useEscapeKey(onClose, busy !== 'import');
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl max-h-[90vh] bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
-        <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between shrink-0">
-          <h3 className="text-lg font-bold text-neutral-900">ケースインポート（登録先年度: {year}）</h3>
-          <button type="button" onClick={onClose} disabled={busy === 'import'} className="text-neutral-400 hover:text-neutral-700 disabled:opacity-40">
-            <X size={18} />
-          </button>
+    <div className={ui.dialogOverlay}>
+      <div className={`${ui.dialogPanel} max-w-4xl`}>
+        <div className={ui.dialogHeader}>
+          <h3 className={ui.dialogTitle}>ケースインポート（登録先年度: {year}）</h3>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={runImport}
+              disabled={!canImport}
+              className={ui.btnPrimary}
+            >
+              {busy === 'import' && <Loader2 size={14} className="animate-spin" />}
+              {busy === 'import' && progress ? `登録中 ${progress.done} / ${progress.total}件` : '登録'}
+            </button>
+            <button type="button" onClick={onClose} disabled={busy === 'import'} title="閉じる" aria-label="閉じる" className={ui.dialogClose}>
+              <X size={18} />
+            </button>
+          </div>
         </div>
 
-        <div className="p-5 space-y-4 overflow-y-auto">
+        <div className={`${ui.dialogBody} space-y-4`}>
           <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 text-sm text-sky-800 space-y-1">
             <p>同じケース番号・CMDB番号の既存ケースがあれば上書きします（記入のある項目だけ更新・バージョン +1）。</p>
             <p>既存に無いケース番号・空欄の行は「CMDB番号-連番」で自動採番して追加します。</p>
@@ -154,13 +169,14 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
               {busy === 'template' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
               ① テンプレートをダウンロード
             </button>
-            <label className={btn + (busy ? ' opacity-40 pointer-events-none' : ' cursor-pointer')}>
+            <label className={btn + ' focus-within:ring-2 focus-within:ring-neutral-400 focus-within:ring-offset-1' + (busy ? ' opacity-50 pointer-events-none' : ' cursor-pointer')}>
               {busy === 'check' ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
               ② 記入したファイルを選択
               <input
                 type="file"
                 accept=".xlsx"
-                className="hidden"
+                disabled={!!busy}
+                className="sr-only"
                 onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) check(f); }}
               />
             </label>
@@ -219,18 +235,6 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-neutral-200 flex justify-end gap-2 shrink-0">
-          <button type="button" onClick={onClose} disabled={busy === 'import'} className={btn}>キャンセル</button>
-          <button
-            type="button"
-            onClick={runImport}
-            disabled={!canImport}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {busy === 'import' && <Loader2 size={14} className="animate-spin" />}
-            {busy === 'import' && progress ? `登録中 ${progress.done} / ${progress.total}件` : '登録'}
-          </button>
-        </div>
       </div>
     </div>
   );

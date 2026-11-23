@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { ChevronLeft, ChevronRight, X, Pencil, Save, Loader2, Check, AlertCircle } from 'lucide-react';
 import UcCheckGrid from './UcCheckGrid';
+import { ui } from './shared/uiClasses';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import {
   HIGHLIGHT_FIELDS, LONG_TEXT_FIELDS, PRIMARY_FIELDS, RESULT_COLOR, RETEST_OPTIONS, SECONDARY_FIELDS,
   UC_EDITABLE_FIELDS, UC_HIGHLIGHT_FIELDS, UC_PRIMARY_FIELDS, UC_SECONDARY_FIELDS,
@@ -32,6 +34,8 @@ export default function TestcaseDetailDialog({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Esc で閉じる。編集中・保存中は入力が消えるので閉じない
+  useEscapeKey(onClose, !!row && !editing && !saving);
 
   if (!row) return null;
 
@@ -88,7 +92,7 @@ export default function TestcaseDetailDialog({
           <select
             value={draft[f] ?? ''}
             onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
-            className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+            className={`${ui.input} w-full`}
           >
             <option value="">-</option>
             {(uc ? UC_RESULT_OPTIONS : RESULT_OPTIONS).map((o) => <option key={o} value={o}>{o}</option>)}
@@ -100,7 +104,7 @@ export default function TestcaseDetailDialog({
           <select
             value={draft[f] ?? ''}
             onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
-            className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none"
+            className={`${ui.input} w-full`}
           >
             {RETEST_OPTIONS.map((o) => <option key={o} value={o}>{o || '—'}</option>)}
           </select>
@@ -112,7 +116,7 @@ export default function TestcaseDetailDialog({
             rows={4}
             value={draft[f] ?? ''}
             onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
-            className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none resize-y"
+            className={`${ui.input} w-full px-3 py-2 resize-y`}
           />
         );
       }
@@ -121,7 +125,7 @@ export default function TestcaseDetailDialog({
           type="text"
           value={draft[f] ?? ''}
           onChange={(e) => setDraft((p) => ({ ...p, [f]: e.target.value }))}
-          className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm text-neutral-700 focus:border-neutral-500 focus:outline-none"
+          className={`${ui.input} w-full px-3 py-2`}
         />
       );
     }
@@ -129,25 +133,25 @@ export default function TestcaseDetailDialog({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 gap-2">
+    <div className={`${ui.dialogOverlay} gap-2`}>
       <button
         type="button"
         onClick={() => handleNav(index - 1)}
         disabled={index <= 0}
         title="前のケース"
-        className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className={ui.dialogNav}
       >
         <ChevronLeft size={20} />
       </button>
 
-      <div className="w-full max-w-6xl max-h-[88vh] bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
-        <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between gap-3 shrink-0">
+      <div className={`${ui.dialogPanel} max-w-6xl`}>
+        <div className={ui.dialogHeader}>
           <div className="flex items-baseline gap-3 min-w-0">
-            <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+            <h3 className={`${ui.dialogTitle} shrink-0`}>
               NO.{row['ケース番号'] || '-'}
             </h3>
             {row._bugNo && (
-              <span title={row._bugStatus || '状態未設定'} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold tabular-nums shrink-0 ${bugLinkColor(row._bugStatus)}`}>
+              <span title={row._bugStatus || '状態未設定'} className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-bold tabular-nums shrink-0 ${bugLinkColor(row._bugStatus)}`}>
                 BUG #{row._bugNo}
               </span>
             )}
@@ -157,12 +161,12 @@ export default function TestcaseDetailDialog({
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {saved && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600">
+              <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
                 <Check size={12} /> 更新しました
               </span>
             )}
             {rows.length > 1 && (
-              <span className="text-[11px] text-neutral-400 tabular-nums">
+              <span className="text-xs text-neutral-500 tabular-nums">
                 {index + 1} / {rows.length}
               </span>
             )}
@@ -171,7 +175,7 @@ export default function TestcaseDetailDialog({
                 <button
                   type="button"
                   onClick={startEdit}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+                  className={ui.btnSecondary}
                 >
                   <Pencil size={14} />
                   編集
@@ -182,7 +186,7 @@ export default function TestcaseDetailDialog({
                     type="button"
                     onClick={() => { setEditing(false); setError(null); }}
                     disabled={saving}
-                    className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50"
+                    className={ui.btnSecondary}
                   >
                     キャンセル
                   </button>
@@ -190,7 +194,7 @@ export default function TestcaseDetailDialog({
                     type="button"
                     onClick={handleSave}
                     disabled={saving}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
+                    className={ui.btnPrimary}
                   >
                     {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                     保存
@@ -201,7 +205,9 @@ export default function TestcaseDetailDialog({
             <button
               type="button"
               onClick={onClose}
-              className="p-1 rounded hover:bg-neutral-100 text-neutral-500"
+              title="閉じる"
+              aria-label="閉じる"
+              className={ui.dialogClose}
             >
               <X size={18} />
             </button>
@@ -209,13 +215,13 @@ export default function TestcaseDetailDialog({
         </div>
 
         {error && (
-          <div className="mx-5 mt-3 bg-red-50 border border-red-200 rounded-lg p-2.5 text-red-600 text-sm flex items-start gap-2">
+          <div className={`mx-5 mt-3 shrink-0 ${ui.errorBox} items-start`}>
             <AlertCircle size={15} className="mt-0.5 shrink-0" />
             {error}
           </div>
         )}
 
-        <div className="p-5 overflow-auto">
+        <div className={ui.dialogBody}>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             <div className="lg:col-span-2 space-y-4">
               {primaryFields.map((f) => (
@@ -236,7 +242,7 @@ export default function TestcaseDetailDialog({
               <div className="grid grid-cols-2 gap-3">
                 {highlightFields.map((f) => (
                   <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
-                    <p className="text-[11px] font-semibold text-neutral-400">{tcLabel(f, uc)}</p>
+                    <p className="text-xs font-semibold text-neutral-500">{tcLabel(f, uc)}</p>
                     {isEditable(f) ? (
                       renderField(f, false)
                     ) : f === 'テスト結果' ? (
@@ -263,10 +269,10 @@ export default function TestcaseDetailDialog({
 
               {(editing ? (draft['テスト結果'] || '') : (row['テスト結果'] || '')).trim() === 'NG' && (
                 <div className="border border-orange-200 rounded-lg p-3 bg-orange-50/40 space-y-3">
-                  <p className="text-[11px] font-semibold text-orange-500">再テスト</p>
+                  <p className="text-xs font-semibold text-orange-600">再テスト</p>
                   <div className="grid grid-cols-3 gap-3">
                     <div className="space-y-1">
-                      <p className="text-[10px] text-neutral-400">再テスト結果</p>
+                      <p className="text-xs text-neutral-500">再テスト結果</p>
                       {isEditable('再テスト結果') ? renderField('再テスト結果', false) : (
                         row['再テスト結果'] ? (
                           <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-medium ${RESULT_COLOR[row['再テスト結果']] ?? 'bg-neutral-100 text-neutral-600 border-neutral-200'}`}>
@@ -276,17 +282,17 @@ export default function TestcaseDetailDialog({
                       )}
                     </div>
                     <div className="space-y-1">
-                      <p className="text-[10px] text-neutral-400">再実施日</p>
+                      <p className="text-xs text-neutral-500">再実施日</p>
                       {isEditable('再実施日') ? (
-                        <input type="date" value={draft['再実施日'] ?? ''} onChange={(e) => setDraft((p) => ({ ...p, '再実施日': e.target.value }))} className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none" />
+                        <input type="date" value={draft['再実施日'] ?? ''} onChange={(e) => setDraft((p) => ({ ...p, '再実施日': e.target.value }))} className={`${ui.input} w-full`} />
                       ) : (
                         <p className="text-sm text-neutral-800">{row['再実施日'] || '—'}</p>
                       )}
                     </div>
                     <div className="space-y-1">
-                      <p className="text-[10px] text-neutral-400">再実施者</p>
+                      <p className="text-xs text-neutral-500">再実施者</p>
                       {isEditable('再実施者') ? (
-                        <input value={draft['再実施者'] ?? ''} onChange={(e) => setDraft((p) => ({ ...p, '再実施者': e.target.value }))} className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-700 bg-white focus:border-neutral-500 focus:outline-none" />
+                        <input value={draft['再実施者'] ?? ''} onChange={(e) => setDraft((p) => ({ ...p, '再実施者': e.target.value }))} className={`${ui.input} w-full`} />
                       ) : (
                         <p className="text-sm text-neutral-800">{row['再実施者'] || '—'}</p>
                       )}
@@ -300,7 +306,7 @@ export default function TestcaseDetailDialog({
                   const isLong = LONG_TEXT_FIELDS.has(f);
                   return (
                     <div key={f} className="px-3 py-2 flex items-start gap-3">
-                      <p className="text-[11px] text-neutral-400 w-20 shrink-0 pt-0.5">{f}</p>
+                      <p className="text-xs text-neutral-500 w-20 shrink-0 pt-0.5">{f}</p>
                       {isEditable(f) ? (
                         <div className="flex-1 min-w-0">
                           {renderField(f, isLong)}
@@ -327,7 +333,7 @@ export default function TestcaseDetailDialog({
         onClick={() => handleNav(index + 1)}
         disabled={index >= rows.length - 1}
         title="次のケース"
-        className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className={ui.dialogNav}
       >
         <ChevronRight size={20} />
       </button>

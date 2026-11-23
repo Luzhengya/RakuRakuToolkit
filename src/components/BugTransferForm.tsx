@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Bug, Link2, Loader2, Plus, Send } from 'lucide-react';
 import { ScreenshotButtons, ScreenshotThumbs, useBugScreenshots } from './BugScreenshots';
+import { ui } from './shared/uiClasses';
 
 interface Candidate {
   id: string;
@@ -210,9 +211,8 @@ export default function BugTransferForm({
     }
   };
 
-  const inputCls =
-    'w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-800 focus:border-neutral-500 focus:outline-none';
-  const labelCls = 'text-[11px] font-semibold text-neutral-500';
+  const inputCls = `${ui.input} w-full`;
+  const labelCls = ui.label;
 
   if (loading) {
     return (
@@ -257,7 +257,7 @@ export default function BugTransferForm({
           type="button"
           onClick={onCancel}
           disabled={saving}
-          className="text-[11px] text-neutral-500 hover:text-neutral-800 disabled:opacity-50"
+          className={ui.btnText}
         >
           キャンセル
         </button>
@@ -268,7 +268,7 @@ export default function BugTransferForm({
         <button
           type="button"
           onClick={() => switchMode('create')}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${ui.focusRing} ${
             mode === 'create' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'
           }`}
         >
@@ -278,7 +278,7 @@ export default function BugTransferForm({
         <button
           type="button"
           onClick={() => switchMode('link')}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${ui.focusRing} ${
             mode === 'link' ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500 hover:text-neutral-700'
           }`}
         >
@@ -300,7 +300,7 @@ export default function BugTransferForm({
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-amber-800 text-sm">
             対応するテスト案件が見つかりませんでした。BUG のシステム・月次は案件から
             決まるため、案件を特定できないと移管できません。
-            <span className="block mt-1 text-[11px]">
+            <span className="block mt-1 text-xs">
               案件名の先頭が CMDB番号 になっているか、進捗管理表に該当案件があるか確認してください。
             </span>
           </div>
@@ -401,7 +401,7 @@ export default function BugTransferForm({
               </div>
 
               <div className="px-3 py-1.5 flex items-center gap-3 border border-neutral-200 rounded-lg text-xs">
-                <span className="text-neutral-400 w-20 shrink-0">ケース番号</span>
+                <span className="text-neutral-500 w-20 shrink-0">ケース番号</span>
                 <span className="text-neutral-700">{ctx!.defaults.caseNumber || '-'}</span>
               </div>
 
@@ -449,7 +449,7 @@ export default function BugTransferForm({
                 type="button"
                 onClick={submitCreate}
                 disabled={!canSubmitCreate}
-                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed"
+                className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${ui.focusRing}`}
               >
                 {saving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
                 BUG を作成
@@ -481,7 +481,7 @@ export default function BugTransferForm({
               <div className="max-h-[20rem] overflow-y-auto border border-neutral-200 rounded-lg divide-y divide-neutral-100">
                 {bugsByMonth.map((group) => (
                   <div key={group.month}>
-                    <div className="px-3 py-1.5 bg-neutral-50 text-[11px] font-semibold text-neutral-500 sticky top-0">
+                    <div className="px-3 py-1.5 bg-neutral-50 text-xs font-semibold text-neutral-500 sticky top-0">
                       {group.month}
                     </div>
                     {group.bugs.map((b) => (
@@ -489,19 +489,19 @@ export default function BugTransferForm({
                         key={b.id}
                         type="button"
                         onClick={() => setSelectedBugId(b.id === selectedBugId ? '' : b.id)}
-                        className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors ${
+                        className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors ${ui.focusRing} ${
                           selectedBugId === b.id
                             ? 'bg-red-50 border-l-2 border-l-red-500'
                             : 'hover:bg-neutral-50'
                         }`}
                       >
-                        <span className="shrink-0 rounded-full bg-neutral-900 text-white text-[10px] font-bold px-1.5 py-0.5 tabular-nums mt-0.5">
+                        <span className="shrink-0 rounded-full bg-neutral-900 text-white text-xs font-bold px-1.5 py-0.5 tabular-nums mt-0.5">
                           #{b.no}
                         </span>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-neutral-800 line-clamp-2">{b.bugDesc || '（説明なし）'}</p>
                           {b.caseNumbers.length > 0 && (
-                            <p className="text-[11px] text-neutral-400 mt-0.5">
+                            <p className="text-xs text-neutral-500 mt-0.5">
                               関連ケース: {b.caseNumbers.join(', ')}
                             </p>
                           )}
@@ -521,7 +521,7 @@ export default function BugTransferForm({
                 type="button"
                 onClick={submitLink}
                 disabled={!canSubmitLink}
-                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-500 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed"
+                className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-red-600 text-white text-sm font-bold hover:bg-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${ui.focusRing}`}
               >
                 {saving ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />}
                 BUG に関連付け

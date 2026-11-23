@@ -8,6 +8,8 @@ import {
   type TcRow,
 } from './testcaseFields';
 import CasePicker, { type CaseCandidate } from './CasePicker';
+import { ui } from './shared/uiClasses';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import LibraryFlow from './LibraryFlow';
 import { LIBRARY_ENTRY_TREES, LIBRARY_FLOWS } from '../data/libraryFlows';
 import { entryToView, graphToView, nodeCases, pathIds, unassignedOf, type ViewTab } from '../utils/libraryFlow';
@@ -571,24 +573,26 @@ function LibraryDetailDialog({
   onClose: () => void;
 }) {
   const row = rows[index];
+  // 読み取り専用なので Esc でいつでも閉じる
+  useEscapeKey(onClose, !!row);
   if (!row) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 gap-2">
+    <div className={`${ui.dialogOverlay} gap-2`}>
       <button
         type="button"
         onClick={() => onIndex(index - 1)}
         disabled={index <= 0}
         title="前のケース"
-        className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className={ui.dialogNav}
       >
         <ChevronLeft size={20} />
       </button>
 
-      <div className="w-full max-w-6xl max-h-[88vh] bg-white rounded-xl border border-neutral-200 shadow-xl flex flex-col">
-        <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between gap-3 shrink-0">
+      <div className={`${ui.dialogPanel} max-w-6xl`}>
+        <div className={ui.dialogHeader}>
           <div className="flex items-baseline gap-3 min-w-0">
-            <h3 className="text-lg font-bold text-neutral-900 truncate shrink-0">
+            <h3 className={`${ui.dialogTitle} shrink-0`}>
               NO.{row['ケース番号'] || '-'}
             </h3>
             {row['機能名'] && (
@@ -597,14 +601,16 @@ function LibraryDetailDialog({
           </div>
           <div className="flex items-center gap-2 shrink-0">
             {rows.length > 1 && (
-              <span className="text-[11px] text-neutral-400 tabular-nums">
+              <span className="text-xs text-neutral-500 tabular-nums">
                 {index + 1} / {rows.length}
               </span>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="p-1 rounded hover:bg-neutral-100 text-neutral-500"
+              title="閉じる"
+              aria-label="閉じる"
+              className={ui.dialogClose}
             >
               <X size={18} />
             </button>
@@ -623,7 +629,7 @@ function LibraryDetailDialog({
               <div className="grid grid-cols-3 gap-3">
                 {CATEGORY_FIELDS.map((f) => (
                   <div key={f} className="border border-neutral-200 rounded-lg px-3 py-2 space-y-0.5 min-w-0">
-                    <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                    <p className="text-xs font-semibold text-neutral-500">{f}</p>
                     <p className="text-sm text-neutral-800 break-words">{row[f] || '-'}</p>
                   </div>
                 ))}
@@ -642,13 +648,13 @@ function LibraryDetailDialog({
               <div className="grid grid-cols-2 gap-3">
                 {HIGHLIGHT_FIELDS.map((f) => (
                   <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5">
-                    <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                    <p className="text-xs font-semibold text-neutral-500">{f}</p>
                     <p className="text-lg font-bold text-neutral-900">{row[f] || '-'}</p>
                   </div>
                 ))}
                 {SUB_HIGHLIGHT_FIELDS.map((f) => (
                   <div key={f} className="border border-neutral-200 rounded-lg p-3 space-y-1.5 min-w-0">
-                    <p className="text-[11px] font-semibold text-neutral-400">{f}</p>
+                    <p className="text-xs font-semibold text-neutral-500">{f}</p>
                     <p className="text-sm font-semibold text-neutral-900 break-words">{row[f] || '-'}</p>
                   </div>
                 ))}
@@ -659,7 +665,7 @@ function LibraryDetailDialog({
                   const isLong = LONG_TEXT_FIELDS.has(f);
                   return (
                     <div key={f} className="px-3 py-2 flex items-start gap-3">
-                      <p className="text-[11px] text-neutral-400 w-20 shrink-0 pt-0.5">{f}</p>
+                      <p className="text-xs text-neutral-500 w-20 shrink-0 pt-0.5">{f}</p>
                       <p
                         className={`flex-1 text-sm text-neutral-700 min-w-0 ${isLong ? 'whitespace-pre-wrap' : 'truncate'}`}
                         title={row[f] || ''}
@@ -680,7 +686,7 @@ function LibraryDetailDialog({
         onClick={() => onIndex(index + 1)}
         disabled={index >= rows.length - 1}
         title="次のケース"
-        className="shrink-0 p-2 rounded-full bg-white/90 text-neutral-600 shadow-lg hover:bg-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className={ui.dialogNav}
       >
         <ChevronRight size={20} />
       </button>
@@ -688,8 +694,8 @@ function LibraryDetailDialog({
   );
 }
 
-// 複数選択のドロップダウン (空＝すべて)
-function MultiSelect({ options, value, onChange }: {
+// 複数選択のドロップダウン (空＝すべて)。TestCase 画面の絞り込みでも使う
+export function MultiSelect({ options, value, onChange }: {
   options: string[];
   value: string[];
   onChange: (v: string[]) => void;
@@ -712,15 +718,16 @@ function MultiSelect({ options, value, onChange }: {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between gap-1 border border-neutral-200 rounded-lg px-2 py-1.5 text-sm bg-white text-left focus:outline-none focus:ring-1 focus:ring-neutral-400"
+        aria-expanded={open}
+        className={`w-full flex items-center justify-between gap-1 text-left ${ui.input}`}
       >
         <span className={`truncate ${value.length ? 'text-neutral-900' : 'text-neutral-500'}`} title={value.join(', ')}>{label}</span>
         <ChevronDown size={14} className="text-neutral-400 shrink-0" />
       </button>
       {open && (
-        <div className="absolute z-20 mt-1 w-full min-w-[200px] max-h-64 overflow-y-auto bg-white border border-neutral-200 rounded-lg shadow-lg py-1">
+        <div className="absolute z-30 mt-1 w-full min-w-[200px] max-h-64 overflow-y-auto bg-white border border-neutral-200 rounded-lg shadow-lg py-1">
           {value.length > 0 && (
-            <button type="button" onClick={() => onChange([])} className="w-full text-left px-3 py-1.5 text-xs text-neutral-500 hover:bg-neutral-50">
+            <button type="button" onClick={() => onChange([])} className={`w-full text-left px-3 py-1.5 text-xs text-neutral-500 hover:bg-neutral-50 ${ui.focusRing}`}>
               選択を解除（すべて）
             </button>
           )}
@@ -784,21 +791,38 @@ function CopyToTestcaseDialog({ rows, onClose, onDone }: {
     }
   };
 
+  // コピー中は閉じない (途中で閉じると何件コピーされたか分からなくなるため)
+  useEscapeKey(onClose, !running);
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-      <div className="w-full max-w-lg bg-white rounded-xl border border-neutral-200 shadow-xl">
-        <div className="px-5 py-3 border-b border-neutral-200 flex items-center justify-between">
-          <h3 className="text-base font-bold text-neutral-900">TestCaseへコピー（{rows.length}件）</h3>
-          <button type="button" onClick={onClose} disabled={running} className="p-1 rounded hover:bg-neutral-100 text-neutral-500 disabled:opacity-40">
-            <X size={18} />
-          </button>
+    <div className={ui.dialogOverlay}>
+      <div className={`${ui.dialogPanel} max-w-lg`}>
+        <div className={ui.dialogHeader}>
+          <h3 className={ui.dialogTitle}>TestCaseへコピー（{rows.length}件）</h3>
+          <div className="flex items-center gap-2 shrink-0">
+            {!result && (
+              <button
+                type="button"
+                onClick={run}
+                disabled={running || !target || !target.cmdbNo}
+                title={!target ? 'コピー先の案件を選択してください' : !target.cmdbNo ? '案件名の先頭に CMDB番号 がありません' : ''}
+                className={ui.btnPrimary}
+              >
+                {running ? <Loader2 size={14} className="animate-spin" /> : <Copy size={14} />}
+                {error ? '再実行' : 'コピー'}
+              </button>
+            )}
+            <button type="button" onClick={onClose} disabled={running} title="閉じる" aria-label="閉じる" className={ui.dialogClose}>
+              <X size={18} />
+            </button>
+          </div>
         </div>
-        <div className="p-5 space-y-4">
+        <div className={`${ui.dialogBody} space-y-4`}>
           <div className="space-y-1">
             <p className="text-xs font-bold text-neutral-700">コピー先の案件 <span className="text-red-500">*</span></p>
             <CasePicker value={target?.id ?? ''} onChange={setTarget} initialSystem={initialSystem} />
           </div>
-          <p className="text-[11px] text-neutral-500">
+          <p className="text-xs text-neutral-500">
             ケース番号は「CMDB番号-連番」で採番し、関連NO にライブラリのケース番号を入れます。テスト結果は空で登録します。
             同じ案件にコピー済みのケースはスキップします。
           </p>
@@ -824,23 +848,6 @@ function CopyToTestcaseDialog({ rows, onClose, onDone }: {
                 {result.skipped > 0 && `既にコピー済みの ${result.skipped} 件はスキップしました。`}
               </span>
             </p>
-          )}
-        </div>
-        <div className="px-5 py-3 border-t border-neutral-200 flex justify-end gap-2">
-          <button type="button" onClick={onClose} disabled={running} className="px-3 py-1.5 rounded-lg border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-40">
-            {result ? '閉じる' : 'キャンセル'}
-          </button>
-          {!result && (
-            <button
-              type="button"
-              onClick={run}
-              disabled={running || !target || !target.cmdbNo}
-              title={!target ? 'コピー先の案件を選択してください' : !target.cmdbNo ? '案件名の先頭に CMDB番号 がありません' : ''}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-not-allowed"
-            >
-              {running ? <Loader2 size={14} className="animate-spin" /> : <Copy size={14} />}
-              {error ? '再実行' : 'コピー'}
-            </button>
           )}
         </div>
       </div>
