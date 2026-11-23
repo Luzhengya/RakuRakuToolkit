@@ -6,6 +6,9 @@ import { AlertCircle, Download, Loader2, Upload, X } from 'lucide-react';
 type ImportRow = { rowNo: number; values: Record<string, string> };
 type Duplicate = { rowNo: number; caseNo: string; cmdbNo: string; system: string; existingContent: string };
 
+// 1 リクエストで登録する行数の目安。Notion は約 3 req/s のため 50 行 ≒ 20 秒前後。
+const IMPORT_BATCH_SIZE = 50;
+
 export default function ImportTestcaseDialog({ year, onClose, onImported }: {
   year: number;
   onClose: () => void;
@@ -17,6 +20,9 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [errors, setErrors] = useState<string[]>([]);
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  // 途中で失敗した場合の登録済み件数 (再実行時に合算して onImported へ渡す)
+  const [doneCounts, setDoneCounts] = useState({ created: 0, updated: 0 });
 
   const downloadTemplate = async () => {
     setBusy('template');
@@ -44,7 +50,7 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
     setBusy('check');
     setError(null);
     setFileName(file.name);
-    setRows([]); setErrors([]); setDuplicates([]);
+    setRows([]); setErrors([]); setDuplicates([]); setDoneCounts({ created: 0, updated: 0 });
     try {
       const fd = new FormData();
       fd.append('file', file);
@@ -62,22 +68,65 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
     }
   };
 
+  // サーバー関数の実行時間上限 (Vercel maxDuration) を超えないよう分割して登録する。
+  // 新規追加の行は採番が直前の登録結果に依存するため、同じ システム|CMDB番号 の新規行は同じバッチに入れる。
+  const buildBatches = (): ImportRow[][] => {
+    const dupRows = new Set(duplicates.map((d) => d.rowNo));
+    const units: ImportRow[][] = [];
+    const newGroups = new Map<string, ImportRow[]>();
+    for (const r of rows) {
+      if (dupRows.has(r.rowNo)) { units.push([r]); continue; }
+      const key = `${r.values['システム'] ?? ''}|${r.values['CMDB番号'] ?? ''}`;
+      const g = newGroups.get(key);
+      if (g) g.push(r);
+      else { const ng = [r]; newGroups.set(key, ng); units.push(ng); }
+    }
+    const batches: ImportRow[][] = [];
+    let cur: ImportRow[] = [];
+    for (const u of units) {
+      if (cur.length > 0 && cur.length + u.length > IMPORT_BATCH_SIZE) { batches.push(cur); cur = []; }
+      cur = cur.concat(u);
+    }
+    if (cur.length > 0) batches.push(cur);
+    return batches;
+  };
+
   const runImport = async () => {
     setBusy('import');
     setError(null);
-    try {
-      const res = await fetch('/api/testcase/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ year, rows }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error((body as { error?: string }).error || '登録に失敗しました');
-      onImported(body as { created: number; updated: number });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '登録に失敗しました');
-      setBusy('');
+    const batches = buildBatches();
+    let { created, updated } = doneCounts;
+    let done = 0;
+    setProgress({ done: 0, total: rows.length });
+    for (const batch of batches) {
+      try {
+        const res = await fetch('/api/testcase/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ year, rows: batch }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error((body as { error?: string }).error || `登録に失敗しました（HTTP ${res.status}）`);
+        created += (body as { created?: number }).created ?? 0;
+        updated += (body as { updated?: number }).updated ?? 0;
+        done += batch.length;
+        setProgress({ done, total: rows.length });
+      } catch (e) {
+        // 登録済みのバッチは対象から外し、再度「登録」で残りだけを続行できるようにする
+        const doneRowNos = new Set(batches.flat().slice(0, done).map((r) => r.rowNo));
+        setRows(rows.filter((r) => !doneRowNos.has(r.rowNo)));
+        setDuplicates(duplicates.filter((d) => !doneRowNos.has(d.rowNo)));
+        setDoneCounts({ created, updated });
+        setProgress(null);
+        const msg = e instanceof Error ? e.message : '登録に失敗しました';
+        setError(done > 0
+          ? `${msg}\n${done}件は登録済みです。残り${rows.length - done}件は再度「登録」を押すと続行します。`
+          : msg);
+        setBusy('');
+        return;
+      }
     }
+    onImported({ created, updated });
   };
 
   const canImport = rows.length > 0 && errors.length === 0 && !busy;
@@ -179,7 +228,7 @@ export default function ImportTestcaseDialog({ year, onClose, onImported }: {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {busy === 'import' && <Loader2 size={14} className="animate-spin" />}
-            登録
+            {busy === 'import' && progress ? `登録中 ${progress.done} / ${progress.total}件` : '登録'}
           </button>
         </div>
       </div>
