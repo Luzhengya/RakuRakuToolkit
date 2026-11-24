@@ -602,17 +602,42 @@ const SUMMARY_PRIORITY_DESC: Record<string, string> = {
 };
 const SUMMARY_PRIORITY_ORDER = ['P3', 'P2', 'P1', 'P0'];
 
-// 「予定通り完了」「遅延完了」はどちらも完了扱い（結果報告の集計・工数計算対象）
+// 「予定通り完了」「遅延完了」はどちらも完了扱い（概要・ガント等の表示用。結果報告は isReportCompleted を使う）
 function isCompletedStatus(status?: string): boolean {
   return status === '予定通り完了' || status === '遅延完了';
 }
 
-function getStatusBadgeHtml(status?: string): string {
-  if (isCompletedStatus(status)) {
-    if (status === '遅延完了') {
+// 結果報告の完了判定は Notion「状態」の Complete グループに従う（案件管理画面と同じ status-options API）
+const STATUS_GROUP_COMPLETE = 'Complete';
+// API 取得失敗・グループ未取得時の既定値（Notion の Complete グループと同じ並び）
+const DEFAULT_REPORT_COMPLETE_STATUSES = ['予定通り完了', '遅延完了', '停止中', 'テスト実施不要'];
+
+async function fetchReportCompleteStatuses(): Promise<Set<string>> {
+  try {
+    const r = await fetch('/api/case-management/status-options');
+    if (r.ok) {
+      const d = await r.json();
+      const complete: string[] = d?.groups?.[STATUS_GROUP_COMPLETE] ?? [];
+      if (complete.length > 0) return new Set(complete);
+    }
+  } catch {
+    // 既定値で続行
+  }
+  return new Set(DEFAULT_REPORT_COMPLETE_STATUSES);
+}
+
+function isReportCompleted(status: string | undefined, completeStatuses: Set<string>): boolean {
+  return completeStatuses.has(status?.trim() ?? '');
+}
+
+function getStatusBadgeHtml(status: string | undefined, completeStatuses: Set<string>): string {
+  const s = status?.trim() ?? '';
+  if (isReportCompleted(s, completeStatuses)) {
+    if (s === '予定通り完了') return '';
+    if (s === '遅延完了') {
       return ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">遅延完了</span>';
     }
-    return '';
+    return ` <span style="background:#f3f4f6;color:#4b5563;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">${safeHtml(s)}</span>`;
   }
   return ' <span style="background:#fef3c7;color:#b45309;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9999px;margin-left:6px;">実施中</span>';
 }
@@ -652,13 +677,14 @@ function buildResultReportHtml(
   monthKey: string,
   areaId: AreaId,
   versions: EnvVersions,
+  completeStatuses: Set<string>,
   bugsByCase?: Map<string, ReportBug[]>,
   bugChildMap?: Record<string, string>
 ): string {
   if (selectedItems.length === 0) return template;
 
-  const completedItems = selectedItems.filter(item => isCompletedStatus(item.status));
-  const inProgressItems = selectedItems.filter(item => !isCompletedStatus(item.status));
+  const completedItems = selectedItems.filter(item => isReportCompleted(item.status, completeStatuses));
+  const inProgressItems = selectedItems.filter(item => !isReportCompleted(item.status, completeStatuses));
 
   const first = selectedItems[0];
   const yyyy = monthKey.slice(0, 4);
@@ -680,7 +706,7 @@ function buildResultReportHtml(
 
   const projectListHtml = selectedItems
     .map((item) => {
-      const badge = getStatusBadgeHtml(item.status);
+      const badge = getStatusBadgeHtml(item.status, completeStatuses);
       return `<li>${safeHtml(item.projectName || '-')}${badge}</li>`;
     })
     .join('\n');
@@ -743,11 +769,11 @@ function buildResultReportHtml(
 
   const effortProjectBlocksHtml = selectedItems
     .map((item) => {
-      const isCompleted = isCompletedStatus(item.status);
+      const isCompleted = isReportCompleted(item.status, completeStatuses);
       const estimate = parseNumber(item.estimateTotal);
       const actual = parseNumber(item.actualTotal);
       const diff = parseFloat((actual - estimate).toFixed(2));
-      const badge = getStatusBadgeHtml(item.status);
+      const badge = getStatusBadgeHtml(item.status, completeStatuses);
       const actualCell = isCompleted ? fmtNum(actual) : '';
 
       const effortNoteRow = isCompleted && diff > 2
@@ -2318,7 +2344,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         setReportTemplateHtml(template);
       }
 
-      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions);
+      const completeStatuses = await fetchReportCompleteStatuses();
+      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions, completeStatuses);
       setReportHtml(html);
       setReportOpen(true);
     } catch (e) {
@@ -2346,7 +2373,8 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         template = await response.text();
         setReportTemplateHtml(template);
       }
-      const completed = selectedItems.filter((it) => isCompletedStatus(it.status));
+      const completeStatuses = await fetchReportCompleteStatuses();
+      const completed = selectedItems.filter((it) => isReportCompleted(it.status, completeStatuses));
       const entries = await Promise.all(
         completed.map(async (it): Promise<[string, ReportBug[]]> => {
           try {
@@ -2371,7 +2399,7 @@ export default function TestCenter({ onBack }: TestCenterProps) {
         bugChildMap = await fetchBugChildrenMap(bugIds);
         await inlineChildImages(bugChildMap);
       }
-      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions, bugsByCase, bugChildMap);
+      const html = buildResultReportHtml(template, selectedItems, currentMonthKey, selectedAreaId, envVersions, completeStatuses, bugsByCase, bugChildMap);
       setReportHtml(html);
       setReportOpen(true);
     } catch (e) {
