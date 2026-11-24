@@ -1,29 +1,17 @@
 import {
-  BarChart3,
-  FileSpreadsheet,
-  FileText as FilePdf,
-  Layers,
-  LayoutGrid,
-  FilePen,
-  ClipboardList,
-  FolderTree,
-  Newspaper,
   Loader2,
   ExternalLink,
   ChevronRight,
-  NotebookPen,
-  Bug,
-  Send,
-  ShieldCheck,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import type { ReactNode } from 'react';
+import { useRef, type MouseEvent, type ReactNode } from 'react';
+import { TOOLS, openTool, type Category } from '../tools';
 
 interface Tool {
   id: string;
   title: string;
   description: string;
-  category: 'ドキュメント類' | '管理類' | 'データ収集類';
+  category: Category;
   icon: ReactNode;
   onClick: () => void;
 }
@@ -35,149 +23,19 @@ const CATEGORY_META: Record<string, { heading: string; sub: string }> = {
 };
 
 interface HomeProps {
-  category: 'ドキュメント類' | '管理類' | 'データ収集類';
+  category: Category;
   onSelectTool: (id: string) => void;
 }
 
 export default function Home({ category, onSelectTool }: HomeProps) {
-  const allTools: Tool[] = [
-    {
-      id: 'excel-to-md',
-      title: 'Excel→Markdown変換',
-      description: 'ExcelファイルをシンプルなMarkdownの表に変換します。画像の抽出や図形内の文字認識にも対応しています。',
-      category: 'ドキュメント類',
-      icon: <FileSpreadsheet className="text-green-600" size={24} />,
-      onClick: () => onSelectTool('excel-to-md'),
-    },
-    {
-      id: 'pdf-to-word',
-      title: 'PDF→Word変換',
-      description: 'PDFファイルを編集可能なWord文書に変換します。ファイル名は元のまま保持します。',
-      category: 'ドキュメント類',
-      icon: <FilePdf className="text-red-600" size={24} />,
-      onClick: () => onSelectTool('pdf-to-word'),
-    },
-    {
-      id: 'pdf-merge',
-      title: 'PDF結合',
-      description: '複数のPDFファイルをアップロードし、ドラッグで順番を並べ替えて、1つのPDFにまとめてダウンロードします。',
-      category: 'ドキュメント類',
-      icon: <Layers className="text-indigo-600" size={24} />,
-      onClick: () => onSelectTool('pdf-merge'),
-    },
-    {
-      id: 'pdf-edit',
-      title: 'PDF編集',
-      description: 'PDFファイルをアップロードし、文字の部分をクリックして直接修正できます。日本語・中国語に対応し、修正後のファイルをダウンロードできます。',
-      category: 'ドキュメント類',
-      icon: <FilePen className="text-violet-600" size={24} />,
-      onClick: () => onSelectTool('pdf-edit'),
-    },
-    {
-      id: 'hennge-transfer',
-      title: 'HENNGE Transfer',
-      description: 'ファイル転送ツールです。HENNGE Transfer を新しいタブで開きます。',
-      category: 'ドキュメント類',
-      icon: <Send className="text-sky-600" size={24} />,
-      onClick: () => window.open('https://transfer.hennge.com/', '_blank', 'noopener'),
-    },
-    {
-      id: 'safe-ai',
-      title: 'Safe AI',
-      description: 'リスクモンスター社内のAIであり、情報漏えいのリスクはなく、安心してデータを処理できるAIです。',
-      category: 'ドキュメント類',
-      icon: <ShieldCheck className="text-emerald-600" size={24} />,
-      onClick: () => window.open('https://sag-m-a4ruxh.gw.safeai.jp/#', '_blank', 'noopener'),
-    },
-    {
-      id: 'pdf-edit-table',
-      title: 'PDF編集（表対応）',
-      description: 'テスト中',
-      category: 'ドキュメント類',
-      icon: <FilePen className="text-indigo-600" size={24} />,
-      onClick: () => onSelectTool('pdf-edit-table'),
-    },
-    {
-      id: 'test-center',
-      title: 'Test Center',
-      description: 'テストセンターの管理画面を開き、エリアごとにテストモジュールを管理します。',
-      category: '管理類',
-      icon: <LayoutGrid className="text-sky-600" size={24} />,
-      onClick: () => onSelectTool('test-center'),
-    },
-    {
-      id: 'case-management',
-      title: '案件管理',
-      description: '案件の新規作成・編集・削除をツリー形式で管理します。',
-      category: '管理類',
-      icon: <FolderTree className="text-orange-600" size={24} />,
-      onClick: () => onSelectTool('case-management'),
-    },
-    {
-      id: 'bug-list',
-      title: 'BUG管理',
-      description: '全システムの BUG を一覧で確認・登録・編集します。',
-      category: '管理類',
-      icon: <Bug className="text-red-600" size={24} />,
-      onClick: () => onSelectTool('bug-list'),
-    },
-    {
-      id: 'testcase-library',
-      title: 'TestCase Library',
-      description: 'システムごとの基礎テストケースライブラリを閲覧します。',
-      category: '管理類',
-      icon: <ClipboardList className="text-emerald-600" size={24} />,
-      onClick: () => onSelectTool('testcase-library'),
-    },
-    {
-      id: 'testcase-organize',
-      title: 'Testcase Format',
-      description: '上传测试用例 CSV，整形为标准 Excel 格式并按需求分组汇总测试结果。',
-      category: '管理類',
-      icon: <ClipboardList className="text-teal-600" size={24} />,
-      onClick: () => onSelectTool('testcase-organize'),
-    },
-    {
-      id: 'testcase-view',
-      title: 'TestCase',
-      description: 'Testcase Format で登録したテストケースを、月次・CMDB番号・分類などで絞り込んで確認します。',
-      category: '管理類',
-      icon: <ClipboardList className="text-indigo-600" size={24} />,
-      onClick: () => onSelectTool('testcase-view'),
-    },
-    {
-      id: 'data-stats',
-      title: 'データ統計',
-      description: '需求池・品質問題・Checklist・AI実績などのデータ統計を管理します。',
-      category: '管理類',
-      icon: <BarChart3 className="text-violet-600" size={24} />,
-      onClick: () => onSelectTool('data-stats'),
-    },
-    {
-      id: 'reports',
-      title: 'レポート',
-      description: 'レポートを作成・編集し、共有リンクで注記をもらいます。',
-      category: '管理類',
-      icon: <NotebookPen className="text-orange-600" size={24} />,
-      onClick: () => onSelectTool('reports'),
-    },
-    {
-      id: 'data-collection',
-      title: '不安情報収集',
-      description: '月次不安情報を集計・検索し、詳細確認やCSV出力ができます。',
-      category: 'データ収集類',
-      icon: <LayoutGrid className="text-emerald-600" size={24} />,
-      onClick: () => onSelectTool('data-collection'),
-    },
-    {
-      id: 'daily-news',
-      title: '毎日ニュース',
-      description: '毎日のニュースを収集・整理します（開発中）。',
-      category: 'データ収集類',
-      icon: <Newspaper className="text-amber-600" size={24} />,
-      onClick: () => onSelectTool('daily-news'),
-    },
-  ];
+  const allTools: Tool[] = TOOLS.map(def => ({
+    id: def.id,
+    title: def.title,
+    description: def.description,
+    category: def.category,
+    icon: <def.icon className={def.iconClass} size={24} />,
+    onClick: () => openTool(def, onSelectTool),
+  }));
 
   const tools = allTools.filter(t => t.category === category);
   const meta = CATEGORY_META[category];
@@ -224,12 +82,44 @@ export default function Home({ category, onSelectTool }: HomeProps) {
   );
 }
 
+// カードのホバー3D傾き
+const TILT_MAX_DEG = 8;
+const TILT_PERSPECTIVE_PX = 1000;
+const TILT_SCALE = 1.02;
+const TILT_FOLLOW_MS = 100; // マウス追従中の補間（小さいほど機敏）
+const TILT_RESET_MS = 300;
+
+const tiltTransform = (rotateX: number, rotateY: number, scale: number) =>
+  `perspective(${TILT_PERSPECTIVE_PX}px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale(${scale})`;
+
 function ToolCard({ title, description, category, icon, onClick }: any) {
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // マウス位置に応じて傾ける（カーソル側の辺が奥へ沈む）。動きを減らす設定の利用者には適用しない
+  const handleMouseMove = (e: MouseEvent<HTMLDivElement>) => {
+    const el = cardRef.current;
+    if (!el || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const rect = el.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width - 0.5; // -0.5（左）〜 0.5（右）
+    const y = (e.clientY - rect.top) / rect.height - 0.5; // -0.5（上）〜 0.5（下）
+    el.style.transition = `transform ${TILT_FOLLOW_MS}ms ease-out, box-shadow 200ms ease-out`;
+    el.style.transform = tiltTransform(-y * 2 * TILT_MAX_DEG, x * 2 * TILT_MAX_DEG, TILT_SCALE);
+  };
+
+  const handleMouseLeave = () => {
+    const el = cardRef.current;
+    if (!el) return;
+    el.style.transition = `transform ${TILT_RESET_MS}ms ease-out, box-shadow 200ms ease-out`;
+    el.style.transform = tiltTransform(0, 0, 1);
+  };
+
   return (
-    <motion.div 
-      whileHover={{ y: -4 }}
-      className="bg-white border border-neutral-200 rounded-xl p-5 flex flex-col gap-4 shadow-sm hover:shadow-md transition-all cursor-pointer group"
+    <div
+      ref={cardRef}
+      className="bg-white border border-neutral-200 rounded-xl p-5 flex flex-col gap-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer group will-change-transform"
       onClick={onClick}
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
     >
       <div className="flex justify-between items-start">
         <div className="flex items-center gap-3">
@@ -255,6 +145,6 @@ function ToolCard({ title, description, category, icon, onClick }: any) {
           開く <ChevronRight size={16} />
         </div>
       </div>
-    </motion.div>
+    </div>
   );
 }

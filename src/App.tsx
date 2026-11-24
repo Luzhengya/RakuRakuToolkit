@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useCallback, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Grid } from 'lucide-react';
+import { TOOLS, openTool } from './tools';
 import { motion, AnimatePresence } from 'motion/react';
 import Home from './components/Home';
 import ExcelToMarkdown from './components/ExcelToMarkdown';
@@ -28,6 +29,10 @@ type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 
 type Category = 'ドキュメント類' | '管理類' | 'データ収集類';
 
 const CATEGORIES: Category[] = ['ドキュメント類', '管理類', 'データ収集類'];
+
+// ヘッダーのツール一覧ドロップダウン：ホバーで開くまで／離れてから閉じるまでの遅延
+const MENU_OPEN_DELAY_MS = 120;
+const MENU_CLOSE_DELAY_MS = 300;
 
 const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-stats', 'reports', 'bug-list', 'data-collection', 'daily-news']);
 
@@ -70,6 +75,13 @@ function useReportRoute(): string {
 export default function App() {
   const [view, setView] = useHashRoute();
   const [category, setCategory] = useState<Category>('ドキュメント類');
+  const [openCat, setOpenCat] = useState<Category | null>(null);
+  const menuTimer = useRef<number | undefined>(undefined);
+  const scheduleMenu = (cat: Category | null, delayMs: number) => {
+    window.clearTimeout(menuTimer.current);
+    menuTimer.current = window.setTimeout(() => setOpenCat(cat), delayMs);
+  };
+  useEffect(() => () => window.clearTimeout(menuTimer.current), []);
   const reportId = useReportRoute();
 
   if (reportId) {
@@ -101,19 +113,67 @@ export default function App() {
           {/* Category tab switcher */}
           <nav className="hidden md:flex items-center">
             <div className="flex items-center bg-neutral-100 rounded-full p-1 gap-0.5">
-              {CATEGORIES.map(cat => (
-                <button
+              {CATEGORIES.map((cat, i) => (
+                // ホバー（開く120ms・閉じる300ms遅延）／キーボードフォーカスでツール一覧を表示する（カテゴリ名クリックは従来どおりホームへ）
+                <div
                   key={cat}
-                  onClick={() => switchCategory(cat)}
-                  className={[
-                    'px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200',
-                    category === cat && view === 'home'
-                      ? 'bg-white text-neutral-900 shadow-sm font-semibold'
-                      : 'text-neutral-500 hover:text-neutral-700',
-                  ].join(' ')}
+                  className="relative group"
+                  onMouseEnter={() => scheduleMenu(cat, MENU_OPEN_DELAY_MS)}
+                  onMouseLeave={() => scheduleMenu(null, MENU_CLOSE_DELAY_MS)}
                 >
-                  {cat}
-                </button>
+                  <button
+                    onClick={() => switchCategory(cat)}
+                    aria-haspopup="menu"
+                    className={[
+                      'px-4 py-1.5 rounded-full text-sm font-medium transition-all duration-200',
+                      category === cat && view === 'home'
+                        ? 'bg-white text-neutral-900 shadow-sm font-semibold'
+                        : openCat === cat
+                          ? 'bg-white/60 text-neutral-800' // 一覧を開いている間はどのカテゴリの一覧かを示す
+                          : 'text-neutral-600 hover:text-neutral-800',
+                    ].join(' ')}
+                  >
+                    {cat}
+                  </button>
+                  {/* 幅はカテゴリボタン以上（名称は1行表示）。-left-1／-right-1 で項目の文字頭をカテゴリ名と揃え、最後のカテゴリは画面外へはみ出さないよう右揃え。
+                      白地の面板で、項目はカテゴリバーと配色を反転（バー＝灰地に白の選択／面板＝白地に灰の選択）し、角丸・余白は揃える。pt-1 はバーの内側余白ぶんの橋渡し（見た目はバー下端に接する）。
+                      開く：上8pxから200msで淡入／閉じる：150ms（閉じる方を速くして軽快に） */}
+                  <div
+                    role="menu"
+                    aria-label={cat}
+                    className={[
+                      'absolute top-full min-w-[calc(100%+0.5rem)] w-max pt-1 z-20',
+                      i === CATEGORIES.length - 1 ? '-right-1' : '-left-1',
+                      'transition-[opacity,translate,visibility] ease-out',
+                      openCat === cat
+                        ? 'visible opacity-100 translate-y-0 duration-200'
+                        : 'invisible opacity-0 -translate-y-2 duration-150 group-has-[:focus-visible]:visible group-has-[:focus-visible]:opacity-100 group-has-[:focus-visible]:translate-y-0',
+                    ].join(' ')}
+                  >
+                    <ul className="flex flex-col gap-0.5 bg-white rounded-2xl p-1 ring-1 ring-black/[0.06] shadow-lg shadow-black/10">
+                      {TOOLS.filter(t => t.category === cat && !t.hideInMenu).map(tool => (
+                        <li key={tool.id}>
+                          <button
+                            role="menuitem"
+                            onClick={(e) => {
+                              e.currentTarget.blur();
+                              scheduleMenu(null, 0);
+                              openTool(tool, (id) => setView(id as View));
+                            }}
+                            className={[
+                              'w-full px-4 py-2 rounded-full text-sm font-medium text-left whitespace-nowrap transition-all duration-200',
+                              view === tool.id
+                                ? 'bg-neutral-100 text-neutral-900 font-semibold'
+                                : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100 focus-visible:bg-neutral-100',
+                            ].join(' ')}
+                          >
+                            {tool.title}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
               ))}
             </div>
           </nav>
