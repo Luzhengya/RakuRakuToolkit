@@ -3548,6 +3548,7 @@ app.get("/api/case-management/tree", async (_req, res) => {
         system: parent.system,
         month: parent.month,
         status: parent.status,
+        releaseDate: parent.releaseDate,
         childCount: children.length,
         children,
       };
@@ -3568,9 +3569,9 @@ app.post("/api/case-management/create", async (req, res) => {
   if (!notion || !databaseId) {
     return res.status(503).json({ error: "Notion API credentials not configured" });
   }
-  const { parentId, projectName, system, month } = req.body ?? {};
-  if (!parentId || !projectName) {
-    return res.status(400).json({ error: "parentId and projectName are required" });
+  const { parentId, projectName, system, month, releaseDate, verificationDate, developmentEffort } = req.body ?? {};
+  if (!parentId || !projectName || !releaseDate) {
+    return res.status(400).json({ error: "parentId, projectName and releaseDate are required" });
   }
 
   try {
@@ -3595,6 +3596,20 @@ app.post("/api/case-management/create", async (req, res) => {
     };
     if (system) props["System"] = { multi_select: [{ name: system }] };
     if (month) props["月次"] = { select: { name: month } };
+    // 本番日・検証日・開発工数は親と同じ DB なので、親のプロパティ型に合わせて組み立てる
+    const extraFields: [string, unknown][] = [
+      ["本番日", releaseDate],
+      ["検証日", verificationDate],
+      ["開発工数", developmentEffort],
+    ];
+    try {
+      for (const [name, value] of extraFields) {
+        const raw = String(value ?? "").trim();
+        if (raw) props[name] = buildUpdatableProperty(parentProps[name], raw, name);
+      }
+    } catch (e) {
+      return res.status(400).json({ error: e instanceof Error ? e.message : "入力値が不正です" });
+    }
 
     const created: any = await withNotionRetry("pages.create", () =>
       notion!.pages.create({
@@ -7691,9 +7706,19 @@ app.get("/api/notes", async (req, res) => {
 app.get("/api/notes/counts", async (_req, res) => {
   try {
     const notes = await queryNotesByEntityIds();
-    const counts: Record<string, { qa: number; note: number; issue: number }> = {};
+    type NoteCount = { qa: number; note: number; issue: number };
+    const counts: Record<string, NoteCount> = {};
+    // 案件ツリーの親案件行で使う: totals = 中止以外の全件 (対応済を含む) / pending = 未処理 (対応済・中止以外)
+    const totals: Record<string, NoteCount> = {};
+    const pending: Record<string, NoteCount> = {};
+    const CATEGORY_KEY: Record<string, keyof NoteCount> = { "QA": "qa", "指摘": "issue", "追加説明": "note" };
     for (const note of notes) {
       if (!note.entityId) continue;
+      const key = CATEGORY_KEY[note.category];
+      if (key && note.status !== "中止") {
+        (totals[note.entityId] ??= { qa: 0, note: 0, issue: 0 })[key]++;
+        if (note.status !== "対応済") (pending[note.entityId] ??= { qa: 0, note: 0, issue: 0 })[key]++;
+      }
       if (!counts[note.entityId]) counts[note.entityId] = { qa: 0, note: 0, issue: 0 };
       if (note.category === "QA" && note.status !== "対応済" && note.status !== "中止") {
         counts[note.entityId].qa++;
@@ -7703,7 +7728,7 @@ app.get("/api/notes/counts", async (_req, res) => {
         counts[note.entityId].note++;
       }
     }
-    return res.json({ counts });
+    return res.json({ counts, totals, pending });
   } catch (error) {
     console.error("Notes counts error:", error);
     return res.status(500).json({ error: "Failed to load notes counts" });

@@ -1,6 +1,6 @@
 // 品質管理 > 実績フィードバック。TestCenter > 案件一覧（KPI）と同じ口径で、半期目標・半期実績・年度比較・月次の問題案件を表示する（閲覧のみ）
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 import {
   KPI_EFFICIENCY_DEFS, KPI_QUALITY_DEFS, aggregateHalf, alignToTargets, effAttention, extractMonth, fmtEff, fmtPct, groupBySystem,
   halfMonthsOrder, itemsInHalf, loadThresholds, qualAttention, toStatRow,
@@ -9,6 +9,7 @@ import {
 import {
   HealthBar, ThresholdRow, effHead, plainCommentCell, qualHead, renderEffRow, renderQualRow, renderQualStats, summaryBlock,
 } from './caseStatsParts';
+import { ErrorAlert, TABLE_HEAD_ROW } from './shared/ui';
 
 type Mode = 'half' | 'year' | 'month';
 type Half = 'first' | 'second';
@@ -28,9 +29,15 @@ const CURRENT_BIZ_YEAR = today.getMonth() + 1 === 1 ? today.getFullYear() - 1 : 
 const CURRENT_HALF: Half = today.getMonth() + 1 >= 2 && today.getMonth() + 1 <= 7 ? 'first' : 'second';
 const CURRENT_MONTH = today.getMonth() + 1;
 
+// 見出しは他タブのカード見出しと同じ 14px 太字に揃え、左の縦線で区切る（目標は indigo）
 function SectionTitle({ children, tone = 'dark' }: { children: ReactNode; tone?: 'dark' | 'indigo' }) {
-  const cls = tone === 'indigo' ? 'bg-indigo-600' : 'bg-neutral-900';
-  return <h4 className={`inline-block rounded-md ${cls} text-white text-xs font-bold px-3 py-1 mb-2`}>{children}</h4>;
+  const bar = tone === 'indigo' ? 'bg-indigo-600' : 'bg-neutral-900';
+  return (
+    <h4 className="flex items-center gap-2 text-sm font-bold text-neutral-800 mb-2">
+      <span className={`w-1 h-4 rounded-full ${bar}`} aria-hidden="true" />
+      {children}
+    </h4>
+  );
 }
 
 function Collapsible({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: ReactNode }) {
@@ -92,7 +99,7 @@ function SystemDetail({ kind, groups }: { kind: 'qual' | 'eff'; groups: SystemGr
   return (
     <>
       <div className="flex flex-wrap gap-x-6 gap-y-2 bg-neutral-50 border border-neutral-200 rounded-lg p-3">
-        <span className="text-[11px] font-semibold text-neutral-400 w-full">
+        <span className="text-xs font-semibold text-neutral-400 w-full">
           {kind === 'qual' ? '評価閾値（表示のみ / 値が大きいほど悪い）' : '評価閾値（表示のみ）'}
         </span>
         {kind === 'qual' ? (
@@ -178,7 +185,7 @@ function KpiCards({ defs, tone = 'plain' }: { defs: { key: string; desc?: string
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
       {defs.map((d) => (
         <div key={d.key} title={d.desc} className={`border rounded-lg px-3 py-2.5 ${box} ${d.desc ? 'cursor-help' : ''}`}>
-          <p className={`text-[10px] font-semibold tracking-wider truncate ${label}`}>{d.key}</p>
+          <p className={`text-xs font-semibold tracking-wider truncate ${label}`}>{d.key}</p>
           <p className={`text-xl font-bold mt-0.5 tabular-nums ${value}`}>{d.text}</p>
         </div>
       ))}
@@ -312,7 +319,7 @@ function MonthView({ items, years }: { items: CaseStatItem[]; years: number[] })
         <div className="px-4 py-2.5 border-b border-neutral-100 text-xs font-bold text-neutral-700">{title}（{rows.length} 件）</div>
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+            <tr className={TABLE_HEAD_ROW}>
               <th className="text-left px-3 py-2 font-medium w-32">システム</th>
               <th className="text-left px-3 py-2 font-medium">案件</th>
               <th className="text-center px-2 py-2 font-medium w-16">判定</th>
@@ -399,7 +406,7 @@ export default function PerformanceFeedback({ reloadKey }: { reloadKey: number }
     return [...set].sort((a, b) => b - a);
   }, [items]);
 
-  if (error) return <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-xs flex items-center gap-1.5"><AlertCircle size={14} />{error}</div>;
+  if (error) return <ErrorAlert message={error} />;
   if (!items) return <div className="flex items-center justify-center py-20 text-neutral-400"><Loader2 size={20} className="animate-spin mr-2" />読み込み中...</div>;
 
   return (

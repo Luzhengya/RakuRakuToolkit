@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { AlertCircle, ChevronDown, ExternalLink, Loader2, RefreshCw, Save } from 'lucide-react';
+import { ChevronDown, ExternalLink, Loader2, RefreshCw, Save } from 'lucide-react';
 import { BugLeakPage, GradeBadge, MonthCalendar, RadarChart } from './DataStatsPanel';
 import PerformanceFeedback from './PerformanceFeedback';
+import { Breadcrumb, CARD, CardHeader, ErrorAlert, ROW_FOCUS, TABLE_HEAD_ROW, clickableRowProps, expandableRowProps } from './shared/ui';
 import { useSubRoute } from '../hooks/useSubRoute';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
@@ -124,41 +125,22 @@ function countBy(items: AiIssue[], keys: string[], keyOf: (it: AiIssue) => strin
 
 // ── Sub components ──
 
-function Breadcrumb({ items }: { items: { label: string; onClick?: () => void }[] }) {
-  return (
-    <nav className="flex items-center gap-2 text-sm mb-4">
-      {items.map((item, i) => (
-        <span key={i} className="flex items-center gap-2">
-          {i > 0 && <span className="text-neutral-400">{'>>'}</span>}
-          {item.onClick ? (
-            <button type="button" onClick={item.onClick} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">
-              {item.label}
-            </button>
-          ) : (
-            <span className="text-neutral-900 font-medium">{item.label}</span>
-          )}
-        </span>
-      ))}
-    </nav>
-  );
-}
-
 function SummaryCard({ label, value, sub, center }: { label: string; value: string | number; sub?: string; center?: boolean }) {
   // center：ラベルは左上、数字はカード中央。補足は下部の固定高さ枠に置き、補足の有無・行数で数字の高さがずれないようにする
   if (center) {
     return (
       <div className="bg-white border border-neutral-200 rounded-xl p-3 flex flex-col">
-        <div className="text-[10px] text-neutral-400">{label}</div>
+        <div className="text-xs text-neutral-400">{label}</div>
         <div className="flex-1 flex items-center justify-center text-2xl font-bold text-neutral-800">{value}</div>
-        <div className="h-7 text-[10px] text-neutral-400 text-center leading-snug">{sub}</div>
+        <div className="h-7 text-xs text-neutral-400 text-center leading-snug">{sub}</div>
       </div>
     );
   }
   return (
     <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
-      <div className="text-[10px] text-neutral-400">{label}</div>
+      <div className="text-xs text-neutral-400">{label}</div>
       <div className="text-2xl font-bold text-neutral-800">{value}</div>
-      {sub && <div className="text-[10px] text-neutral-400">{sub}</div>}
+      {sub && <div className="text-xs text-neutral-400">{sub}</div>}
     </div>
   );
 }
@@ -189,8 +171,8 @@ function CountHeads() {
 
 function TableBox({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-neutral-100 text-xs font-bold text-neutral-700">{title}</div>
+    <div className={`${CARD} overflow-hidden`}>
+      <CardHeader title={title} />
       <div className="overflow-x-auto">{children}</div>
     </div>
   );
@@ -202,7 +184,7 @@ function CrossTable({ title, rows }: { title: string; rows: CountRow[] }) {
     <TableBox title={title}>
       <table className="w-full text-xs">
         <thead>
-          <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+          <tr className={TABLE_HEAD_ROW}>
             <th className="text-left px-3 py-2 font-medium">{title}</th>
             <CountHeads />
           </tr>
@@ -239,7 +221,7 @@ function CaseTable({ rows, onSelect }: {
     <TableBox title="案件一覧">
       <table className="w-full text-xs">
         <thead>
-          <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+          <tr className={TABLE_HEAD_ROW}>
             <th className="text-center px-2 py-2 font-medium w-[70px]">月次</th>
             <th className="text-left px-3 py-2 font-medium">案件</th>
             {LEVELS.map((l) => (
@@ -254,7 +236,7 @@ function CaseTable({ rows, onSelect }: {
         </thead>
         <tbody className="divide-y divide-neutral-50">
           {rows.slice(0, showCount).map((r) => (
-            <tr key={r.caseId} onClick={() => onSelect(r.caseId)} className="cursor-pointer hover:bg-neutral-50">
+            <tr key={r.caseId} {...clickableRowProps(() => onSelect(r.caseId))} className={`cursor-pointer hover:bg-neutral-50 ${ROW_FOCUS}`}>
               <td className="text-center px-2 py-2 text-neutral-400">{r.month || '—'}</td>
               <td className="px-3 py-2 text-neutral-800">{r.label}</td>
               {LEVELS.map((l) => {
@@ -338,7 +320,7 @@ function IssueEditor({ issue, onSaved }: { issue: AiIssue; onSaved: (judgement: 
       >
         {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}保存
       </button>
-      {error && <span className="text-[11px] text-red-600 self-center">{error}</span>}
+      {error && <span className="text-xs text-red-600 self-center">{error}</span>}
     </div>
   );
 }
@@ -569,7 +551,7 @@ function FeedbackEditor({ caseInfo, onSaved, endpoint }: {
         >
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}保存
         </button>
-        {error && <span className="text-[11px] text-red-600">{error}</span>}
+        {error && <span className="text-xs text-red-600">{error}</span>}
       </div>
     </div>
   );
@@ -607,7 +589,7 @@ function CaseAnalysis({ caseInfo, issues, shanghaiCount, onFeedbackSaved }: {
     <div className="space-y-3">
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
-          <div className="text-[10px] text-neutral-400">総合得点</div>
+          <div className="text-xs text-neutral-400">総合得点</div>
           <div className="flex items-center gap-2">
             <span className="text-2xl font-bold text-neutral-800">{caseInfo.totalScore ?? '—'}</span>
             {caseInfo.grade && <GradeBadge grade={caseInfo.grade} size="sm" />}
@@ -616,9 +598,9 @@ function CaseAnalysis({ caseInfo, issues, shanghaiCount, onFeedbackSaved }: {
         <SummaryCard label="工数改善" value={caseInfo.effortSaved ? `${caseInfo.effortSaved} 人日` : '—'} />
         <SummaryCard label="テスト総件数" value={caseInfo.totalCases ?? '—'} />
         <div className={`rounded-xl p-3 space-y-1 border ${criticalCount > 0 ? 'bg-red-50 border-red-300' : 'bg-white border-neutral-200'}`}>
-          <div className={`text-[10px] ${criticalCount > 0 ? 'text-red-600 font-bold' : 'text-neutral-400'}`}>Critical</div>
+          <div className={`text-xs ${criticalCount > 0 ? 'text-red-600 font-bold' : 'text-neutral-400'}`}>Critical</div>
           <div className={`text-2xl font-bold ${criticalCount > 0 ? 'text-red-600' : 'text-neutral-800'}`}>{criticalCount}</div>
-          <div className="text-[10px] text-neutral-400">うち有効 {criticalValid}</div>
+          <div className="text-xs text-neutral-400">うち有効 {criticalValid}</div>
         </div>
         <SummaryCard
           label="有効率"
@@ -634,10 +616,11 @@ function CaseAnalysis({ caseInfo, issues, shanghaiCount, onFeedbackSaved }: {
         </div>
       </TableBox>
 
-      <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
+      <div className={`${CARD} overflow-hidden`}>
         <button
           type="button"
           onClick={() => setDetailOpen((v) => !v)}
+          aria-expanded={detailOpen}
           className="w-full flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50"
         >
           <ChevronDown size={12} className={`text-neutral-400 transition-transform ${detailOpen ? 'rotate-180' : ''}`} />
@@ -661,7 +644,7 @@ function CaseAnalysis({ caseInfo, issues, shanghaiCount, onFeedbackSaved }: {
         <TableBox title={`重要度（指摘 ${issues.length} 件）`}>
           <table className="w-full text-xs">
             <thead>
-              <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+              <tr className={TABLE_HEAD_ROW}>
                 <th className="text-left px-3 py-2 font-medium">重要度</th>
                 <th className="text-center px-2 py-2 font-medium">件数</th>
                 <th className="text-center px-2 py-2 font-medium">比率</th>
@@ -724,7 +707,7 @@ function IssueListView({ scoped, caseMap, caseId, onCaseChange, onSaved, onFeedb
       {caseInfo && (
         <CaseAnalysis caseInfo={caseInfo} issues={caseIssues} shanghaiCount={shanghai.length} onFeedbackSaved={(fb) => onFeedbackSaved(caseInfo.id, fb)} />
       )}
-      <div className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
+      <div className={`${CARD} overflow-hidden`}>
         <div className="px-4 py-2.5 border-b border-neutral-100 flex flex-wrap items-center gap-2">
           <select value={caseId} onChange={(e) => onCaseChange(e.target.value)} className={`${selectClass} max-w-[320px]`}>
             {caseIds.map((id) => <option key={id} value={id}>{caseLabelOf(caseMap, id)}</option>)}
@@ -741,7 +724,7 @@ function IssueListView({ scoped, caseMap, caseId, onCaseChange, onSaved, onFeedb
             <option value="">判断：すべて</option>
             {JUDGE_COLUMNS.map((j) => <option key={j} value={j}>{j}</option>)}
           </select>
-          <span className="text-[10px] text-neutral-400 ml-auto">{filtered.length} 件</span>
+          <span className="text-xs text-neutral-400 ml-auto">{filtered.length} 件</span>
         </div>
         <div className="divide-y divide-neutral-50">
           {filtered.map((it) => {
@@ -752,6 +735,7 @@ function IssueListView({ scoped, caseMap, caseId, onCaseChange, onSaved, onFeedb
                 <button
                   type="button"
                   onClick={() => setExpandedId(open ? null : it.id)}
+                  aria-expanded={open}
                   className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left border-l-4 ${it.level === CRITICAL ? `${CRITICAL_ROW} border-red-500 hover:bg-red-50` : 'border-transparent hover:bg-neutral-50'}`}
                 >
                   <ChevronDown size={12} className={`text-neutral-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -784,7 +768,7 @@ function IssueListView({ scoped, caseMap, caseId, onCaseChange, onSaved, onFeedb
       <TableBox title={`上海側指摘（${shanghai.length} 件）`}>
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+            <tr className={TABLE_HEAD_ROW}>
               <th className="text-left px-3 py-2 font-medium">内容</th>
               <th className="text-center px-2 py-2 font-medium w-20">状態</th>
               <th className="text-center px-2 py-2 font-medium w-16">優先度</th>
@@ -847,7 +831,7 @@ function useQualityData<T>(path: string, reloadKey: number) {
 
 function LoadState({ error }: { error: string | null }) {
   return error ? (
-    <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-xs flex items-center gap-1.5"><AlertCircle size={14} />{error}</div>
+    <ErrorAlert message={error} />
   ) : (
     <div className="flex items-center justify-center py-20 text-neutral-400"><Loader2 size={20} className="animate-spin mr-2" />読み込み中...</div>
   );
@@ -894,7 +878,7 @@ function AiDesignView({ monthKey, reloadKey, calendar }: { monthKey: string; rel
       <TableBox title="成果物一覧">
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+            <tr className={TABLE_HEAD_ROW}>
               <th className="text-center px-2 py-2 font-medium w-[70px]">月次</th>
               <th className="text-left px-3 py-2 font-medium">成果物</th>
               <th className="text-left px-3 py-2 font-medium">関連案件</th>
@@ -907,7 +891,7 @@ function AiDesignView({ monthKey, reloadKey, calendar }: { monthKey: string; rel
               const open = expandedId === d.id;
               return (
                 <Fragment key={d.id}>
-                  <tr onClick={() => setExpandedId(open ? null : d.id)} className="cursor-pointer hover:bg-neutral-50 align-top">
+                  <tr {...expandableRowProps(open, () => setExpandedId(open ? null : d.id))} className={`cursor-pointer hover:bg-neutral-50 align-top ${ROW_FOCUS}`}>
                     <td className="text-center px-2 py-2 text-neutral-400">{d.month || '—'}</td>
                     <td className="px-3 py-2 text-neutral-800">{d.title || '—'}</td>
                     <td className="px-3 py-2 text-neutral-600">
@@ -920,7 +904,7 @@ function AiDesignView({ monthKey, reloadKey, calendar }: { monthKey: string; rel
                   {open && (
                     <tr>
                       <td colSpan={5} className="px-3 py-3 bg-neutral-50/60">
-                        <div className="text-[10px] text-neutral-400 mb-1">フィードバック</div>
+                        <div className="text-xs text-neutral-400 mb-1">フィードバック</div>
                         <FeedbackEditor
                           key={d.id + d.feedback}
                           caseInfo={d}
@@ -971,7 +955,7 @@ function DocTable({ title, docs }: { title: string; docs: AiDoc[] }) {
     <TableBox title={`${title}（${docs.length} 件）`}>
       <table className="w-full text-xs">
         <thead>
-          <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+          <tr className={TABLE_HEAD_ROW}>
             <th className="text-left px-3 py-2 font-medium">名称</th>
             <th className="text-center px-2 py-2 font-medium w-24">作成日</th>
             <th className="text-center px-2 py-2 font-medium w-24">更新日</th>
@@ -980,7 +964,7 @@ function DocTable({ title, docs }: { title: string; docs: AiDoc[] }) {
         </thead>
         <tbody className="divide-y divide-neutral-50">
           {docs.map((d) => (
-            <tr key={d.id} onClick={() => openNotion(d.url)} className="cursor-pointer hover:bg-neutral-50">
+            <tr key={d.id} {...clickableRowProps(() => openNotion(d.url))} className={`cursor-pointer hover:bg-neutral-50 ${ROW_FOCUS}`}>
               <td className="px-3 py-2 text-neutral-800">{d.title || '—'}</td>
               <td className="text-center px-2 py-2 text-neutral-500">{dateOf(d.createdTime)}</td>
               <td className="text-center px-2 py-2 text-neutral-500">{dateOf(d.lastEditedTime)}</td>
@@ -1002,7 +986,7 @@ function AiDocsView({ reloadKey }: { reloadKey: number }) {
       <TableBox title={`Skills（${data.skills.length} 件）`}>
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+            <tr className={TABLE_HEAD_ROW}>
               <th className="text-left px-3 py-2 font-medium w-56">名称</th>
               <th className="text-left px-3 py-2 font-medium">説明</th>
               <th className="text-left px-3 py-2 font-medium">更新履歴</th>
@@ -1011,7 +995,7 @@ function AiDocsView({ reloadKey }: { reloadKey: number }) {
           </thead>
           <tbody className="divide-y divide-neutral-50">
             {data.skills.map((s) => (
-              <tr key={s.id} onClick={() => openNotion(s.url)} className="cursor-pointer hover:bg-neutral-50 align-top">
+              <tr key={s.id} {...clickableRowProps(() => openNotion(s.url))} className={`cursor-pointer hover:bg-neutral-50 align-top ${ROW_FOCUS}`}>
                 <td className="px-3 py-2 text-neutral-800 font-medium">{s.title || '—'}</td>
                 <td className="px-3 py-2 text-neutral-600 whitespace-pre-wrap break-words">{s.description || '—'}</td>
                 <td className="px-3 py-2 text-neutral-600 whitespace-pre-wrap break-words">{s.history || '—'}</td>
@@ -1140,7 +1124,7 @@ export default function QualityManagement({ onBack }: { onBack: () => void }) {
       ) : loading ? (
         <div className="flex items-center justify-center py-20 text-neutral-400"><Loader2 size={20} className="animate-spin mr-2" />読み込み中...</div>
       ) : error ? (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-xs flex items-center gap-1.5"><AlertCircle size={14} />{error}</div>
+        <ErrorAlert message={error} />
       ) : issuesOpen ? (
         <IssueListView
           scoped={items}

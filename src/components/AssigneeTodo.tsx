@@ -4,7 +4,7 @@ import { ExternalLink, ListTodo, Loader2, Save, X } from 'lucide-react';
 import { PendingNoteRow } from './shared/NoteWidgets';
 import type { EntityNote } from './shared/NoteWidgets';
 
-interface AiTodoIssue {
+export interface AiTodoIssue {
   id: string;
   url: string;
   caseId: string;
@@ -38,8 +38,12 @@ interface BugLeakTodo {
 
 const JUDGEMENTS = ['有効', '無効', 'その他'];
 /** 不具合流出の確認待ちを ToDo に表示する担当者 */
-const BUGLEAK_TODO_EMAILS = ['suntao@newcon.cn', 'jiahan@riskmonster.co.jp'];
-const BUGLEAK_DONE = '確認完了';
+export const BUGLEAK_TODO_EMAILS = ['suntao@newcon.cn', 'jiahan@riskmonster.co.jp'];
+export const BUGLEAK_DONE = '確認完了';
+/** AI指摘 判断待ち（管理者）／対応待ち（担当者）の判定。担当者一覧の ToDo 提示でも使う */
+export const isAiToJudge = (it: AiTodoIssue, email: string) => it.managers.includes(email) && !it.judgement;
+export const isAiToHandle = (it: AiTodoIssue, email: string) =>
+  it.assignees.includes(email) && it.judgement === '有効' && !it.handled;
 const BUGLEAK_PAGE_HASH = '#/quality/bugleak';
 const REASON_MAX = 2000;
 const LEVEL_COLORS: Record<string, string> = {
@@ -90,7 +94,7 @@ function CaseGroupHeader({ c, count }: { c?: AiTodoCase; count: number }) {
     <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-2 bg-neutral-50 border-b border-neutral-100 text-xs">
       <span className="text-neutral-400 shrink-0">{c?.month || '—'}</span>
       <span className="font-bold text-neutral-700 truncate">{c?.title || '（案件なし）'}</span>
-      <span className="ml-auto text-[10px] text-neutral-400 shrink-0">{count} 件</span>
+      <span className="ml-auto text-xs text-neutral-400 shrink-0">{count} 件</span>
     </div>
   );
 }
@@ -102,7 +106,7 @@ function Empty() {
 function AiIssueHeader({ issue }: { issue: AiTodoIssue }) {
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+      <div className="flex items-center gap-2 text-xs text-neutral-400">
         <span className="shrink-0">{issue.no}</span>
         <span className={`shrink-0 font-bold ${LEVEL_COLORS[issue.level] ?? ''}`}>{issue.level}</span>
         <a href={issue.url} target="_blank" rel="noopener noreferrer" title="Notionで開く" className="ml-auto shrink-0 hover:text-neutral-800">
@@ -110,7 +114,7 @@ function AiIssueHeader({ issue }: { issue: AiTodoIssue }) {
         </a>
       </div>
       <div className="text-xs text-neutral-800 whitespace-pre-wrap break-words">{issue.problem}</div>
-      {issue.fix && <div className="text-[11px] text-neutral-500 whitespace-pre-wrap break-words">修正案：{issue.fix}</div>}
+      {issue.fix && <div className="text-xs text-neutral-500 whitespace-pre-wrap break-words">修正案：{issue.fix}</div>}
     </div>
   );
 }
@@ -152,7 +156,7 @@ function AiJudgeRow({ issue, onDone }: { issue: AiTodoIssue; onDone: (judgement:
           {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}保存
         </button>
       </div>
-      {error && <div className="text-[11px] text-red-600">{error}</div>}
+      {error && <div className="text-xs text-red-600">{error}</div>}
     </div>
   );
 }
@@ -180,11 +184,11 @@ function AiHandleRow({ issue, onDone }: { issue: AiTodoIssue; onDone: () => void
     <div className="px-4 py-3 flex items-start gap-3">
       <div className="flex-1 min-w-0 space-y-1">
         <AiIssueHeader issue={issue} />
-        {issue.reason && <div className="text-[11px] text-neutral-500 whitespace-pre-wrap break-words">判断理由：{issue.reason}</div>}
-        {error && <div className="text-[11px] text-red-600">{error}</div>}
+        {issue.reason && <div className="text-xs text-neutral-500 whitespace-pre-wrap break-words">判断理由：{issue.reason}</div>}
+        {error && <div className="text-xs text-red-600">{error}</div>}
       </div>
       <button type="button" onClick={markHandled} disabled={saving}
-        className="shrink-0 inline-flex items-center gap-1 px-2 py-1 text-[10px] rounded bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:opacity-50">
+        className="shrink-0 inline-flex items-center gap-1 px-2 py-1 text-xs rounded bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:opacity-50">
         {saving ? <Loader2 size={10} className="animate-spin" /> : '対応済にする'}
       </button>
     </div>
@@ -249,11 +253,8 @@ export default function AssigneeTodo({ email, pendingNotes, notesLoading, member
   const pendingQA = useMemo(() => pendingNotes.filter((n) => n.category === 'QA'), [pendingNotes]);
   const pendingIssues = useMemo(() => pendingNotes.filter((n) => n.category === '指摘'), [pendingNotes]);
   const pendingExplanations = useMemo(() => pendingNotes.filter((n) => n.category === '追加説明'), [pendingNotes]);
-  const aiToJudge = useMemo(() => aiIssues.filter((it) => it.managers.includes(email) && !it.judgement), [aiIssues, email]);
-  const aiToHandle = useMemo(
-    () => aiIssues.filter((it) => it.assignees.includes(email) && it.judgement === '有効' && !it.handled),
-    [aiIssues, email],
-  );
+  const aiToJudge = useMemo(() => aiIssues.filter((it) => isAiToJudge(it, email)), [aiIssues, email]);
+  const aiToHandle = useMemo(() => aiIssues.filter((it) => isAiToHandle(it, email)), [aiIssues, email]);
 
   const updateIssue = (id: string, patch: Partial<AiTodoIssue>) => {
     setAiIssues((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -332,18 +333,18 @@ export default function AssigneeTodo({ email, pendingNotes, notesLoading, member
                 <div key={system}>
                   <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-2 bg-neutral-50 border-b border-neutral-100 text-xs">
                     <span className="font-bold text-neutral-700 truncate">{system}</span>
-                    <span className="ml-auto text-[10px] text-neutral-400 shrink-0">{list.length} 件</span>
+                    <span className="ml-auto text-xs text-neutral-400 shrink-0">{list.length} 件</span>
                   </div>
                   <div className="divide-y divide-neutral-100">
                     {list.map((b) => (
                       <div key={b.id} className="px-4 py-2.5 space-y-1">
-                        <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+                        <div className="flex items-center gap-2 text-xs text-neutral-400">
                           <span className="shrink-0">{b.caseMonth || '—'}</span>
                           {b.cmdb && <span className="shrink-0">{b.cmdb}</span>}
                           <span className="ml-auto shrink-0">{b.status || '未確認'}</span>
                         </div>
                         <div className="text-xs text-neutral-800 whitespace-pre-wrap break-words">{b.defect || '—'}</div>
-                        {b.feature && <div className="text-[11px] text-neutral-500 whitespace-pre-wrap break-words">機能：{b.feature}</div>}
+                        {b.feature && <div className="text-xs text-neutral-500 whitespace-pre-wrap break-words">機能：{b.feature}</div>}
                       </div>
                     ))}
                   </div>
