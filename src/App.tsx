@@ -21,11 +21,12 @@ import CaseManagement from './components/CaseManagement';
 import DataCollection from './components/DataCollection';
 import DailyNews from './components/DailyNews';
 import DataStatsPanel from './components/DataStatsPanel';
+import QualityManagement from './components/QualityManagement';
 import ReportView from './components/ReportView';
 import ReportListPage from './components/ReportListPage';
 import BugList from './components/BugList';
 
-type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'data-stats' | 'reports' | 'bug-list' | 'data-collection' | 'daily-news';
+type View = 'home' | 'excel-to-md' | 'pdf-to-word' | 'pdf-merge' | 'pdf-edit' | 'pdf-edit-table' | 'test-center' | 'testcase-organize' | 'testcase-view' | 'testcase-library' | 'case-management' | 'quality' | 'data-stats' | 'reports' | 'bug-list' | 'data-collection' | 'daily-news';
 type Category = 'ドキュメント類' | '管理類' | 'データ収集類';
 
 const CATEGORIES: Category[] = ['ドキュメント類', '管理類', 'データ収集類'];
@@ -34,7 +35,7 @@ const CATEGORIES: Category[] = ['ドキュメント類', '管理類', 'データ
 const MENU_OPEN_DELAY_MS = 120;
 const MENU_CLOSE_DELAY_MS = 300;
 
-const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'data-stats', 'reports', 'bug-list', 'data-collection', 'daily-news']);
+const VALID_VIEWS = new Set<string>(['home', 'excel-to-md', 'pdf-to-word', 'pdf-merge', 'pdf-edit', 'pdf-edit-table', 'test-center', 'testcase-organize', 'testcase-view', 'testcase-library', 'case-management', 'quality', 'data-stats', 'reports', 'bug-list', 'data-collection', 'daily-news']);
 
 function hashToView(): View {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -274,6 +275,15 @@ export default function App() {
               exit={{ opacity: 0, x: -20 }}
             >
               <CaseManagement onBack={() => setView('home')} onNavigate={setView} />
+            </motion.div>
+          ) : view === 'quality' ? (
+            <motion.div
+              key="quality"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <QualityManagement onBack={() => setView('home')} />
             </motion.div>
           ) : view === 'data-stats' ? (
             <motion.div

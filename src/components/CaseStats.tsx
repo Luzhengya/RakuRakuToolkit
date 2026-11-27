@@ -2135,6 +2135,22 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           const groupHead = (label: string) => (
             <h4 className="inline-block rounded-md bg-neutral-900 text-white text-xs font-bold px-3 py-1 mb-2">{label}</h4>
           );
+          // 目標と同じ位置に同名の指標を置く (目標に無い指標は空いた位置へ元の順で詰める)
+          // 通年は上期目標の順 (上期目標が無ければ下期目標の順) に合わせる
+          const targetsForOrder = halfType === 'second'
+            ? kpiTargets.second
+            : halfType === 'first' || kpiTargets.first.length > 0 ? kpiTargets.first : kpiTargets.second;
+          const targetLabels = targetsForOrder.map((t) => t.label);
+          const alignToTargets = (defs: Def[]): Def[] => {
+            const slots: (Def | undefined)[] = new Array(defs.length).fill(undefined);
+            const placed = new Set<string>();
+            targetLabels.forEach((label, i) => {
+              const d = defs.find((x) => x.key === label);
+              if (d && i < slots.length && !slots[i]) { slots[i] = d; placed.add(d.key); }
+            });
+            const rest = defs.filter((d) => !placed.has(d.key));
+            return slots.map((s) => s ?? rest.shift()!);
+          };
           if (halfType === 'full') {
             const renderTable = (defs: Def[]) => (
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
@@ -2144,7 +2160,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                   <div className="px-3 py-2 text-right">下期</div>
                   <div className="px-3 py-2 text-right">差分</div>
                 </div>
-                {defs.map((d) => {
+                {alignToTargets(defs).map((d) => {
                   const a = d.pick(halfAgg.first);
                   const b = d.pick(halfAgg.second);
                   const diff = a !== null && b !== null ? Number((b - a).toFixed(2)) : null;
@@ -2174,7 +2190,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           const h = halfType === 'first' ? halfAgg.first : halfAgg.second;
           const renderCards = (defs: Def[]) => (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {defs.map((d) => (
+              {alignToTargets(defs).map((d) => (
                 <div key={d.key} title={d.desc} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5 cursor-help hover:border-neutral-300 transition-colors">
                   <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{d.key}</p>
                   <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{d.fmt(d.pick(h))}</p>
