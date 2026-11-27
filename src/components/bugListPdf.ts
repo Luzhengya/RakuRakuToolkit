@@ -477,8 +477,9 @@ export function buildBugListHtml(
   .result-card.actual p { color:#374151; }
 
   /* Child content / Screenshots */
-  .child-body { font-size:13px; color:#374151; display:flex; flex-wrap:wrap; gap:12px; }
-  .child-body img { width:480px; height:auto; border-radius:6px; border:1px solid #e5e7eb; cursor:pointer; transition:opacity 0.2s; }
+  .child-body { font-size:13px; color:#374151; }
+  .child-body > * + * { margin-top:8px; }
+  .child-body img { display:block; width:480px; max-width:100%; height:auto; margin:8px 0; border-radius:6px; border:1px solid #e5e7eb; cursor:pointer; transition:opacity 0.2s; }
   .child-body img:hover { opacity:0.85; }
 
   /* Lightbox */
