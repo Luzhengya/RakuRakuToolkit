@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AlertCircle, ChevronDown, ExternalLink, Loader2, RefreshCw, Save } from 'lucide-react';
 import { BugLeakPage, GradeBadge, MonthCalendar, RadarChart } from './DataStatsPanel';
+import PerformanceFeedback from './PerformanceFeedback';
 import { useSubRoute } from '../hooks/useSubRoute';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
@@ -79,6 +80,7 @@ const TABS = [
   { id: 'ai-designs', title: 'AI設計書' },
   { id: 'ai-docs', title: 'AI資料' },
   { id: 'bugleak', title: '不具合流出確認' },
+  { id: 'feedback', title: '実績フィードバック' },
 ] as const;
 
 // ── Helpers ──
@@ -1125,6 +1127,8 @@ export default function QualityManagement({ onBack }: { onBack: () => void }) {
       )}
       {!issuesOpen && tab === 'bugleak' ? (
         <BugLeakPage key={reloadKey} />
+      ) : !issuesOpen && tab === 'feedback' ? (
+        <PerformanceFeedback reloadKey={reloadKey} />
       ) : !issuesOpen && tab === 'ai-designs' ? (
         <AiDesignView
           monthKey={monthKey}
