@@ -7,36 +7,15 @@ import {
 import { type Lang } from '../i18n/testcenter';
 import { buildCaseStatsReportHtml, caseStatsReportTitle, type ReportSystemGroup } from './caseStatsReportTemplate';
 import IncidentDetailDialog, { type IncidentFields } from './IncidentDetailDialog';
-
-type CaseStatItem = {
-  id: string;
-  areaId: string;
-  month: string;
-  projectName: string;
-  status: string;
-  system: string;
-  assignee: string;
-  manager: string;
-  estimateTotal: string;
-  actualTotal: string;
-  developmentEffort: string;
-  testTotalCount: string;
-  bugCount: string;
-  testBlockedCount: string;
-  pendingConfirmCount: string;
-  unexpectedNgCount: string;
-  designActual: string;
-  implActual: string;
-  execActual: string;
-  reviewActual: string;
-  comment: string;
-  commentId: string;
-  expectedCase: string;
-  expectedNg: string;
-  japanNgCount: string;
-  japanTestCount: string;
-  tcNgCount: string;
-};
+import {
+  KPI_EFFICIENCY_DEFS, KPI_QUALITY_DEFS, TH_KEY, aggregateHalf, alignToTargets, band, effVal, extractMonth, fmt, fmtEff,
+  fmtPct, groupBySystem, halfMonthsOrder, halfPeriodRange, loadThresholds, matchPeriod, parseMonthKey, toStatRow,
+  BAND_CLS, hasVal, type CaseStatItem, type EffTh, type HalfType, type KpiDef, type KpiTarget, type StatRow, type Thresholds,
+} from './caseStatsCore';
+import {
+  HealthBar, ThresholdRow, effHead, plainCommentCell, qualBlock, qualHead, renderEffRow as renderEffRowBase,
+  renderQualRow as renderQualRowBase, renderQualStats, summaryBlock, td0, th0,
+} from './caseStatsParts';
 
 type BugLeakDetail = {
   id: string;
@@ -65,7 +44,6 @@ type CaseStatsProps = {
 };
 
 const CASE_STATS_CACHE_KEY = 'testcenter:casestats:v3';
-const TH_KEY = 'testcenter:casestats:thresholds:v2';
 const CHART_LAYOUT_KEY = 'testcenter:casestats:chartLayout:v1';
 
 type ChartLayout = { width?: number; height?: number; hidden?: boolean };
@@ -99,103 +77,6 @@ function saveCaseStatsCache(cache: CaseStatsCache) {
   }
 }
 
-// ─── 動的閾値 (localStorage 永続) ───
-// 効率: high 以上=良(緑) / low 未満=要確認(赤)
-// 品質(ngLeak/caseDiff/sensen): 値が大きいほど悪い → high 以上=要確認(赤) / mid 未満=安全(緑)
-type EffTh = { high: number; mid: number };
-type Thresholds = {
-  total: EffTh;
-  design: EffTh;
-  exec: EffTh;
-  review: EffTh;
-  ngLeak: EffTh;   // NG流出率(%)  high以上=要確認
-  caseDiff: EffTh; // 想定ケース差 high以上=要確認
-  sensen: EffTh;   // 潜在見逃し   high以上=要確認
-  diff: EffTh;     // 見積対実績差分(人日) high以上=要確認 (担当者別用)
-};
-
-// 暫定の既定値 (画面で編集可)
-const DEFAULT_TH: Thresholds = {
-  total: { high: 8, mid: 5 },
-  design: { high: 15, mid: 8 },
-  exec: { high: 30, mid: 15 },
-  review: { high: 40, mid: 20 },
-  ngLeak: { high: 50, mid: 30 },
-  caseDiff: { high: 10, mid: 5 },
-  sensen: { high: 1, mid: 0.5 },
-  diff: { high: 10, mid: 5 },
-};
-
-function loadThresholds(): Thresholds {
-  try {
-    const raw = localStorage.getItem(TH_KEY);
-    if (!raw) return DEFAULT_TH;
-    return { ...DEFAULT_TH, ...(JSON.parse(raw) as Partial<Thresholds>) };
-  } catch {
-    return DEFAULT_TH;
-  }
-}
-
-function num(v: string): number {
-  const n = parseFloat(String(v ?? '').replace(/[^0-9.\-]/g, ''));
-  return Number.isFinite(n) ? n : 0;
-}
-
-function hasVal(v: string): boolean {
-  return String(v ?? '').trim() !== '';
-}
-
-function fmt(n: number): string {
-  if (!Number.isFinite(n)) return '-';
-  return Number.isInteger(n) ? String(n) : parseFloat(n.toFixed(2)).toString();
-}
-
-function fmtEff(v: number | null): string {
-  return v === null ? '-' : fmt(v);
-}
-
-function fmtPct(v: number | null): string {
-  return v === null ? '-' : `${fmt(v)}%`;
-}
-
-// 効率値 (分母0は null)
-function effVal(numer: number, denom: number): number | null {
-  return denom > 0 ? numer / denom : null;
-}
-
-type Band = 'high' | 'mid' | 'low' | 'na';
-function band(v: number | null, th: EffTh): Band {
-  if (v === null) return 'na';
-  if (v >= th.high) return 'high';
-  if (v >= th.mid) return 'mid';
-  return 'low';
-}
-const BAND_CLS: Record<Band, string> = {
-  high: 'text-emerald-600 font-semibold',
-  mid: 'text-neutral-700',
-  low: 'bg-red-50 text-neutral-800 font-semibold',
-  na: 'text-neutral-400',
-};
-
-// 月次: YYYYMM(6桁) / YYYY-MM / YYYY年M月 / M月
-function matchPeriod(monthStr: string, year: number, month: 'all' | number): boolean {
-  const t = (monthStr || '').trim();
-  let y: number | null = null;
-  let mo: number | null = null;
-  const compact = t.match(/^(\d{4})(\d{2})$/);
-  const full = t.match(/(\d{4})[\-/.年](\d{1,2})/);
-  if (compact) { y = Number(compact[1]); mo = Number(compact[2]); }
-  else if (full) { y = Number(full[1]); mo = Number(full[2]); }
-  else {
-    const only = t.match(/(\d{1,2})月/);
-    if (only) { mo = Number(only[1]); y = year; }
-  }
-  if (y === null || mo === null) return false;
-  if (y !== year) return false;
-  if (month !== 'all' && mo !== month) return false;
-  return true;
-}
-
 // チャート表示設定 pill 用のメタ (月次/年度モードそれぞれ)
 const MONTHLY_CHART_META: { id: string; title: string }[] = [
   { id: 'm.pi.estimate', title: 'システム別 見積時間比率' },
@@ -213,48 +94,6 @@ const YEARLY_CHART_META: { id: string; title: string }[] = [
   { id: 'y.pi.ngLeak', title: 'システム別 NG流出率' },
   { id: 'y.pi.totalEff', title: 'システム別 総効率' },
 ];
-
-// 業務年度: year年2月 〜 (year+1)年1月
-// 上期(first): year年 2〜7月 / 下期(second): year年8月 〜 (year+1)年1月
-type HalfType = 'full' | 'first' | 'second';
-
-// 月次文字列を YYYYMM(数値) に正規化。判定不能なら null
-function parseMonthKey(monthStr: string, fallbackYear?: number): number | null {
-  const t = (monthStr || '').trim();
-  const compact = t.match(/^(\d{4})(\d{2})$/);
-  if (compact) return Number(compact[1]) * 100 + Number(compact[2]);
-  const full = t.match(/(\d{4})[\-/.年](\d{1,2})/);
-  if (full) return Number(full[1]) * 100 + Number(full[2]);
-  const only = t.match(/(\d{1,2})月/);
-  if (only && fallbackYear !== undefined) return fallbackYear * 100 + Number(only[1]);
-  return null;
-}
-
-// 年度・半期の YYYYMM 範囲 [from, to] を返す
-function halfPeriodRange(year: number, half: HalfType): { from: number; to: number } {
-  if (half === 'first') return { from: year * 100 + 2, to: year * 100 + 7 };
-  if (half === 'second') return { from: year * 100 + 8, to: (year + 1) * 100 + 1 };
-  return { from: year * 100 + 2, to: (year + 1) * 100 + 1 }; // full = 業務年 2〜次年1月
-}
-
-// 業務年順の月配列。full=12ヶ月(2,3,...,12,1)、first=2〜7、second=8,9,...,12,1
-function halfMonthsOrder(half: HalfType): number[] {
-  if (half === 'first') return [2, 3, 4, 5, 6, 7];
-  if (half === 'second') return [8, 9, 10, 11, 12, 1];
-  return [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1];
-}
-
-// 月次文字列から月(1-12)を抽出
-function extractMonth(monthStr: string): number | null {
-  const t = (monthStr || '').trim();
-  const compact = t.match(/^(\d{4})(\d{2})$/);
-  if (compact) return Number(compact[2]);
-  const full = t.match(/(\d{4})[\-/.年](\d{1,2})/);
-  if (full) return Number(full[2]);
-  const only = t.match(/(\d{1,2})月/);
-  if (only) return Number(only[1]);
-  return null;
-}
 
 // 年度チャート配色
 const PIE_COLORS = ['#6366f1', '#f97316', '#10b981', '#06b6d4', '#ec4899', '#8b5cf6', '#eab308', '#ef4444'];
@@ -475,7 +314,6 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   }, []);
 
   // KPI目標 (上期=1 / 下期=2 の項目を Notion 設定表から取得。年度モードで最上方に表示)
-  type KpiTarget = { label: string; value: string };
   const [kpiTargets, setKpiTargets] = useState<{ first: KpiTarget[]; second: KpiTarget[] }>({ first: [], second: [] });
   useEffect(() => {
     let alive = true;
@@ -543,53 +381,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
         }
         return matchPeriod(it.month, year, effectiveMonth);
       })
-      .map((it) => {
-        const estimate = num(it.estimateTotal);
-        const actual = num(it.actualTotal);
-        const testTotal = num(it.testTotalCount);
-        const ng = num(it.bugCount);
-        const designA = num(it.designActual);
-        const implA = num(it.implActual);
-        const execA = num(it.execActual);
-        const reviewA = num(it.reviewActual);
-        const hasExpectedCase = hasVal(it.expectedCase);
-        const hasExpectedNg = hasVal(it.expectedNg);
-        const expectedCase = num(it.expectedCase);
-        const expectedNg = num(it.expectedNg);
-        const tcng = num(it.tcNgCount);
-        const japanNg = num(it.japanNgCount);
-        const japanTest = num(it.japanTestCount);
-        const caseDiff = expectedCase - testTotal;
-        const sensen = expectedNg - tcng - japanNg;
-        const ngLeakDenom = tcng + japanNg;
-        // NG流出率: NGデータあり(実績表 join済)で NG=0 なら 0%、データ無しなら null(-)
-        const hasNgData = hasVal(it.japanNgCount) || hasVal(it.tcNgCount);
-        return {
-          it,
-          estimate,
-          actual,
-          diff: actual - estimate,
-          testTotal,
-          ng,
-          ngRate: testTotal > 0 ? (ng / testTotal) * 100 : null,
-          designA, implA, execA, reviewA,
-          totalEff: effVal(testTotal, actual),
-          designEff: effVal(testTotal, designA + implA),
-          execEff: effVal(testTotal, execA),
-          reviewEff: effVal(testTotal, reviewA),
-          hasExpectedCase,
-          expectedCase,
-          caseDiff,
-          hasExpectedNg,
-          expectedNg,
-          japanNg,
-          japanTest,
-          tcng,
-          sensen,
-          hasNgData,
-          ngLeakRate: ngLeakDenom > 0 ? (japanNg / ngLeakDenom) * 100 : (hasNgData ? 0 : null),
-        };
-      });
+      .map(toStatRow);
   }, [items, year, effectiveMonth, periodType, halfType]);
 
   // 対象期間に存在するシステム一覧 (システム選択の候補)
@@ -650,101 +442,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   }, [rows, th]);
 
   // システム別グルーピング (案件数降順)。各システムの効率サマリ + 低効率(要確認)案件も算出。
-  const rowsBySystem = useMemo(() => {
-    const map = new Map<string, typeof rows>();
-    for (const r of rows) {
-      const key = r.it.system || '(未設定)';
-      const arr = map.get(key);
-      if (arr) arr.push(r);
-      else map.set(key, [r]);
-    }
-    const tally = (grp: typeof rows, pick: (r: (typeof rows)[number]) => number | null, t: EffTh) => {
-      const c = { high: 0, mid: 0, low: 0 };
-      for (const r of grp) {
-        const b = band(pick(r), t);
-        if (b === 'high') c.high++;
-        else if (b === 'mid') c.mid++;
-        else if (b === 'low') c.low++;
-      }
-      return c;
-    };
-    return Array.from(map.entries())
-      .map(([system, grp]) => {
-        const testSum = grp.reduce((s, r) => s + r.testTotal, 0);
-        const actualSum = grp.reduce((s, r) => s + r.actual, 0);
-        const designDen = grp.reduce((s, r) => s + r.designA + r.implA, 0);
-        const execDen = grp.reduce((s, r) => s + r.execA, 0);
-        const reviewDen = grp.reduce((s, r) => s + r.reviewA, 0);
-        const effStats = {
-          total: { agg: effVal(testSum, actualSum), counts: tally(grp, (r) => r.totalEff, th.total) },
-          design: { agg: effVal(testSum, designDen), counts: tally(grp, (r) => r.designEff, th.design) },
-          exec: { agg: effVal(testSum, execDen), counts: tally(grp, (r) => r.execEff, th.exec) },
-          review: { agg: effVal(testSum, reviewDen), counts: tally(grp, (r) => r.reviewEff, th.review) },
-        };
-        // 効率: 低(確認要) or 中(注意) の案件を抽出。指標名:程度 をラベル化
-        const effAttn = grp.flatMap((r) => {
-          const parts: { name: string; b: Band }[] = [];
-          const add = (name: string, v: number | null, t: EffTh) => {
-            const b = band(v, t);
-            if (b === 'low' || b === 'mid') parts.push({ name, b });
-          };
-          add('総', r.totalEff, th.total);
-          add('設計', r.designEff, th.design);
-          add('実施', r.execEff, th.exec);
-          add('レビュー', r.reviewEff, th.review);
-          if (parts.length === 0) return [];
-          const status: '確認要' | '注意' = parts.some((p) => p.b === 'low') ? '確認要' : '注意';
-          const labels = parts.map((p) => `${p.name}:${p.b === 'low' ? '低' : '中'}`);
-          return [{ r, status, labels }];
-        });
-
-        // 品質サマリ (システム単位)
-        const qTestSum = grp.reduce((s, r) => s + r.testTotal, 0);
-        const qNgSum = grp.reduce((s, r) => s + r.ng, 0);
-        const tcngSum = grp.reduce((s, r) => s + r.tcng, 0);
-        const japanNgSum = grp.reduce((s, r) => s + r.japanNg, 0);
-        const leakDen = tcngSum + japanNgSum;
-        const grpHasNgData = grp.some((r) => r.hasNgData);
-        // 各品質指標を high/中/low に分類 (high=要確認)。対象外(データ無し)は null で除外
-        const ngLeakCounts = tally(grp, (r) => r.ngLeakRate, th.ngLeak);
-        const caseDiffCounts = tally(grp, (r) => (r.hasExpectedCase ? r.caseDiff : null), th.caseDiff);
-        const sensenCounts = tally(grp, (r) => (r.hasExpectedNg ? r.sensen : null), th.sensen);
-        const qualStats = {
-          testSum: qTestSum,
-          ngSum: qNgSum,
-          ngRate: qTestSum > 0 ? (qNgSum / qTestSum) * 100 : null,
-          ngLeakRate: leakDen > 0 ? (japanNgSum / leakDen) * 100 : (grpHasNgData ? 0 : null),
-          ngLeakCounts,
-          caseDiffCounts,
-          sensenCounts,
-        };
-        // 品質: 高(品質低=確認要) or 中(注意) の案件を抽出。理由(指標名+値)をラベル化
-        // 警告判定は NG流出率のみ。想定ケース差/潜在見逃しは単独では警告せず、
-        // NG流出率が高い(確認要/注意)時に付帯情報として併記する。
-        const qualAttn = grp.flatMap((r) => {
-          if (r.ngLeakRate === null) return [];
-          const b = band(r.ngLeakRate, th.ngLeak);
-          if (b !== 'high' && b !== 'mid') return [];
-          const status: '確認要' | '注意' = b === 'high' ? '確認要' : '注意';
-          const labels = [`NG流出率 ${fmtPct(r.ngLeakRate)}`];
-          if (r.hasExpectedCase) {
-            const cb = band(r.caseDiff, th.caseDiff);
-            if (cb === 'high' || cb === 'mid') labels.push(`想定ケース差 ${fmt(r.caseDiff)}`);
-          }
-          if (r.hasExpectedNg) {
-            const sb = band(r.sensen, th.sensen);
-            if (sb === 'high' || sb === 'mid') labels.push(`潜在見逃し ${fmt(r.sensen)}`);
-          }
-          return [{ r, status, labels }];
-        });
-
-        const effConfirm = effAttn.filter((x) => x.status === '確認要').length;
-        const qualConfirm = qualAttn.filter((x) => x.status === '確認要').length;
-
-        return { system, rows: grp, count: grp.length, totalEff: effVal(testSum, actualSum), effStats, effAttn, effConfirm, qualStats, qualAttn, qualConfirm };
-      })
-      .sort((a, b) => b.count - a.count);
-  }, [rows, th]);
+  const rowsBySystem = useMemo(() => groupBySystem(rows, th), [rows, th]);
 
   // 担当者別グルーピング (確認要件数降順)。効率4指標 + NG流出率 + 見積対実績差分 を統合した単一の確認要・注意リストを持つ。
   const rowsByAssignee = useMemo(() => {
@@ -876,53 +574,19 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   // 半期集計 (通年モードで上期vs下期を比較するため、halfTypeに関係なく年度全体から集計)
   const halfAgg = useMemo(() => {
     if (periodType !== 'year') return null;
-    const empty = () => ({
-      caseCount: 0,
-      testSum: 0,
-      ngSum: 0,
-      unexpectedNgSum: 0,
-      _actual: 0,
-      _estimate: 0,
-      _tcng: 0,
-      _japanNg: 0,
-    });
-    const first = empty();
-    const second = empty();
     // rows は現在 halfType でフィルタ済み。通年モードで上下期を比較するため、
     // items から改めて業務年フル範囲で走査する
     const fullRange = halfPeriodRange(year, 'full');
     const firstMonths = new Set(halfMonthsOrder('first'));
+    const first: CaseStatItem[] = [];
+    const second: CaseStatItem[] = [];
     for (const it of items) {
       const key = parseMonthKey(it.month, year);
       if (key === null || key < fullRange.from || key > fullRange.to) continue;
       if (it.system && deselected.has(it.system)) continue;
-      const mo = key % 100;
-      const target = firstMonths.has(mo) ? first : second;
-      target.caseCount++;
-      target.testSum += num(it.testTotalCount);
-      target.ngSum += num(it.bugCount);
-      target.unexpectedNgSum += num(it.unexpectedNgCount);
-      target._actual += num(it.actualTotal);
-      target._estimate += num(it.estimateTotal);
-      target._tcng += num(it.tcNgCount);
-      target._japanNg += num(it.japanNgCount);
+      (firstMonths.has(key % 100) ? first : second).push(it);
     }
-    const finalize = (h: ReturnType<typeof empty>) => {
-      const leakDen = h._tcng + h._japanNg;
-      return {
-        caseCount: h.caseCount,
-        testSum: h.testSum,
-        ngSum: h.ngSum,
-        unexpectedNgSum: h.unexpectedNgSum,
-        estimateSum: h._estimate,
-        actualSum: h._actual,
-        diff: Number((h._actual - h._estimate).toFixed(2)),
-        ngRate: h.testSum > 0 ? (h.ngSum / h.testSum) * 100 : null,
-        ngLeakRate: leakDen > 0 ? (h._japanNg / leakDen) * 100 : null,
-        totalEff: h._actual > 0 ? h.testSum / h._actual : null,
-      };
-    };
-    return { first: finalize(first), second: finalize(second) };
+    return { first: aggregateHalf(first), second: aggregateHalf(second) };
   }, [items, year, periodType, deselected]);
 
   // 年度: システム別集計 (円グラフ4種: 案件数 / 実績工数 / NG流出率 / 総効率)
@@ -968,77 +632,11 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     { label: '効率(総)', value: fmtEff(kpi.totalEff) },
   ];
 
-  const th0 = 'px-2 py-2 text-xs font-semibold text-neutral-500 whitespace-nowrap text-left border-b border-neutral-200';
-  const td0 = 'px-2 py-1.5 text-xs text-neutral-700 whitespace-nowrap border-b border-neutral-100';
   const tdNum = td0 + ' text-right tabular-nums';
-
-  // 閾値入力 (小さな数値ボックス)
-  const ThInput = ({ value, onChange }: { value: number; onChange: (v: number) => void }) => (
-    <input
-      type="number"
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="w-16 border border-neutral-200 rounded px-1.5 py-0.5 text-xs text-right tabular-nums focus:outline-none focus:border-neutral-400"
-    />
-  );
 
   type ThKey = 'total' | 'design' | 'exec' | 'review' | 'ngLeak' | 'caseDiff' | 'sensen' | 'diff';
   const effRow = (key: ThKey, label: string, hiLabel = '高≥', midLabel = '中≥') => (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="w-24 text-neutral-600">{label}</span>
-      <span className="text-neutral-400">{hiLabel}</span>
-      <ThInput value={th[key].high} onChange={(v) => updateTh({ ...th, [key]: { ...th[key], high: v } })} />
-      <span className="text-neutral-400">{midLabel}</span>
-      <ThInput value={th[key].mid} onChange={(v) => updateTh({ ...th, [key]: { ...th[key], mid: v } })} />
-    </div>
-  );
-
-  // 分布バー。reverse=false: high=緑/low=赤(効率)。reverse=true: high=赤/low=緑(品質: 値大きいほど悪い)
-  const HealthBar = ({ high, mid, low, reverse = false }: { high: number; mid: number; low: number; reverse?: boolean }) => {
-    const total = high + mid + low;
-    if (total === 0) return <div className="h-1.5 rounded-full bg-neutral-100" />;
-    const pct = (n: number) => `${(n / total) * 100}%`;
-    const hiCls = reverse ? 'bg-red-500' : 'bg-emerald-500';
-    const loCls = reverse ? 'bg-emerald-500' : 'bg-red-500';
-    return (
-      <div className="flex h-1.5 rounded-full overflow-hidden bg-neutral-100">
-        {high > 0 && <div style={{ width: pct(high) }} className={hiCls} />}
-        {mid > 0 && <div style={{ width: pct(mid) }} className="bg-slate-400" />}
-        {low > 0 && <div style={{ width: pct(low) }} className={loCls} />}
-      </div>
-    );
-  };
-
-  // 効率サマリカード (high=良)
-  const summaryBlock = (label: string, agg: number | null, counts: { high: number; mid: number; low: number }) => (
-    <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
-      <div className="flex items-baseline justify-between">
-        <span className="text-xs font-semibold text-neutral-600">{label}</span>
-        <span className="text-lg font-bold text-neutral-900 tabular-nums">{fmtEff(agg)}</span>
-      </div>
-      <div className="mt-1.5"><HealthBar high={counts.high} mid={counts.mid} low={counts.low} /></div>
-      <div className="flex items-center gap-3 mt-1 text-[11px]">
-        <span className={counts.low > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'効率低'} {counts.low}</span>
-        <span className="text-slate-500">{'効率中'} {counts.mid}</span>
-        <span className="text-emerald-600">{'効率高'} {counts.high}</span>
-      </div>
-    </div>
-  );
-
-  // 品質サマリカード (high=品質低/悪い。counts.high=品質低件数, counts.low=品質高)
-  const qualBlock = (label: string, aggText: string, counts: { high: number; mid: number; low: number }) => (
-    <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
-      <div className="flex items-baseline justify-between">
-        <span className="text-xs font-semibold text-neutral-600">{label}</span>
-        <span className="text-lg font-bold text-neutral-900 tabular-nums">{aggText}</span>
-      </div>
-      <div className="mt-1.5"><HealthBar high={counts.high} mid={counts.mid} low={counts.low} reverse /></div>
-      <div className="flex items-center gap-3 mt-1 text-[11px]">
-        <span className={counts.high > 0 ? 'text-red-600 font-semibold' : 'text-neutral-400'}>{'品質低'} {counts.high}</span>
-        <span className="text-slate-500">{'品質中'} {counts.mid}</span>
-        <span className="text-emerald-600">{'品質高'} {counts.low}</span>
-      </div>
-    </div>
+    <ThresholdRow label={label} value={th[key]} onChange={(v) => updateTh({ ...th, [key]: v })} hiLabel={hiLabel} midLabel={midLabel} />
   );
 
   // 見積対実績差分サマリカード (high=超過/悪い。counts.high=確認要件数, counts.low=適正件数) ─ 担当者別用
@@ -1107,35 +705,9 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
   };
   // システム別 円グラフカード (占比表示)
 
-  const effHead = (
-    <thead>
-      <tr>
-        <th className={th0}>案件名</th>
-        <th className={th0}>システム</th>
-        <th className={th0}>状態</th>
-        <th className={th0}>テスト件数</th>
-        <th className={th0}>実績(設計)</th>
-        <th className={th0}>実績(実装)</th>
-        <th className={th0}>実績(実施)</th>
-        <th className={th0}>実績(review)</th>
-        <th className={th0}>実績総</th>
-        <th className={th0}>差分</th>
-        <th className={th0}>総効率</th>
-        <th className={th0}>設計効率</th>
-        <th className={th0}>実施効率</th>
-        <th className={th0}>レビュー効率</th>
-        <th className={th0}>備考</th>
-        <th className={th0}>担当者</th>
-        <th className={th0}>管理者</th>
-      </tr>
-    </thead>
-  );
-
   // 備考セル (実績表と紐付くもののみ編集可、フォーカスアウトで保存)
   const renderCommentCell = (r: (typeof rows)[number]) => {
-    if (!r.it.commentId) {
-      return <td className={td0 + ' max-w-[160px] truncate'} title={r.it.comment}>{r.it.comment || '-'}</td>;
-    }
+    if (!r.it.commentId) return plainCommentCell(r);
     const val = commentDrafts[r.it.id] ?? r.it.comment;
     return (
       <td className={td0}>
@@ -1154,101 +726,8 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
     );
   };
 
-  const renderEffRow = (r: (typeof rows)[number]) => (
-    <tr key={r.it.id} className="hover:bg-neutral-50">
-      <td className={td0 + ' max-w-[220px] truncate'} title={r.it.projectName}>{r.it.projectName || '-'}</td>
-      <td className={td0}>{r.it.system || '-'}</td>
-      <td className={td0}>{r.it.status || '-'}</td>
-      <td className={tdNum}>{fmt(r.testTotal)}</td>
-      <td className={tdNum}>{fmt(r.designA)}</td>
-      <td className={tdNum}>{fmt(r.implA)}</td>
-      <td className={tdNum}>{fmt(r.execA)}</td>
-      <td className={tdNum}>{fmt(r.reviewA)}</td>
-      <td className={tdNum}>{fmt(r.actual)}</td>
-      <td className={tdNum + (r.diff > 0 ? ' text-red-600' : '')}>{(r.diff > 0 ? '+' : '') + fmt(r.diff)}</td>
-      <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.totalEff, th.total)]}>{fmtEff(r.totalEff)}</td>
-      <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.designEff, th.design)]}>{fmtEff(r.designEff)}</td>
-      <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.execEff, th.exec)]}>{fmtEff(r.execEff)}</td>
-      <td className={td0 + ' text-right tabular-nums ' + BAND_CLS[band(r.reviewEff, th.review)]}>{fmtEff(r.reviewEff)}</td>
-      {renderCommentCell(r)}
-      <td className={td0}>{r.it.assignee || '-'}</td>
-      <td className={td0}>{r.it.manager || '-'}</td>
-    </tr>
-  );
-
-  const qualHead = (
-    <thead>
-      <tr>
-        <th className={th0}>案件名</th>
-        <th className={th0}>システム</th>
-        <th className={th0}>状態</th>
-        <th className={th0}>テスト数</th>
-        <th className={th0}>NG</th>
-        <th className={th0}>日本テスト件数</th>
-        <th className={th0}>日本NG件数</th>
-        <th className={th0}>想定ケース</th>
-        <th className={th0}>想定NG数</th>
-        <th className={th0}>NG率</th>
-        <th className={th0}>NG流出率</th>
-        <th className={th0}>潜在見逃し</th>
-        <th className={th0}>備考</th>
-        <th className={th0}>担当者</th>
-        <th className={th0}>管理者</th>
-      </tr>
-    </thead>
-  );
-
-  const renderQualRow = (r: (typeof rows)[number]) => (
-    <tr key={r.it.id} className="hover:bg-neutral-50">
-      <td className={td0 + ' max-w-[220px] truncate'} title={r.it.projectName}>{r.it.projectName || '-'}</td>
-      <td className={td0}>{r.it.system || '-'}</td>
-      <td className={td0}>{r.it.status || '-'}</td>
-      <td className={tdNum}>{fmt(r.testTotal)}</td>
-      <td className={tdNum}>{fmt(r.ng)}</td>
-      <td className={tdNum}>{hasVal(r.it.japanTestCount) ? fmt(r.japanTest) : '-'}</td>
-      <td className={tdNum}>{hasVal(r.it.japanNgCount) ? fmt(r.japanNg) : '-'}</td>
-      <td className={tdNum + (r.hasExpectedCase && r.caseDiff >= th.caseDiff.high ? ' text-red-600 font-semibold' : '')}>
-        {r.hasExpectedCase ? (
-          <span className="inline-flex items-center gap-0.5 justify-end">
-            {r.hasExpectedCase && r.caseDiff >= th.caseDiff.high && <AlertTriangle size={11} />}{fmt(r.expectedCase)}
-          </span>
-        ) : '-'}
-      </td>
-      <td className={tdNum}>{r.hasExpectedNg ? fmt(r.expectedNg) : '-'}</td>
-      <td className={tdNum}>{fmtPct(r.ngRate)}</td>
-      <td className={tdNum + (r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high ? ' bg-red-50 text-red-600 font-semibold' : '')}>
-        {r.ngLeakRate !== null && r.ngLeakRate >= th.ngLeak.high ? (
-          <span className="inline-flex items-center gap-0.5 justify-end"><AlertTriangle size={11} />{fmtPct(r.ngLeakRate)}</span>
-        ) : fmtPct(r.ngLeakRate)}
-      </td>
-      <td className={tdNum + (r.hasExpectedNg && r.sensen >= th.sensen.high ? ' text-red-600 font-semibold' : '')}>
-        {r.hasExpectedNg ? (
-          <span className="inline-flex items-center gap-0.5 justify-end">
-            {r.hasExpectedNg && r.sensen >= th.sensen.high && <AlertTriangle size={11} />}{fmt(r.sensen)}
-          </span>
-        ) : '-'}
-      </td>
-      {renderCommentCell(r)}
-      <td className={td0}>{r.it.assignee || '-'}</td>
-      <td className={td0}>{r.it.manager || '-'}</td>
-    </tr>
-  );
-
-  // システム単位の品質サマリ (NG率統計 + 3カード: NG流出率 / 想定ケース差 / 潜在見逃し)
-  const renderQualStats = (qs: (typeof rowsBySystem)[number]['qualStats']) => (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-      <div className="bg-white border border-neutral-200 rounded-lg px-3 py-2">
-        <div className="flex items-baseline justify-between">
-          <span className="text-xs font-semibold text-neutral-600">NG率(総)</span>
-          <span className="text-lg font-bold text-neutral-900 tabular-nums">{fmtPct(qs.ngRate)}</span>
-        </div>
-        <div className="mt-1 text-[11px] text-neutral-500">総テスト {fmt(qs.testSum)} / NG {fmt(qs.ngSum)}</div>
-      </div>
-      {qualBlock('NG流出率', fmtPct(qs.ngLeakRate), qs.ngLeakCounts)}
-      {qualBlock('想定ケース差', '', qs.caseDiffCounts)}
-      {qualBlock('潜在見逃し', '', qs.sensenCounts)}
-    </div>
-  );
+  const renderEffRow = (r: StatRow) => renderEffRowBase(r, th, renderCommentCell(r));
+  const renderQualRow = (r: StatRow) => renderQualRowBase(r, th, renderCommentCell(r));
 
   // 担当者別 詳細テーブル (案件名/システム/状態/テスト件数/実績総/設計・実施・レビュー効率/NG流出率/見積対実績差分/備考)
   const assigneeHead = (
@@ -2112,26 +1591,9 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
 
         {/* KPI パネル: 品質(4) + 効率・規模(4) の2グループに分けて表示 */}
         {halfAgg && (() => {
-          type Half = typeof halfAgg.first;
-          type FmtFn = (v: number | null) => string;
-          const fmtNum: FmtFn = (v) => v === null ? '-' : fmt(v);
-          const fmtDiff = (v: number): string => (v > 0 ? '+' : '') + fmt(v);
-          const fmtDiffPct = (v: number): string => (v > 0 ? '+' : '') + fmt(v) + '%';
-          type Def = { key: string; desc: string; pick: (h: Half) => number | null; higherIsWorse: boolean; fmt: FmtFn; diffFmt: (v: number) => string };
-          // 品質グループ (4項)
-          const qualityDefs: Def[] = [
-            { key: 'NG率(総)',       desc: 'NG率(総) = 総NG件数 ÷ 総テスト件数 × 100\n各案件のNG数と検出テスト件数を合算して算出',                            pick: (h) => h.ngRate,          higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
-            { key: 'NG流出率(総)',   desc: 'NG流出率(総) = 日本側NG件数 ÷ (TCNG数 + 日本側NG件数) × 100\n日本側で検出されたNGの割合(テスト後流出したNG比率)', pick: (h) => h.ngLeakRate,      higherIsWorse: true, fmt: fmtPct, diffFmt: fmtDiffPct },
-            { key: '想定外NG数(総)', desc: '想定外NG数(総) = 各案件の想定外NG数の合計\n仕様外・想定外の重大不具合を集計',                                   pick: (h) => h.unexpectedNgSum, higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
-            { key: '総NG件数',       desc: '総NG件数 = 各案件のNG数の合計\n対象期間内で検出された全NG件数',                                                  pick: (h) => h.ngSum,           higherIsWorse: true, fmt: fmtNum, diffFmt: fmtDiff },
-          ];
-          // 効率・規模グループ (4項)
-          const efficiencyDefs: Def[] = [
-            { key: '効率(総)',       desc: '効率(総) = 総テスト件数 ÷ 実績工数(合計)\n1人日あたりのテスト件数(生産性の指標)',                     pick: (h) => h.totalEff,        higherIsWorse: false, fmt: fmtEff, diffFmt: fmtDiff },
-            { key: '見積対実績差分', desc: '見積対実績差分 = 実績工数(合計) − 見積工数(合計)\nプラス=見積超過、マイナス=見積内(工数管理の指標)', pick: (h) => h.diff,            higherIsWorse: true,  fmt: (v) => v === null ? '-' : fmtDiff(v), diffFmt: fmtDiff },
-            { key: '案件数(総)',     desc: '案件数(総) = 対象期間内の案件数の合計',                                                                pick: (h) => h.caseCount,       higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
-            { key: '総テスト件数',   desc: '総テスト件数 = 各案件のテスト件数の合計\n対象期間内で実施したテスト用例の総数',                       pick: (h) => h.testSum,         higherIsWorse: false, fmt: fmtNum, diffFmt: fmtDiff },
-          ];
+          const qualityDefs = KPI_QUALITY_DEFS;
+          const efficiencyDefs = KPI_EFFICIENCY_DEFS;
+          type Def = KpiDef;
           const groupHead = (label: string) => (
             <h4 className="inline-block rounded-md bg-neutral-900 text-white text-xs font-bold px-3 py-1 mb-2">{label}</h4>
           );
@@ -2140,17 +1602,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           const targetsForOrder = halfType === 'second'
             ? kpiTargets.second
             : halfType === 'first' || kpiTargets.first.length > 0 ? kpiTargets.first : kpiTargets.second;
-          const targetLabels = targetsForOrder.map((t) => t.label);
-          const alignToTargets = (defs: Def[]): Def[] => {
-            const slots: (Def | undefined)[] = new Array(defs.length).fill(undefined);
-            const placed = new Set<string>();
-            targetLabels.forEach((label, i) => {
-              const d = defs.find((x) => x.key === label);
-              if (d && i < slots.length && !slots[i]) { slots[i] = d; placed.add(d.key); }
-            });
-            const rest = defs.filter((d) => !placed.has(d.key));
-            return slots.map((s) => s ?? rest.shift()!);
-          };
+          const alignedDefs = (defs: Def[]): Def[] => alignToTargets(defs, targetsForOrder.map((t) => t.label));
           if (halfType === 'full') {
             const renderTable = (defs: Def[]) => (
               <div className="bg-white border border-neutral-200 rounded-xl overflow-hidden">
@@ -2160,7 +1612,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
                   <div className="px-3 py-2 text-right">下期</div>
                   <div className="px-3 py-2 text-right">差分</div>
                 </div>
-                {alignToTargets(defs).map((d) => {
+                {alignedDefs(defs).map((d) => {
                   const a = d.pick(halfAgg.first);
                   const b = d.pick(halfAgg.second);
                   const diff = a !== null && b !== null ? Number((b - a).toFixed(2)) : null;
@@ -2190,7 +1642,7 @@ export default function CaseStats({ onBack, onHome, initialYear, initialMonth }:
           const h = halfType === 'first' ? halfAgg.first : halfAgg.second;
           const renderCards = (defs: Def[]) => (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {alignToTargets(defs).map((d) => (
+              {alignedDefs(defs).map((d) => (
                 <div key={d.key} title={d.desc} className="bg-white border border-neutral-200 rounded-lg px-3 py-2.5 cursor-help hover:border-neutral-300 transition-colors">
                   <p className="text-[10px] text-neutral-400 font-semibold tracking-wider truncate">{d.key}</p>
                   <p className="text-xl font-bold text-neutral-800 mt-0.5 tabular-nums">{d.fmt(d.pick(h))}</p>
