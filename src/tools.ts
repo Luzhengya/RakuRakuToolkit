@@ -143,7 +143,7 @@ export const TOOLS: ToolDef[] = [
   {
     id: 'quality',
     title: '品質管理',
-    description: 'AIレビュー指摘の人工判断・有効率など、テストの品質データを管理します。',
+    description: 'AIレビュー指摘の人工判断・有効率、不具合流出確認など、テストの品質データを管理します。',
     category: '管理類',
     icon: BadgeCheck,
     iconClass: 'text-rose-600',
@@ -151,7 +151,7 @@ export const TOOLS: ToolDef[] = [
   {
     id: 'data-stats',
     title: 'データ統計',
-    description: '需求池・品質問題・Checklist・AI実績などのデータ統計を管理します。',
+    description: '需求池・Checklist・AI実績などのデータ統計を管理します。',
     category: '管理類',
     icon: BarChart3,
     iconClass: 'text-violet-600',

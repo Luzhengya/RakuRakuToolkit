@@ -4709,6 +4709,8 @@ app.get("/api/quality/ai-issues", async (req, res) => {
           規格忠実度: p["規格忠実度"]?.number ?? null,
           テスト類型: p["テスト類型覆盖"]?.number ?? null,
           可執行性: p["可執行性"]?.number ?? null,
+          // 新設の評価標準。既存案件は 100 が入力済み
+          日本語表現: p["日本語表現"]?.number ?? null,
         },
         feedback: propertyToPlainText(p["フィードバック"]),
       };
@@ -4819,6 +4821,124 @@ app.post("/api/quality/ai-cases/:id/feedback", async (req, res) => {
   } catch (error) {
     console.error("Quality AI case feedback error:", error);
     return res.status(500).json({ error: "Failed to update feedback" });
+  }
+});
+
+// ── 品質管理 > AI設計書（AIテスト設計書成果物 DB。1行＝1成果物、案件進捗管理表と関連付け） ──
+let aiDesignsCache: { data: any; ts: number } | null = null;
+
+// GET /api/quality/ai-designs — 成果物一覧（?refresh=1 でキャッシュを無視）
+app.get("/api/quality/ai-designs", async (req, res) => {
+  const databaseId = process.env.NOTION_AI_DESIGN_DATABASE_ID;
+  if (!notion || !databaseId) {
+    return res.status(503).json({ error: "AI design database not configured" });
+  }
+  if (req.query.refresh !== "1" && aiDesignsCache && Date.now() - aiDesignsCache.ts < AI_REVIEWS_CACHE_TTL) {
+    return res.json(aiDesignsCache.data);
+  }
+  try {
+    const pages = await queryAllPages(databaseId);
+    const rows = pages.map((page: any) => {
+      const p = page.properties ?? {};
+      return {
+        id: page.id as string,
+        url: page.url ?? "",
+        title: propertyToPlainText(p["名称"]),
+        month: propertyToPlainText(p["案件月次"]),
+        effortSaved: (p["工数改善（人日）"]?.number ?? null) as number | null,
+        feedback: propertyToPlainText(p["フィードバック"]),
+        createdTime: page.created_time ?? "",
+        caseIds: extractRelationIds(p["案件進捗管理表"]),
+      };
+    });
+    // 関連案件の案件名は1件ずつ1回だけ取得する（取得できなければ名称なしで表示を続ける）
+    const nameById = new Map<string, string>();
+    for (const id of new Set(rows.flatMap((r) => r.caseIds))) {
+      try {
+        const page: any = await withNotionRetry("pages.retrieve", () => notion!.pages.retrieve({ page_id: id }));
+        nameById.set(id, propertyToPlainText(page?.properties?.["案件名"]));
+      } catch (error) {
+        console.error("Quality AI design case lookup error:", id, error);
+      }
+    }
+    const items = rows
+      .map(({ caseIds, ...r }) => ({ ...r, caseNames: caseIds.map((id) => nameById.get(id) ?? "").filter(Boolean) }))
+      .sort((a, b) => b.month.localeCompare(a.month) || b.createdTime.localeCompare(a.createdTime));
+    const data = { items };
+    aiDesignsCache = { data, ts: Date.now() };
+    return res.json(data);
+  } catch (error) {
+    console.error("Quality AI designs error:", error);
+    return res.status(500).json({ error: "Failed to load AI designs" });
+  }
+});
+
+// POST /api/quality/ai-designs/:id/feedback — 成果物のフィードバックを更新
+app.post("/api/quality/ai-designs/:id/feedback", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const feedback = String(req.body?.feedback ?? "").trim();
+  if (feedback.length > AI_ISSUE_REASON_MAX) {
+    return res.status(400).json({ error: `feedback must be ${AI_ISSUE_REASON_MAX} characters or less` });
+  }
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({
+        page_id: req.params.id,
+        properties: {
+          "フィードバック": { rich_text: feedback ? [{ type: "text", text: { content: feedback } }] : [] },
+        } as any,
+      }),
+    );
+    aiDesignsCache = null;
+    return res.json({ ok: true, feedback });
+  } catch (error) {
+    console.error("Quality AI design feedback error:", error);
+    return res.status(500).json({ error: "Failed to update feedback" });
+  }
+});
+
+// ── 品質管理 > AI資料（Skills／関連使用手順／関連調査。一覧のみで本文は Notion で開く） ──
+let aiDocsCache: { data: any; ts: number } | null = null;
+
+// GET /api/quality/ai-docs — 3つの DB の一覧（?refresh=1 でキャッシュを無視）
+app.get("/api/quality/ai-docs", async (req, res) => {
+  const skillDbId = process.env.NOTION_AI_SKILL_DATABASE_ID;
+  const manualDbId = process.env.NOTION_AI_MANUAL_DATABASE_ID;
+  const researchDbId = process.env.NOTION_AI_RESEARCH_DATABASE_ID;
+  if (!notion || !skillDbId || !manualDbId || !researchDbId) {
+    return res.status(503).json({ error: "AI docs databases not configured" });
+  }
+  if (req.query.refresh !== "1" && aiDocsCache && Date.now() - aiDocsCache.ts < AI_REVIEWS_CACHE_TTL) {
+    return res.json(aiDocsCache.data);
+  }
+  try {
+    const [skillPages, manualPages, researchPages] = await Promise.all(
+      [skillDbId, manualDbId, researchDbId].map((id) => queryAllPages(id)),
+    );
+    const base = (page: any) => ({
+      id: page.id as string,
+      url: page.url ?? "",
+      title: propertyToPlainText(page.properties?.["名称"]),
+      createdTime: page.created_time ?? "",
+      lastEditedTime: page.last_edited_time ?? "",
+    });
+    const byNewest = (a: { createdTime: string }, b: { createdTime: string }) => b.createdTime.localeCompare(a.createdTime);
+    const data = {
+      skills: skillPages
+        .map((page: any) => ({
+          ...base(page),
+          description: propertyToPlainText(page.properties?.["説明"]),
+          history: propertyToPlainText(page.properties?.["更新履歴"]),
+        }))
+        .sort((a, b) => a.title.localeCompare(b.title, "ja")),
+      manuals: manualPages.map(base).sort(byNewest),
+      researches: researchPages.map(base).sort(byNewest),
+    };
+    aiDocsCache = { data, ts: Date.now() };
+    return res.json(data);
+  } catch (error) {
+    console.error("Quality AI docs error:", error);
+    return res.status(500).json({ error: "Failed to load AI docs" });
   }
 });
 
