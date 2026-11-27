@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSubRoute } from '../hooks/useSubRoute';
 import {
   AlertCircle,
@@ -21,10 +21,13 @@ import {
   NoteBadges,
   NoteCategoryDialog,
   NoteHoverButtons,
+  NoteTotalBadges,
   useNoteCounts,
 } from './shared/NoteWidgets';
-import type { EntityNote } from './shared/NoteWidgets';
-import AssigneeTodo from './AssigneeTodo';
+import type { EntityNote, NoteCountSet } from './shared/NoteWidgets';
+import { Breadcrumb, CARD, CardHeader, ErrorAlert, ROW_FOCUS, TABLE_HEAD_ROW, expandableRowProps } from './shared/ui';
+import AssigneeTodo, { BUGLEAK_DONE, BUGLEAK_TODO_EMAILS, isAiToHandle, isAiToJudge } from './AssigneeTodo';
+import type { AiTodoIssue } from './AssigneeTodo';
 
 interface ChildCase {
   id: string;
@@ -70,6 +73,7 @@ interface ParentNode {
   system: string;
   month: string;
   status: string;
+  releaseDate: string;
   childCount: number;
   children: ChildCase[];
 }
@@ -198,6 +202,21 @@ const EDIT_EFFORT_COLS = [
 ];
 const EDIT_TEST_KEYS = ['testTotalCount', 'bugCount', 'testBlockedCount', 'pendingConfirmCount', 'unexpectedNgCount', 'japanCaseCount', 'japanBugCount'];
 
+/** 予定作業時間「開始~完了」。実績日があれば実績 (濃色)、無ければ予定日 (薄色 + 予) を表示 */
+function WorkPeriod({ c }: { c: ChildCase }) {
+  const part = (actual: string, plan: string) =>
+    actual ? <span className="text-neutral-800">{actual}</span>
+      : plan ? <><span className="text-neutral-400">{plan}</span> <span className="text-[9px] text-neutral-300">予</span></>
+      : <span className="text-neutral-300">-</span>;
+  return (
+    <span className="whitespace-nowrap tabular-nums">
+      {part(c.actualStartDate, c.tcStartDate)}
+      <span className="text-neutral-300 mx-1">~</span>
+      {part(c.actualExecutionCompleteDate, c.tcExecutionCompleteDate)}
+    </span>
+  );
+}
+
 function statusBadge(status: string) {
   const cls = STATUS_COLOR[status.trim()] ?? 'bg-neutral-100 text-neutral-600';
   return <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${cls}`}>{status || '-'}</span>;
@@ -221,9 +240,11 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
   const [memberOptions, setMemberOptions] = useState<string[]>([]);
 
   // ノート
-  const { counts: noteCounts, reloadCounts: reloadNoteCountsBase } = useNoteCounts();
+  const { counts: noteCounts, totals: noteTotals, pending: notePending, reloadCounts: reloadNoteCountsBase } = useNoteCounts();
   const [pendingNoteCounts, setPendingNoteCounts] = useState<Record<string, number>>({});
-  const [aiPendingCounts, setAiPendingCounts] = useState<Record<string, number>>({});
+  // 担当者一覧の ToDo 提示用 (右側 ToDo と同じ判定: AI指摘の判断/対応待ち・不具合流出の確認待ち)
+  const [todoAiIssues, setTodoAiIssues] = useState<AiTodoIssue[]>([]);
+  const [openBugLeakCount, setOpenBugLeakCount] = useState(0);
   const loadPendingNoteCounts = useCallback(() => {
     fetch('/api/notes/by-assignee')
       .then((r) => r.json())
@@ -236,26 +257,27 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
       })
       .catch(() => {});
   }, []);
-  const loadAiPendingCounts = useCallback(() => {
-    fetch('/api/stats/needs')
-      .then((r) => r.json())
-      .then((data) => {
-        const counts: Record<string, number> = {};
-        for (const it of (data.items ?? [])) {
-          if (!(it.category ?? '').includes('AI') || it.status === '対応済' || it.status === '中止') continue;
-          const a = it.assignee ?? '';
-          if (a) counts[a] = (counts[a] ?? 0) + 1;
-        }
-        setAiPendingCounts(counts);
-      })
+  const loadTodoSources = useCallback(() => {
+    fetch('/api/quality/ai-issues')
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then((d) => setTodoAiIssues(d.items ?? []))
+      .catch(() => {});
+    fetch('/api/test-center/bug-leak?all=true')
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then((d) => setOpenBugLeakCount(((d.items ?? []) as { status: string }[]).filter((b) => b.status !== BUGLEAK_DONE).length))
       .catch(() => {});
   }, []);
-  useEffect(() => { loadPendingNoteCounts(); loadAiPendingCounts(); }, [loadPendingNoteCounts, loadAiPendingCounts]);
+  useEffect(() => { loadPendingNoteCounts(); loadTodoSources(); }, [loadPendingNoteCounts, loadTodoSources]);
+  const hasPendingTodo = useCallback((email: string) =>
+    (pendingNoteCounts[email] ?? 0) > 0 ||
+    todoAiIssues.some((it) => isAiToJudge(it, email) || isAiToHandle(it, email)) ||
+    (BUGLEAK_TODO_EMAILS.includes(email) && openBugLeakCount > 0),
+  [pendingNoteCounts, todoAiIssues, openBugLeakCount]);
   const reloadCounts = useCallback(() => {
     reloadNoteCountsBase();
     loadPendingNoteCounts();
-    loadAiPendingCounts();
-  }, [reloadNoteCountsBase, loadPendingNoteCounts, loadAiPendingCounts]);
+    loadTodoSources();
+  }, [reloadNoteCountsBase, loadPendingNoteCounts, loadTodoSources]);
 
   // 行展開
   const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
@@ -440,8 +462,8 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
   };
 
   // 新規案件作成
-  const handleCreate = async (name: string) => {
-    if (!selectedParent || !name.trim()) return;
+  const handleCreate = async (values: NewCaseValues) => {
+    if (!selectedParent || !values.name.trim() || !values.releaseDate) return;
     setSaving(true);
     setFormError(null);
     try {
@@ -450,9 +472,12 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           parentId: selectedParent.id,
-          projectName: name.trim(),
+          projectName: values.name.trim(),
           system: selectedParent.system,
           month: selectedParent.month,
+          releaseDate: values.releaseDate,
+          verificationDate: values.verificationDate,
+          developmentEffort: values.developmentEffort.trim(),
         }),
       });
       if (!res.ok) {
@@ -510,14 +535,14 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
 
   return (
     <div className="space-y-4">
-      {/* Breadcrumb */}
-      <nav className="flex items-center gap-2 text-sm">
-        <button type="button" onClick={onBack} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">ホーム</button>
-        <span className="text-neutral-400">{'>>'}</span>
-        <button type="button" onClick={() => { setViewMode('tree'); setSelectedAssignee(null); setSelectedParentId(null); setEditingCase(null); }} className="text-neutral-500 hover:text-neutral-900 hover:underline transition-colors">案件管理</button>
-        <span className="text-neutral-400">{'>>'}</span>
-        <span className="text-neutral-900 font-medium">{viewMode === 'tree' ? 'ツリー' : '担当者'}</span>
-      </nav>
+      <Breadcrumb
+        className=""
+        items={[
+          { label: 'ホーム', onClick: onBack },
+          { label: '案件管理', onClick: () => { setViewMode('tree'); setSelectedAssignee(null); setSelectedParentId(null); setEditingCase(null); } },
+          { label: viewMode === 'tree' ? 'ツリー' : '担当者' },
+        ]}
+      />
 
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -541,17 +566,15 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
         </div>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-sm flex items-center gap-2">
-          <AlertCircle size={16} />
-          {error}
-        </div>
-      )}
+      {error && <ErrorAlert message={error} />}
 
       {/* リマインド (両ビュー共通・常時表示)。初回読み込み中だけ隠し、保存後の再読み込みではレイアウトを動かさない */}
       {(!loading || tree.length > 0) && (
         <ReminderPanel cases={summaryCases} statusGroups={statusGroups} month={summaryMonth} onOpen={setSummaryPopup} />
       )}
+
+      {/* Checklist (両ビュー共通・常時表示) */}
+      <ChecklistPanel />
 
       {loading ? (
         <div className="flex items-center justify-center py-20 text-neutral-400">
@@ -564,7 +587,6 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
           {viewMode === 'assignee' ? (
             /* ===== 担当者ビュー ===== */
             <div className="flex-1 min-w-0 space-y-4">
-              <ChecklistPanel />
               <div className={`flex gap-4 ${!selectedAssignee ? 'items-stretch' : 'items-start'}`}>
               {/* 左: 担当者リスト */}
               <aside className="w-72 shrink-0 bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
@@ -586,7 +608,6 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                   ) : (
                     assigneeList.map((email) => {
                       const cases = assigneeMap.get(email) ?? [];
-                      const inProgress = cases.filter((c) => c.status === '進行中').length;
                       return (
                         <button
                           key={email}
@@ -598,17 +619,14 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                               {email.split('@')[0]}
                             </span>
                             <span className="flex items-center gap-1.5 shrink-0">
-                              {((pendingNoteCounts[email] ?? 0) + (aiPendingCounts[email] ?? 0)) > 0 && (
-                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5" title="未処理の指摘・QA・追加説明・AI">
-                                  <AlertCircle size={10} />{(pendingNoteCounts[email] ?? 0) + (aiPendingCounts[email] ?? 0)}
+                              {hasPendingTodo(email) && (
+                                <span className="inline-flex items-center rounded-full bg-amber-100 text-amber-700 px-1.5 py-0.5" title="未確認の ToDo があります">
+                                  <AlertCircle size={10} />
                                 </span>
                               )}
-                              <span className="text-[10px] text-neutral-400">{cases.length} 件</span>
+                              <span className="text-xs text-neutral-400">{cases.length} 件</span>
                             </span>
                           </div>
-                          {inProgress > 0 && (
-                            <span className="text-[10px] text-blue-500 mt-0.5 block">{inProgress} 件進行中</span>
-                          )}
                         </button>
                       );
                     })
@@ -686,17 +704,14 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                             <span className="truncate">{p.month || p.projectName}</span>
                             <span className="flex items-center gap-1 shrink-0">
                               {(() => {
-                                const total = p.children.reduce((sum, c) => {
-                                  const nc = noteCounts[c.id];
-                                  return sum + (nc ? nc.qa + nc.note + nc.issue : 0);
-                                }, 0);
-                                return total > 0 ? (
-                                  <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5">
-                                    <AlertCircle size={10} />{total}
-                                  </span>
-                                ) : null;
+                                // 子案件の追加説明・指摘・QA を分類別に合計 (対応済を含む)
+                                const sum = (src: Record<string, NoteCountSet>) => p.children.reduce<NoteCountSet>((acc, c) => {
+                                  const n = src[c.id];
+                                  return n ? { qa: acc.qa + n.qa, note: acc.note + n.note, issue: acc.issue + n.issue } : acc;
+                                }, { qa: 0, note: 0, issue: 0 });
+                                return <NoteTotalBadges totals={sum(noteTotals)} pending={sum(notePending)} />;
                               })()}
-                              <span className="text-[10px] text-neutral-400">{p.childCount}</span>
+                              <span className="text-xs text-neutral-400">{p.childCount}</span>
                             </span>
                           </button>
                         ))}
@@ -738,27 +753,26 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                 onOpen={setSummaryPopup}
               />
             ) : (
-              <div className="bg-white border border-neutral-200 rounded-xl shadow-sm">
+              <div className={CARD}>
                 {/* 親ヘッダー */}
-                <div className="px-4 py-3 border-b border-neutral-100 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-neutral-800">{selectedParent.projectName}</h3>
-                    <p className="text-[11px] text-neutral-400 mt-0.5">
-                      {selectedParent.system} / {selectedParent.month} / {selectedParent.childCount} 件
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => { setCreating(true); setEditingCase(null); setFormError(null); }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
-                  >
-                    <Plus size={14} />
-                    新規追加
-                  </button>
-                </div>
+                <CardHeader
+                  title={selectedParent.projectName}
+                  sub={`${selectedParent.system} / ${selectedParent.month} / ${selectedParent.childCount} 件`}
+                  actions={(
+                    <button
+                      onClick={() => { setCreating(true); setEditingCase(null); setFormError(null); }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
+                    >
+                      <Plus size={14} />
+                      新規追加
+                    </button>
+                  )}
+                />
 
                 {/* 新規フォーム */}
                 {creating && (
                   <CreateForm
+                    defaultReleaseDate={selectedParent.releaseDate}
                     saving={saving}
                     error={formError}
                     onSave={handleCreate}
@@ -770,19 +784,17 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-neutral-100 text-[11px] text-neutral-400 font-medium">
+                      <tr className={TABLE_HEAD_ROW}>
                         <th className="text-left px-4 py-2">案件名</th>
                         <th className="text-left px-3 py-2">状態</th>
-                        <th className="text-left px-3 py-2">担当者</th>
-                        <th className="text-right px-3 py-2">テスト件数</th>
-                        <th className="text-right px-3 py-2">NG数</th>
+                        <th className="text-left px-3 py-2">予定作業時間</th>
                         <th className="text-right px-3 py-2 w-20"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-50">
                       {selectedParent.children.length === 0 && !creating ? (
                         <tr>
-                          <td colSpan={6} className="px-4 py-8 text-center text-neutral-400 text-xs">子案件がありません</td>
+                          <td colSpan={4} className="px-4 py-8 text-center text-neutral-400 text-xs">子案件がありません</td>
                         </tr>
                       ) : (
                         selectedParent.children.map((c) => {
@@ -790,32 +802,32 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                           return (
                           <Fragment key={c.id}>
                           <tr
-                            className={`group/row hover:bg-neutral-50/50 cursor-pointer ${expandedCaseId === c.id ? 'bg-neutral-50' : ''}`}
-                            onClick={() => setExpandedCaseId(expandedCaseId === c.id ? null : c.id)}
+                            className={`group/row hover:bg-neutral-50/50 cursor-pointer ${ROW_FOCUS} ${expandedCaseId === c.id ? 'bg-neutral-50' : ''}`}
+                            {...expandableRowProps(expandedCaseId === c.id, () => setExpandedCaseId(expandedCaseId === c.id ? null : c.id))}
                           >
-                            <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[200px]">
+                            <td className="px-4 py-2.5 font-medium text-neutral-800 w-full max-w-0">
                               <div className="flex items-center gap-1.5">
                                 <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedCaseId === c.id ? 'rotate-90' : ''}`} />
-                                <span className="truncate" title={c.projectName}>{c.projectName}</span>
-                                {nc && <NoteBadges entityId={c.id} counts={nc} memberOptions={memberOptions} onCountChange={reloadCounts} editable />}
+                                <span className="truncate min-w-0" title={c.projectName}>{c.projectName}</span>
+                                {nc && <NoteBadges entityId={c.id} counts={nc} memberOptions={memberOptions} defaultAssignee={c.assignee} onCountChange={reloadCounts} editable />}
                               </div>
                             </td>
-                            <td className="px-3 py-2.5">{statusBadge(c.status)}</td>
-                            <td className="px-3 py-2.5 text-neutral-600">{c.assignee ? c.assignee.split('@')[0] : '-'}</td>
-                            <td className="px-3 py-2.5 text-right tabular-nums text-neutral-600">{c.testTotalCount || '-'}</td>
-                            <td className="px-3 py-2.5 text-right tabular-nums text-neutral-600">{c.bugCount || '-'}</td>
+                            <td className="px-3 py-2.5 whitespace-nowrap">{statusBadge(c.status)}</td>
+                            <td className="px-3 py-2.5 text-xs"><WorkPeriod c={c} /></td>
                             <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-1">
                                 <NoteHoverButtons
                                   entityId={c.id}
                                   entityType="case"
                                   memberOptions={memberOptions}
+                                  defaultAssignee={c.assignee}
                                   onNoteCreated={reloadCounts}
                                 />
                                 <button
                                   onClick={() => { setEditingCase(c); setCreating(false); setFormError(null); setDeleteConfirm(null); }}
                                   className="p-1.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"
                                   title="編集"
+                                  aria-label={`${c.projectName}を編集`}
                                 >
                                   <Pencil size={13} />
                                 </button>
@@ -823,13 +835,14 @@ export default function CaseManagement({ onBack, onNavigate }: { onBack: () => v
                                   onClick={() => { setDeleteConfirm(c.id); setFormError(null); }}
                                   className="p-1.5 rounded hover:bg-red-50 text-neutral-400 hover:text-red-500"
                                   title="削除"
+                                  aria-label={`${c.projectName}を削除`}
                                 >
                                   <Trash2 size={13} />
                                 </button>
                               </div>
                             </td>
                           </tr>
-                          {expandedCaseId === c.id && <CaseDetailRow c={c} colSpan={6} memberOptions={memberOptions} />}
+                          {expandedCaseId === c.id && <CaseDetailRow c={c} colSpan={4} memberOptions={memberOptions} />}
                           </Fragment>
                           );
                         })
@@ -1235,7 +1248,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
           {STATUS_ORDER.map((status) => (
             <span key={status} className="inline-flex items-center gap-1">
               {statusBadge(status)}
-              <span className="text-[11px] text-neutral-500 tabular-nums">{statusCount[status] ?? 0}</span>
+              <span className="text-xs text-neutral-500 tabular-nums">{statusCount[status] ?? 0}</span>
             </span>
           ))}
         </div>
@@ -1255,7 +1268,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
           <div className="px-4 py-2.5 border-b border-violet-100 bg-violet-50/60 flex items-center gap-2">
             <Check size={13} className="text-violet-500" />
             <span className="text-xs font-bold text-violet-700">AI チェックリスト</span>
-            <span className="text-[10px] text-violet-500 ml-1">未完了 {myAiTotalPending}件</span>
+            <span className="text-xs text-violet-500 ml-1">未完了 {myAiTotalPending}件</span>
           </div>
           <div className="divide-y divide-neutral-100">
             {myAiItems.map((it) => {
@@ -1279,11 +1292,11 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                           }`}>{it.status}</span>
                         )}
                       </div>
-                      <div className="text-[10px] text-neutral-400 mt-0.5">{it.createdTime?.slice(0, 10)}</div>
+                      <div className="text-xs text-neutral-400 mt-0.5">{it.createdTime?.slice(0, 10)}</div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => toggleAiItem(it.id, false)} disabled={toggling}
-                        className="px-2 py-1 text-[10px] rounded bg-violet-50 text-violet-600 hover:bg-violet-100 disabled:opacity-50">
+                        className="px-2 py-1 text-xs rounded bg-violet-50 text-violet-600 hover:bg-violet-100 disabled:opacity-50">
                         {toggling ? <Loader2 size={10} className="animate-spin" /> : '完了にする'}
                       </button>
                     </div>
@@ -1291,11 +1304,11 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                   {expanded && (
                     <div className="mt-2 ml-5">
                       {aiChildrenLoading === it.id ? (
-                        <div className="text-[10px] text-neutral-400 flex items-center gap-1"><Loader2 size={10} className="animate-spin" />読み込み中...</div>
+                        <div className="text-xs text-neutral-400 flex items-center gap-1"><Loader2 size={10} className="animate-spin" />読み込み中...</div>
                       ) : aiChildrenHtml[it.id] ? (
                         <div className="prose prose-sm max-w-none text-xs" dangerouslySetInnerHTML={{ __html: aiChildrenHtml[it.id] }} />
                       ) : (
-                        <div className="text-[10px] text-neutral-400">内容なし</div>
+                        <div className="text-xs text-neutral-400">内容なし</div>
                       )}
                     </div>
                   )}
@@ -1315,22 +1328,15 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
 
       {/* 案件セクション（月別、新しい順） */}
       {byMonth.map(([month, monthCases]) => (
-        <div key={month} className="bg-white border border-neutral-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-neutral-100 bg-neutral-50/50">
-            <span className="text-xs font-bold text-neutral-500">{formatMonth(month)}</span>
-            <span className="text-[10px] text-neutral-400 ml-2">{monthCases.length} 件</span>
-          </div>
+        <div key={month} className={`${CARD} overflow-hidden`}>
+          <CardHeader title={formatMonth(month)} sub={`${monthCases.length} 件`} />
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-neutral-100 text-[11px] text-neutral-400 font-medium">
+                <tr className={TABLE_HEAD_ROW}>
                   <th className="text-left px-4 py-2">案件名</th>
-                  <th className="text-left px-3 py-2">システム</th>
                   <th className="text-left px-3 py-2">状態</th>
-                  <th className="text-right px-3 py-2">テスト件数</th>
-                  <th className="text-right px-3 py-2">NG数</th>
-                  <th className="text-left px-3 py-2">TC開始</th>
-                  <th className="text-left px-3 py-2">実施完了</th>
+                  <th className="text-left px-3 py-2">予定作業時間</th>
                   <th className="text-right px-3 py-2 w-12"></th>
                 </tr>
               </thead>
@@ -1338,13 +1344,13 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                 {monthCases.map((c) => (
                   <Fragment key={c.id}>
                   <tr
-                    className={`hover:bg-neutral-50/50 cursor-pointer ${expandedId === c.id ? 'bg-neutral-50' : ''}`}
-                    onClick={() => setExpandedId(expandedId === c.id ? null : c.id)}
+                    className={`hover:bg-neutral-50/50 cursor-pointer ${ROW_FOCUS} ${expandedId === c.id ? 'bg-neutral-50' : ''}`}
+                    {...expandableRowProps(expandedId === c.id, () => setExpandedId(expandedId === c.id ? null : c.id))}
                   >
-                    <td className="px-4 py-2.5 font-medium text-neutral-800 max-w-[220px]">
+                    <td className="px-4 py-2.5 font-medium text-neutral-800 w-full max-w-0">
                       <div className="flex items-center gap-1.5">
                         <ChevronRight size={12} className={`shrink-0 transition-transform ${expandedId === c.id ? 'rotate-90' : ''}`} />
-                        <span className="truncate" title={c.projectName}>{c.projectName}</span>
+                        <span className="truncate min-w-0" title={c.projectName}>{c.projectName}</span>
                         {(noteCounts[c.id]?.note ?? 0) > 0 && (
                           <button
                             onClick={(e) => { e.stopPropagation(); setNoteDialogCaseId(c.id); }}
@@ -1356,27 +1362,20 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-neutral-500 text-xs">{c.parentSystem}</td>
-                    <td className="px-3 py-2.5">{statusBadge(c.status)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-neutral-600">{c.testTotalCount || '-'}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-neutral-600">{c.bugCount || '-'}</td>
-                    <td className="px-3 py-2.5 text-xs text-neutral-500">
-                      {c.actualStartDate ? <><span className="text-neutral-800">{c.actualStartDate}</span></> : c.tcStartDate ? <><span className="text-neutral-400">{c.tcStartDate}</span> <span className="text-[9px] text-neutral-300">予</span></> : '-'}
-                    </td>
-                    <td className="px-3 py-2.5 text-xs text-neutral-500">
-                      {c.actualExecutionCompleteDate ? <><span className="text-neutral-800">{c.actualExecutionCompleteDate}</span></> : c.tcExecutionCompleteDate ? <><span className="text-neutral-400">{c.tcExecutionCompleteDate}</span> <span className="text-[9px] text-neutral-300">予</span></> : '-'}
-                    </td>
+                    <td className="px-3 py-2.5 whitespace-nowrap">{statusBadge(c.status)}</td>
+                    <td className="px-3 py-2.5 text-xs"><WorkPeriod c={c} /></td>
                     <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => onEdit(c)}
                         className="p-1.5 rounded hover:bg-neutral-100 text-neutral-400 hover:text-neutral-600"
                         title="編集"
+                        aria-label={`${c.projectName}を編集`}
                       >
                         <Pencil size={13} />
                       </button>
                     </td>
                   </tr>
-                  {expandedId === c.id && <CaseDetailRow c={c} colSpan={8} memberOptions={memberOptions} />}
+                  {expandedId === c.id && <CaseDetailRow c={c} colSpan={4} memberOptions={memberOptions} />}
                   </Fragment>
                 ))}
               </tbody>
@@ -1390,6 +1389,7 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
           category="追加説明"
           entityId={noteDialogCaseId}
           memberOptions={memberOptions}
+          defaultAssignee={cases.find((c) => c.id === noteDialogCaseId)?.assignee}
           onClose={() => setNoteDialogCaseId(null)}
           onCountChange={onNoteCountChange}
         />
@@ -1406,7 +1406,7 @@ function StatCard({ label, value, accent }: { label: string; value: number | str
   const colorCls = accent === 'red' ? 'text-red-600' : accent === 'amber' ? 'text-amber-600' : accent === 'green' ? 'text-emerald-600' : 'text-neutral-800';
   return (
     <div className="rounded-lg bg-neutral-50 p-3">
-      <p className="text-[11px] text-neutral-500 mb-0.5">{label}</p>
+      <p className="text-xs text-neutral-500 mb-0.5">{label}</p>
       <p className={`text-lg font-bold tabular-nums ${colorCls}`}>{value}</p>
     </div>
   );
@@ -1431,13 +1431,39 @@ function nextBusinessDay(raw: string): string {
 function DateRange({ from, to, actual }: { from: string; to: string; actual?: boolean }) {
   const empty = !from && !to;
   return (
-    <span className={`tabular-nums ${empty ? 'text-neutral-400' : actual ? 'text-neutral-800 font-medium' : 'text-neutral-700'}`}>
+    <span className={`tabular-nums whitespace-nowrap ${empty ? 'text-neutral-400' : actual ? 'text-neutral-800 font-medium' : 'text-neutral-700'}`}>
       {from || '-'} ~ {to || '-'}
     </span>
   );
 }
 
-function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: number; memberOptions: string[] }) {
+/** 展開行の区画（白カード + 見出し） */
+function DetailSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="h-full bg-white border border-neutral-200 rounded-lg p-3">
+      <h4 className="text-xs font-bold text-neutral-600 mb-2">{title}</h4>
+      {children}
+    </section>
+  );
+}
+
+/** 展開行の「項目名 : 値」1 行 (dl の中で使う) */
+function DetailItem({ label, children, valueCls = 'text-neutral-800' }: { label: string; children: ReactNode; valueCls?: string }) {
+  return (
+    <>
+      <dt className="text-neutral-500 whitespace-nowrap">{label}</dt>
+      <dd className={`tabular-nums break-words ${valueCls}`}>{children}</dd>
+    </>
+  );
+}
+
+/** カンマ区切りのメールを「名前、名前」にする */
+function memberNames(emails: string): string {
+  const names = emails.split(',').map((s) => s.trim()).filter(Boolean).map((e) => e.split('@')[0]);
+  return names.length > 0 ? names.join('、') : '-';
+}
+
+function CaseDetailRow({ c, colSpan }: { c: ChildCase; colSpan: number; memberOptions: string[] }) {
   const schedule = [
     {
       label: '設計',
@@ -1450,22 +1476,36 @@ function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: n
       actual: { from: nextBusinessDay(c.actualDesignCompleteDate), to: c.actualExecutionCompleteDate },
     },
   ];
-  const ngCls = (v: string) => `tabular-nums ${Number(v) > 0 ? 'text-red-600 font-medium' : 'text-neutral-800'}`;
+  const ngCls = (v: string) => (Number(v) > 0 ? 'text-red-600 font-medium' : 'text-neutral-800');
+  const dlCls = 'grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5';
   return (
     <tr>
-      <td colSpan={colSpan} className="px-4 py-3 bg-neutral-50/80">
-        <div className="text-xs mb-3">
+      <td colSpan={colSpan} className="px-4 py-3 bg-neutral-50 border-y border-neutral-100">
+        <p className="text-xs mb-2">
           <span className="font-bold text-neutral-600 mr-2">案件名</span>
           <span className="text-neutral-800 break-words">{c.projectName || '-'}</span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-          {/* スケジュール */}
-          <div>
-            <p className="font-bold text-neutral-600 mb-1.5">スケジュール</p>
+        </p>
+        {/* 担当者・管理者・検証日は項目が少ないので 1 行にまとめる */}
+        <dl className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs mb-3">
+          {[
+            { label: '担当者', value: memberNames(c.assignee) },
+            { label: '管理者', value: memberNames(c.manager) },
+            { label: '検証日', value: c.verificationDate || '-' },
+          ].map((it) => (
+            <div key={it.label} className="flex items-center gap-2">
+              <dt className="font-bold text-neutral-600">{it.label}</dt>
+              <dd className="text-neutral-800 tabular-nums">{it.value}</dd>
+            </div>
+          ))}
+        </dl>
+        {/* スケジュールは日付範囲が長いので広め (3:2) にする */}
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-3 text-xs">
+          <div className="lg:col-span-3">
+          <DetailSection title="スケジュール">
             <table className="w-full">
               <thead>
-                <tr className="text-[10px] text-neutral-400">
-                  <th className="text-left pb-1 font-medium"></th>
+                <tr className="text-neutral-500">
+                  <th className="text-left pb-1 font-medium w-12"></th>
                   <th className="text-left pb-1 font-medium">予定</th>
                   <th className="text-left pb-1 font-medium">実績</th>
                 </tr>
@@ -1473,35 +1513,26 @@ function CaseDetailRow({ c, colSpan, memberOptions }: { c: ChildCase; colSpan: n
               <tbody>
                 {schedule.map((s) => (
                   <tr key={s.label}>
-                    <td className="py-0.5 text-neutral-500 pr-3">{s.label}</td>
+                    <th scope="row" className="py-0.5 text-left font-normal text-neutral-500 pr-3">{s.label}</th>
                     <td className="py-0.5 pr-3"><DateRange from={s.planned.from} to={s.planned.to} /></td>
                     <td className="py-0.5"><DateRange from={s.actual.from} to={s.actual.to} actual /></td>
                   </tr>
                 ))}
-                <tr>
-                  <td className="py-0.5 text-neutral-500 pr-3">検証日</td>
-                  <td colSpan={2} className={`py-0.5 tabular-nums ${c.verificationDate ? 'text-neutral-700' : 'text-neutral-400'}`}>{c.verificationDate || '-'}</td>
-                </tr>
               </tbody>
             </table>
+          </DetailSection>
           </div>
-          {/* 工数・テスト */}
-          <div>
-            <p className="font-bold text-neutral-600 mb-1.5">工数 / テスト</p>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-              <span className="text-neutral-500">開発工数</span>
-              <span className="text-neutral-800 tabular-nums">{c.developmentEffort || '-'}</span>
-              <span className="text-neutral-500">見積総工数</span>
-              <span className="text-neutral-800 tabular-nums">{c.estimateTotal || '-'}</span>
-              <span className="text-neutral-500">実績総工数</span>
-              <span className="text-neutral-800 tabular-nums">{c.actualTotal || '-'}</span>
-              <span className="text-neutral-500">Test総件数</span>
-              <span className="text-neutral-800 tabular-nums">{c.testTotalCount || '-'}</span>
-              <span className="text-neutral-500">NG数</span>
-              <span className={ngCls(c.bugCount)}>{c.bugCount || '-'}</span>
-              <span className="text-neutral-500">想定外NG数</span>
-              <span className={ngCls(c.unexpectedNgCount)}>{c.unexpectedNgCount || '-'}</span>
-            </div>
+          <div className="lg:col-span-2">
+          <DetailSection title="工数 / テスト">
+            <dl className={`${dlCls} sm:grid-cols-[auto_1fr_auto_1fr]`}>
+              <DetailItem label="開発工数">{c.developmentEffort || '-'}</DetailItem>
+              <DetailItem label="Test総件数">{c.testTotalCount || '-'}</DetailItem>
+              <DetailItem label="見積総工数">{c.estimateTotal || '-'}</DetailItem>
+              <DetailItem label="NG数" valueCls={ngCls(c.bugCount)}>{c.bugCount || '-'}</DetailItem>
+              <DetailItem label="実績総工数">{c.actualTotal || '-'}</DetailItem>
+              <DetailItem label="想定外NG数" valueCls={ngCls(c.unexpectedNgCount)}>{c.unexpectedNgCount || '-'}</DetailItem>
+            </dl>
+          </DetailSection>
           </div>
         </div>
       </td>
@@ -1568,13 +1599,25 @@ function CreateParentForm({ systemOptions, saving, error, onSave, onCancel }: {
   );
 }
 
-function CreateForm({ saving, error, onSave, onCancel }: {
+type NewCaseValues = { name: string; releaseDate: string; verificationDate: string; developmentEffort: string };
+
+function CreateForm({ defaultReleaseDate, saving, error, onSave, onCancel }: {
+  defaultReleaseDate: string;
   saving: boolean;
   error: string | null;
-  onSave: (name: string) => void;
+  onSave: (values: NewCaseValues) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState('');
+  // 本番日は親案件の本番日を初期値にする (変更可)
+  // Notion の日付は時刻付き (YYYY-MM-DDThh:mm...) の場合があるため日付部分だけ使う
+  const [releaseDate, setReleaseDate] = useState((defaultReleaseDate ?? '').slice(0, 10));
+  const [verificationDate, setVerificationDate] = useState('');
+  const [developmentEffort, setDevelopmentEffort] = useState('');
+  const canSave = !!name.trim() && !!releaseDate;
+  const submit = () => onSave({ name, releaseDate, verificationDate, developmentEffort });
+  const fieldCls = 'px-2 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none bg-white';
+  const labelCls = 'flex items-center gap-1.5 text-xs font-medium text-neutral-600';
   return (
     <div className="px-4 py-3 border-b border-neutral-100 bg-neutral-50/50">
       <div className="flex items-center gap-2">
@@ -1585,11 +1628,11 @@ function CreateForm({ saving, error, onSave, onCancel }: {
           placeholder="新しい案件名を入力..."
           className="flex-1 px-3 py-1.5 text-sm border border-neutral-300 rounded-lg focus:border-neutral-500 focus:outline-none"
           autoFocus
-          onKeyDown={(e) => { if (e.key === 'Enter' && name.trim()) onSave(name); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canSave) submit(); }}
         />
         <button
-          onClick={() => onSave(name)}
-          disabled={saving || !name.trim()}
+          onClick={submit}
+          disabled={saving || !canSave}
           className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800 disabled:opacity-50"
         >
           {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
@@ -1598,6 +1641,26 @@ function CreateForm({ saving, error, onSave, onCancel }: {
         <button onClick={onCancel} className="p-1.5 rounded hover:bg-neutral-200 text-neutral-500">
           <X size={16} />
         </button>
+      </div>
+      <div className="flex flex-wrap items-center gap-4 mt-2">
+        <label className={labelCls}>
+          {EDIT_LABELS.releaseDate}<span className="text-red-500">*</span>
+          <input type="date" value={releaseDate} onChange={(e) => setReleaseDate(e.target.value)} className={fieldCls} />
+        </label>
+        <label className={labelCls}>
+          {EDIT_LABELS.verificationDate}
+          <input type="date" value={verificationDate} onChange={(e) => setVerificationDate(e.target.value)} className={fieldCls} />
+        </label>
+        <label className={labelCls}>
+          {EDIT_LABELS.developmentEffort}
+          <input
+            type="text"
+            inputMode="decimal"
+            value={developmentEffort}
+            onChange={(e) => setDevelopmentEffort(e.target.value)}
+            className={`${fieldCls} w-24 text-right tabular-nums`}
+          />
+        </label>
       </div>
       {error && <p className="text-xs text-red-500 mt-1.5">{error}</p>}
     </div>
@@ -1641,7 +1704,7 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
   };
 
   const inputCls = 'w-full px-2 py-1 text-sm border border-neutral-300 rounded-md focus:border-neutral-500 focus:outline-none bg-white';
-  const labelCls = 'block text-[11px] font-medium text-neutral-500 mb-1';
+  const labelCls = 'block text-xs font-medium text-neutral-500 mb-1';
   const sectionTitleCls = 'text-xs font-bold mb-2';
 
   const dateInput = (key: string) => (
@@ -1744,7 +1807,7 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
               <h5 className={`${sectionTitleCls} text-blue-800`}>スケジュール</h5>
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-[11px] text-neutral-500">
+                  <tr className="text-xs text-neutral-500">
                     <th className="w-20"></th>
                     <th className="text-left font-medium pb-1 px-1">予定</th>
                     <th className="text-left font-medium pb-1 px-1">実際</th>
@@ -1775,7 +1838,7 @@ function EditPanel({ item, statusOptions, memberOptions, saving, error, onSave, 
               <h5 className={`${sectionTitleCls} text-amber-800`}>工数</h5>
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-[11px] text-neutral-500">
+                  <tr className="text-xs text-neutral-500">
                     <th className="w-12"></th>
                     {EDIT_EFFORT_COLS.map((c) => <th key={c.label} className="text-center font-medium pb-1 px-1">{c.label}</th>)}
                   </tr>
@@ -2016,7 +2079,7 @@ function ProgressMatrix({ mode, cases, month, onMonthChange, onOpen }: {
       <div className="flex-1 overflow-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-neutral-100 text-[11px] text-neutral-500 font-medium">
+            <tr className="border-b border-neutral-100 text-xs text-neutral-500 font-medium">
               <th className="sticky left-0 z-10 bg-white text-left px-4 py-2 whitespace-nowrap">{mode === 'tree' ? 'システム' : '担当者'}</th>
               {PROGRESS_COLUMNS.map((col) => (
                 <th key={col.label} className={`text-center px-2 py-2 whitespace-nowrap ${col.tint}`}>{col.label}</th>
@@ -2116,7 +2179,7 @@ function SummaryCaseDialog({ title, cases, statusOptions, saving, error, active,
         <div className="overflow-auto">
           <table className="w-full text-sm">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_0_var(--color-neutral-100)]">
-              <tr className="text-[11px] text-neutral-400 font-medium">
+              <tr className="text-xs text-neutral-500 font-medium">
                 <th className="text-left px-4 py-2">案件名</th>
                 <th className="text-left px-3 py-2">親案件</th>
                 <th className="text-left px-3 py-2">状態</th>
@@ -2131,10 +2194,10 @@ function SummaryCaseDialog({ title, cases, statusOptions, saving, error, active,
                 const due = field ? (c[field] ?? '').slice(0, 10) : '';
                 return (
                   <tr key={c.id} className="hover:bg-neutral-50/50">
-                    <td className="px-4 py-2 font-medium text-neutral-800 max-w-[260px]">
+                    <td className="px-4 py-2 font-medium text-neutral-800 w-full max-w-0">
                       <span className="block truncate" title={c.projectName}>{c.projectName}</span>
                     </td>
-                    <td className="px-3 py-2 text-neutral-600 max-w-[200px]">
+                    <td className="px-3 py-2 text-neutral-600 max-w-[200px] min-w-[160px]">
                       <span className="block truncate" title={c.parentName}>{c.parentSystem} / {c.parentMonth || '-'}</span>
                     </td>
                     <td className="px-3 py-2">

@@ -115,16 +115,18 @@ function ScreenshotViewer({ images, startIndex, onClose }: {
 
 // ── NoteCreateForm (modal) ──
 
-export function NoteCreateForm({ category, memberOptions, entityId, entityType = 'case', onCreated, onCancel }: {
+export function NoteCreateForm({ category, memberOptions, entityId, entityType = 'case', defaultAssignee = '', onCreated, onCancel }: {
   category: NoteCategory;
   memberOptions: string[];
   entityId: string;
   entityType?: EntityType;
+  /** 担当の初期値 (カンマ区切りのメール。案件の担当者を渡す) */
+  defaultAssignee?: string;
   onCreated: (note: EntityNote) => void;
   onCancel: () => void;
 }) {
   const [title, setTitle] = useState('');
-  const [assignees, setAssignees] = useState<string[]>([]);
+  const [assignees, setAssignees] = useState<string[]>(() => defaultAssignee.split(',').map((s) => s.trim()).filter(Boolean));
   const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
   const [requester, setRequester] = useState('');
   const [priority, setPriority] = useState('');
@@ -862,17 +864,18 @@ export function PendingNoteRow({ note, memberOptions, onUpdated }: {
 
 // ── NoteHoverButtons ──
 
-export function NoteHoverButtons({ entityId, entityType = 'case', memberOptions, onNoteCreated }: {
+export function NoteHoverButtons({ entityId, entityType = 'case', memberOptions, defaultAssignee, onNoteCreated }: {
   entityId: string;
   entityType?: EntityType;
   memberOptions: string[];
+  defaultAssignee?: string;
   onNoteCreated: () => void;
 }) {
   const [activeCategory, setActiveCategory] = useState<NoteCategory | null>(null);
 
   return (
     <>
-      <div className="flex items-center gap-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
+      <div className="flex items-center gap-1 opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 focus-within:opacity-100 transition-opacity">
         {(['追加説明', '指摘', 'QA'] as const).map((cat) => {
           const Icon = NOTE_ICONS[cat];
           return (
@@ -881,6 +884,7 @@ export function NoteHoverButtons({ entityId, entityType = 'case', memberOptions,
               onClick={(e) => { e.stopPropagation(); setActiveCategory(cat); }}
               className={`p-1 rounded hover:bg-neutral-100 ${NOTE_COLORS[cat]} transition-colors`}
               title={`${cat}を追加`}
+              aria-label={`${cat}を追加`}
             >
               <Icon size={13} />
             </button>
@@ -893,6 +897,7 @@ export function NoteHoverButtons({ entityId, entityType = 'case', memberOptions,
           memberOptions={memberOptions}
           entityId={entityId}
           entityType={entityType}
+          defaultAssignee={defaultAssignee}
           onCreated={() => { setActiveCategory(null); onNoteCreated(); }}
           onCancel={() => setActiveCategory(null)}
         />
@@ -952,11 +957,12 @@ export function PendingNotesSection({ email, memberOptions }: {
 
 // ── NoteCategoryDialog (modal showing notes of one category for an entity) ──
 
-export function NoteCategoryDialog({ category, entityId, entityType = 'case', memberOptions, onClose, onCountChange, editable = false }: {
+export function NoteCategoryDialog({ category, entityId, entityType = 'case', memberOptions, defaultAssignee, onClose, onCountChange, editable = false }: {
   category: NoteCategory;
   entityId: string;
   entityType?: EntityType;
   memberOptions: string[];
+  defaultAssignee?: string;
   onClose: () => void;
   onCountChange?: () => void;
   editable?: boolean;
@@ -1022,6 +1028,7 @@ export function NoteCategoryDialog({ category, entityId, entityType = 'case', me
         memberOptions={memberOptions}
         entityId={entityId}
         entityType={entityType}
+        defaultAssignee={defaultAssignee}
         onCreated={() => {
           setCreating(false);
           setRefreshKey((k) => k + 1);
@@ -1149,11 +1156,40 @@ const BADGE_STYLES: Record<NoteCategory, { bg: string; text: string }> = {
   'QA': { bg: 'bg-emerald-100', text: 'text-emerald-700' },
 };
 
-export function NoteBadges({ entityId, entityType = 'case', counts, memberOptions, onCountChange, editable = false }: {
+/** 件数表示のみの分類別バッジ (クリック不可)。未処理が無い分類はグレー、0件の分類は表示しない */
+export function NoteTotalBadges({ totals, pending }: { totals: NoteCountSet; pending: NoteCountSet }) {
+  const badges = ([
+    { cat: '追加説明' as NoteCategory, key: 'note' as const },
+    { cat: '指摘' as NoteCategory, key: 'issue' as const },
+    { cat: 'QA' as NoteCategory, key: 'qa' as const },
+  ]).filter((b) => totals[b.key] > 0);
+  if (badges.length === 0) return null;
+  return (
+    <span className="inline-flex items-center gap-1">
+      {badges.map(({ cat, key }) => {
+        const Icon = NOTE_ICONS[cat];
+        const open = pending[key];
+        const style = open > 0 ? BADGE_STYLES[cat] : { bg: 'bg-neutral-100', text: 'text-neutral-400' };
+        return (
+          <span
+            key={cat}
+            className={`shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full ${style.bg} ${style.text} text-[10px] font-bold`}
+            title={`${cat} ${totals[key]}件 (未処理 ${open}件)`}
+          >
+            <Icon size={10} />{totals[key]}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+export function NoteBadges({ entityId, entityType = 'case', counts, memberOptions, defaultAssignee, onCountChange, editable = false }: {
   entityId: string;
   entityType?: EntityType;
   counts: { qa: number; note: number; issue: number };
   memberOptions: string[];
+  defaultAssignee?: string;
   onCountChange?: () => void;
   editable?: boolean;
 }) {
@@ -1191,6 +1227,7 @@ export function NoteBadges({ entityId, entityType = 'case', counts, memberOption
           entityId={entityId}
           entityType={entityType}
           memberOptions={memberOptions}
+          defaultAssignee={defaultAssignee}
           onClose={() => setActiveCategory(null)}
           onCountChange={onCountChange}
           editable={editable}
@@ -1202,8 +1239,13 @@ export function NoteBadges({ entityId, entityType = 'case', counts, memberOption
 
 // ── Note counts hook ──
 
+export type NoteCountSet = { qa: number; note: number; issue: number };
+
 export function useNoteCounts() {
-  const [counts, setCounts] = useState<Record<string, { qa: number; note: number; issue: number }>>({});
+  const [counts, setCounts] = useState<Record<string, NoteCountSet>>({});
+  // totals = 中止以外の全件 (対応済を含む) / pending = 未処理 (対応済・中止以外)
+  const [totals, setTotals] = useState<Record<string, NoteCountSet>>({});
+  const [pending, setPending] = useState<Record<string, NoteCountSet>>({});
 
   const load = useCallback(async () => {
     try {
@@ -1211,11 +1253,13 @@ export function useNoteCounts() {
       if (res.ok) {
         const data = await res.json();
         setCounts(data.counts ?? {});
+        setTotals(data.totals ?? {});
+        setPending(data.pending ?? {});
       }
     } catch { /* */ }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  return { counts, reloadCounts: load };
+  return { counts, totals, pending, reloadCounts: load };
 }
