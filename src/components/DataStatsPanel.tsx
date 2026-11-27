@@ -17,7 +17,6 @@ import {
   Pencil,
   Plus,
   Save,
-  Shield,
   Star,
   Trash2,
   TrendingUp,
@@ -746,8 +745,8 @@ function BugLeakServiceTable({
   );
 }
 
-// BugLeak Page (main)
-function BugLeakPage() {
+// BugLeak Page (main)。品質管理画面の「不具合流出確認」タブで表示する
+export function BugLeakPage() {
   const [items, setItems] = useState<BugLeakItem[]>([]);
   const [fields, setFields] = useState<Record<string, FieldInfo>>({});
   const [loading, setLoading] = useState(true);
@@ -1297,12 +1296,12 @@ function AIStatsPage() {
 
 // ── Section config ──
 
-type SectionId = 'needs' | 'performance' | 'bugleak' | 'checklist' | 'ai';
+// 不具合流出確認（bugleak）は品質管理画面へ移動した
+type SectionId = 'needs' | 'performance' | 'checklist' | 'ai';
 
 const SECTIONS: { id: SectionId; title: string; icon: React.ReactNode; description: string; color: string }[] = [
   { id: 'needs', title: 'ニーズ集計', icon: <Database size={24} className="text-blue-600" />, description: 'ニーズ項目の集計・管理', color: 'border-blue-200 hover:border-blue-400' },
   { id: 'performance', title: '実績データ統計', icon: <BarChart3 size={24} className="text-green-600" />, description: '実績データの集計・分析', color: 'border-green-200 hover:border-green-400' },
-  { id: 'bugleak', title: '開発品質問題案件確認', icon: <Shield size={24} className="text-red-600" />, description: '品質問題案件の確認・管理', color: 'border-red-200 hover:border-red-400' },
   { id: 'checklist', title: 'Checklist統計', icon: <CheckSquare size={24} className="text-purple-600" />, description: '改善チェックリストの管理', color: 'border-purple-200 hover:border-purple-400' },
   { id: 'ai', title: 'AI実績統計', icon: <Bot size={24} className="text-cyan-600" />, description: 'AI指摘・レビュー・課題の実績', color: 'border-cyan-200 hover:border-cyan-400' },
 ];
@@ -1311,21 +1310,10 @@ const SECTIONS: { id: SectionId; title: string; icon: React.ReactNode; descripti
 
 function StatsLanding({ onSelect }: { onSelect: (id: SectionId) => void }) {
   const [needsStats, setNeedsStats] = useState<{ total: number; unconfirmed: number; completed: number } | null>(null);
-  const [bugLeakStats, setBugLeakStats] = useState<{ total: number; responsible: number; pending: number } | null>(null);
   const [checklistCount, setChecklistCount] = useState<number | null>(null);
 
   useEffect(() => {
     fetch('/api/stats/needs').then((r) => r.ok ? r.json() : null).then((d) => { if (d?.stats) setNeedsStats(d.stats); }).catch(() => {});
-    fetch('/api/test-center/bug-leak').then((r) => r.ok ? r.json() : null).then((d) => {
-      if (d?.items) {
-        const items: BugLeakItem[] = d.items;
-        setBugLeakStats({
-          total: items.length,
-          responsible: items.filter((i) => i.responsible).length,
-          pending: items.filter((i) => !i.status || !['完了', '対応済', 'クローズ'].includes(i.status)).length,
-        });
-      }
-    }).catch(() => {});
     fetch('/api/stats/checklist').then((r) => r.ok ? r.json() : null).then((d) => { if (d?.items) setChecklistCount(d.items.length); }).catch(() => {});
   }, []);
 
@@ -1335,13 +1323,6 @@ function StatsLanding({ onSelect }: { onSelect: (id: SectionId) => void }) {
         <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700">総数 {needsStats.total}</span>
         <span className="text-xs px-2 py-0.5 rounded bg-amber-50 text-amber-700">未確認 {needsStats.unconfirmed}</span>
         <span className="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700">完了 {needsStats.completed}</span>
-      </div>
-    ) : null,
-    bugleak: bugLeakStats ? (
-      <div className="flex gap-2 mt-2">
-        <span className="text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700">総数 {bugLeakStats.total}</span>
-        <span className="text-xs px-2 py-0.5 rounded bg-red-50 text-red-700">責任 {bugLeakStats.responsible}</span>
-        <span className="text-xs px-2 py-0.5 rounded bg-amber-50 text-amber-700">待確認 {bugLeakStats.pending}</span>
       </div>
     ) : null,
     checklist: checklistCount !== null ? (
@@ -1383,6 +1364,11 @@ export default function DataStatsPanel({ onBack }: { onBack: () => void }) {
 
   const activeSection: SectionId | null = SECTIONS.find((s) => s.id === subRoute[0])?.id ?? null;
 
+  // 旧URL（#/data-stats/bugleak）は品質管理画面の同タブへ転送する
+  useEffect(() => {
+    if (subRoute[0] === 'bugleak') location.replace('#/quality/bugleak');
+  }, [subRoute]);
+
   const goHome = () => setSubRoute([]);
   const goSection = (id: SectionId) => setSubRoute([id]);
 
@@ -1407,8 +1393,6 @@ export default function DataStatsPanel({ onBack }: { onBack: () => void }) {
         <StatsLanding onSelect={goSection} />
       ) : activeSection === 'needs' ? (
         <NeedsListPage />
-      ) : activeSection === 'bugleak' ? (
-        <BugLeakPage />
       ) : activeSection === 'checklist' ? (
         <ChecklistPage />
       ) : activeSection === 'ai' ? (

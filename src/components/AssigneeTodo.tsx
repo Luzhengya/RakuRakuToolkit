@@ -25,7 +25,22 @@ interface AiTodoCase {
   month: string;
 }
 
+/** 不具合流出（品質管理 > 不具合流出確認）の未確認案件 */
+interface BugLeakTodo {
+  id: string;
+  system: string;
+  caseMonth: string;
+  cmdb: string;
+  feature: string;
+  defect: string;
+  status: string;
+}
+
 const JUDGEMENTS = ['有効', '無効', 'その他'];
+/** 不具合流出の確認待ちを ToDo に表示する担当者 */
+const BUGLEAK_TODO_EMAILS = ['suntao@newcon.cn', 'jiahan@riskmonster.co.jp'];
+const BUGLEAK_DONE = '確認完了';
+const BUGLEAK_PAGE_HASH = '#/quality/bugleak';
 const REASON_MAX = 2000;
 const LEVEL_COLORS: Record<string, string> = {
   Critical: 'text-red-600',
@@ -34,7 +49,7 @@ const LEVEL_COLORS: Record<string, string> = {
   Info: 'text-blue-500',
 };
 
-type TodoKey = 'qa' | 'issue' | 'aiJudge' | 'aiHandle' | 'explanation';
+type TodoKey = 'qa' | 'issue' | 'aiJudge' | 'aiHandle' | 'explanation' | 'bugleak';
 
 function TodoDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   useEffect(() => {
@@ -200,6 +215,35 @@ export default function AssigneeTodo({ email, pendingNotes, notesLoading, member
     return () => { cancelled = true; };
   }, []);
 
+  // 不具合流出：確認完了以外の案件（全月）。対象の担当者のときだけ取得する
+  const showBugLeak = BUGLEAK_TODO_EMAILS.includes(email);
+  const [bugLeaks, setBugLeaks] = useState<BugLeakTodo[]>([]);
+  const [bugLeakLoading, setBugLeakLoading] = useState(false);
+  const [bugLeakError, setBugLeakError] = useState(false);
+  useEffect(() => {
+    if (!showBugLeak) return;
+    let cancelled = false;
+    setBugLeakLoading(true);
+    fetch('/api/test-center/bug-leak?all=true')
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then((d) => {
+        if (cancelled) return;
+        setBugLeaks(((d.items ?? []) as BugLeakTodo[]).filter((b) => b.status !== BUGLEAK_DONE));
+        setBugLeakError(false);
+      })
+      .catch(() => { if (!cancelled) setBugLeakError(true); })
+      .finally(() => { if (!cancelled) setBugLeakLoading(false); });
+    return () => { cancelled = true; };
+  }, [showBugLeak]);
+  const bugLeakGroups = useMemo(() => {
+    const groups = new Map<string, BugLeakTodo[]>();
+    for (const b of bugLeaks) {
+      const s = b.system || '(未設定)';
+      groups.set(s, [...(groups.get(s) ?? []), b]);
+    }
+    return [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [bugLeaks]);
+
   const caseMap = useMemo(() => new Map(aiCases.map((c) => [c.id, c])), [aiCases]);
 
   const pendingQA = useMemo(() => pendingNotes.filter((n) => n.category === 'QA'), [pendingNotes]);
@@ -221,6 +265,9 @@ export default function AssigneeTodo({ email, pendingNotes, notesLoading, member
     { key: 'aiJudge', label: 'AI指摘 判断待ち（管理者）', count: aiToJudge.length, loading: aiLoading, failed: aiError },
     { key: 'aiHandle', label: 'AI指摘 対応待ち（担当者）', count: aiToHandle.length, loading: aiLoading, failed: aiError },
     { key: 'explanation', label: '追加説明 確認待ち', count: pendingExplanations.length, loading: notesLoading },
+    ...(showBugLeak
+      ? [{ key: 'bugleak' as const, label: '不具合流出 確認待ち', count: bugLeaks.length, loading: bugLeakLoading, failed: bugLeakError }]
+      : []),
   ];
   const openRow = rows.find((r) => r.key === open);
 
@@ -272,6 +319,38 @@ export default function AssigneeTodo({ email, pendingNotes, notesLoading, member
               </div>
             </div>
           )))}
+          {open === 'bugleak' && (
+            <>
+              {/* 確認完了などの操作は品質管理の不具合流出確認タブで行う */}
+              <div className="flex justify-end px-4 py-2">
+                <a href={BUGLEAK_PAGE_HASH} onClick={() => setOpen(null)}
+                  className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 hover:underline">
+                  品質管理で確認する<ExternalLink size={11} />
+                </a>
+              </div>
+              {bugLeaks.length === 0 ? <Empty /> : bugLeakGroups.map(([system, list]) => (
+                <div key={system}>
+                  <div className="sticky top-0 z-10 flex items-center gap-2 px-4 py-2 bg-neutral-50 border-b border-neutral-100 text-xs">
+                    <span className="font-bold text-neutral-700 truncate">{system}</span>
+                    <span className="ml-auto text-[10px] text-neutral-400 shrink-0">{list.length} 件</span>
+                  </div>
+                  <div className="divide-y divide-neutral-100">
+                    {list.map((b) => (
+                      <div key={b.id} className="px-4 py-2.5 space-y-1">
+                        <div className="flex items-center gap-2 text-[11px] text-neutral-400">
+                          <span className="shrink-0">{b.caseMonth || '—'}</span>
+                          {b.cmdb && <span className="shrink-0">{b.cmdb}</span>}
+                          <span className="ml-auto shrink-0">{b.status || '未確認'}</span>
+                        </div>
+                        <div className="text-xs text-neutral-800 whitespace-pre-wrap break-words">{b.defect || '—'}</div>
+                        {b.feature && <div className="text-[11px] text-neutral-500 whitespace-pre-wrap break-words">機能：{b.feature}</div>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
           {open === 'aiHandle' && (aiToHandle.length === 0 ? <Empty /> : groupByCase(aiToHandle, caseMap).map((g) => (
             <div key={g.caseId}>
               <CaseGroupHeader c={g.case} count={g.list.length} />

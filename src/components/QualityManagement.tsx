@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { AlertCircle, ChevronDown, ExternalLink, Loader2, RefreshCw, Save } from 'lucide-react';
-import { GradeBadge, MonthCalendar, RadarChart } from './DataStatsPanel';
+import { BugLeakPage, GradeBadge, MonthCalendar, RadarChart } from './DataStatsPanel';
 import { useSubRoute } from '../hooks/useSubRoute';
 import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
@@ -74,7 +74,12 @@ const LEVEL_COLORS: Record<string, string> = {
   Info: 'text-blue-500',
 };
 
-const TABS = [{ id: 'ai-issues', title: 'AIレビュー' }] as const;
+const TABS = [
+  { id: 'ai-issues', title: 'AIレビュー' },
+  { id: 'ai-designs', title: 'AI設計書' },
+  { id: 'ai-docs', title: 'AI資料' },
+  { id: 'bugleak', title: '不具合流出確認' },
+] as const;
 
 // ── Helpers ──
 
@@ -136,7 +141,17 @@ function Breadcrumb({ items }: { items: { label: string; onClick?: () => void }[
   );
 }
 
-function SummaryCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+function SummaryCard({ label, value, sub, center }: { label: string; value: string | number; sub?: string; center?: boolean }) {
+  // center：ラベルは左上、数字はカード中央。補足は下部の固定高さ枠に置き、補足の有無・行数で数字の高さがずれないようにする
+  if (center) {
+    return (
+      <div className="bg-white border border-neutral-200 rounded-xl p-3 flex flex-col">
+        <div className="text-[10px] text-neutral-400">{label}</div>
+        <div className="flex-1 flex items-center justify-center text-2xl font-bold text-neutral-800">{value}</div>
+        <div className="h-7 text-[10px] text-neutral-400 text-center leading-snug">{sub}</div>
+      </div>
+    );
+  }
   return (
     <div className="bg-white border border-neutral-200 rounded-xl p-3 space-y-1">
       <div className="text-[10px] text-neutral-400">{label}</div>
@@ -359,8 +374,10 @@ function caseLabelOf(caseMap: Map<string, AiCase>, id: string): string {
 
 // ── AI指摘分析（統計画面） ──
 
-function AiStatsView({ scoped, allItems, year, caseMap, scopeLabel, calendar, onSelectCase, shanghaiByCmdb }: ScopeProps & {
+function AiStatsView({ scoped, allItems, year, monthKey, caseMap, scopeLabel, calendar, onSelectCase, shanghaiByCmdb }: ScopeProps & {
   allItems: AiIssue[];
+  /** 月次カレンダーの選択（YYYYMM。未選択＝''＝全月） */
+  monthKey: string;
   /** グラフに表示する年（カレンダーの年） */
   year: number;
   calendar: ReactNode;
@@ -384,16 +401,28 @@ function AiStatsView({ scoped, allItems, year, caseMap, scopeLabel, calendar, on
     return { total: scoped.length, unjudged: counts[UNJUDGED] ?? 0, rate: validRate(counts), counts };
   }, [scoped]);
 
-  // 月次別の Critical 件数・上海側指摘件数（カレンダーの年の1月〜12月。月の選択には連動しない）
+  // 改善工数の合計（人日）：選択月の全案件（未選択なら全案件）。月次別 工数改善グラフと同じ口径
+  const effortTotal = useMemo(() => {
+    let sum = 0;
+    for (const c of caseMap.values()) {
+      const v = parseFloat(c.effortSaved);
+      if ((!monthKey || c.month === monthKey) && Number.isFinite(v)) sum += v;
+    }
+    return Math.round(sum * 100) / 100;
+  }, [caseMap, monthKey]);
+
+  // 月次別の AI有効指摘件数・Critical有効件数・上海側指摘件数（カレンダーの年の1月〜12月。月の選択には連動しない）
   const monthlySeries = useMemo(() => {
-    const byMonth = new Map<string, { critical: number; shanghai: number }>();
+    const byMonth = new Map<string, { valid: number; critical: number; shanghai: number }>();
     const bucket = (m: string) => {
-      if (!byMonth.has(m)) byMonth.set(m, { critical: 0, shanghai: 0 });
+      if (!byMonth.has(m)) byMonth.set(m, { valid: 0, critical: 0, shanghai: 0 });
       return byMonth.get(m)!;
     };
     for (const it of allItems) {
       const m = caseMap.get(it.caseId)?.month;
-      if (m && it.level === CRITICAL) bucket(m).critical++;
+      if (!m || it.judgement !== '有効') continue;
+      bucket(m).valid++;
+      if (it.level === CRITICAL) bucket(m).critical++;
     }
     // 上海側指摘は CMDB 番号が同じ案件の月次（複数あれば最新）に計上する
     const monthByCmdb = new Map<string, string>();
@@ -406,7 +435,7 @@ function AiStatsView({ scoped, allItems, year, caseMap, scopeLabel, calendar, on
       if (m) bucket(m).shanghai += list.length;
     }
     return Array.from({ length: 12 }, (_, i) => {
-      const v = byMonth.get(`${year}${String(i + 1).padStart(2, '0')}`) ?? { critical: 0, shanghai: 0 };
+      const v = byMonth.get(`${year}${String(i + 1).padStart(2, '0')}`) ?? { valid: 0, critical: 0, shanghai: 0 };
       return { month: `${i + 1}月`, ...v };
     });
   }, [allItems, caseMap, shanghaiByCmdb, year]);
@@ -441,22 +470,24 @@ function AiStatsView({ scoped, allItems, year, caseMap, scopeLabel, calendar, on
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col md:flex-row md:items-start gap-4">
-        <div className="flex-1 space-y-2">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            <SummaryCard label="AI指摘数" value={summary.total} />
-            <SummaryCard label="判断済み" value={summary.total - summary.unjudged} sub={JUDGEMENTS.map((j) => `${j} ${summary.counts[j] ?? 0}`).join(' / ')} />
-            <SummaryCard label="未判断" value={summary.unjudged} />
-            <SummaryCard label="有効率" value={formatRate(summary.rate)} sub="有効 ÷ 判断済み" />
-            <SummaryCard label="上海側指摘" value={shanghaiTotal} />
+      <div className="flex flex-col md:flex-row md:items-stretch gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 h-full">
+            <SummaryCard center label="AI指摘数" value={summary.total} />
+            <SummaryCard center label="判断済み" value={summary.total - summary.unjudged} sub={JUDGEMENTS.map((j) => `${j} ${summary.counts[j] ?? 0}`).join(' / ')} />
+            <SummaryCard center label="未判断" value={summary.unjudged} />
+            <SummaryCard center label="有効率" value={formatRate(summary.rate)} sub="有効 ÷ 判断済み" />
+            <SummaryCard center label="上海側指摘" value={shanghaiTotal} />
+            <SummaryCard center label="工数改善" value={effortTotal} sub="人日" />
           </div>
         </div>
         {calendar}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <TableBox title={`月次別 Critical・上海側指摘（${year}年）`}>
-        <div className="h-56 p-3">
+      <TableBox title={`月次別 AI有効指摘・Critical有効・上海側指摘（${year}年）`}>
+        {/* overflow-hidden：リサイズ時に SVG が旧幅のまま一瞬はみ出し、TableBox の横スクロールバーが出るのを防ぐ */}
+        <div className="h-56 p-3 overflow-hidden">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={monthlySeries} barGap={0} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" vertical={false} />
@@ -464,14 +495,15 @@ function AiStatsView({ scoped, allItems, year, caseMap, scopeLabel, calendar, on
               <YAxis tick={{ fontSize: 10 }} stroke="#a3a3a3" allowDecimals={false} />
               <Tooltip cursor={{ fill: 'rgba(15,23,42,0.04)' }} contentStyle={{ borderRadius: 8, fontSize: 12, border: '1px solid #e5e7eb' }} />
               <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
-              <Bar dataKey="critical" name="Critical" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={24} isAnimationActive={false} />
-              <Bar dataKey="shanghai" name="上海側指摘" fill="#334155" radius={[4, 4, 0, 0]} maxBarSize={24} isAnimationActive={false} />
+              <Bar dataKey="valid" name="AI有効指摘" fill="#059669" radius={[4, 4, 0, 0]} maxBarSize={18} isAnimationActive={false} />
+              <Bar dataKey="critical" name="Critical（有効）" fill="#dc2626" radius={[4, 4, 0, 0]} maxBarSize={18} isAnimationActive={false} />
+              <Bar dataKey="shanghai" name="上海側指摘" fill="#334155" radius={[4, 4, 0, 0]} maxBarSize={18} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </TableBox>
       <TableBox title={`月次別 工数改善（${year}年・人日）`}>
-        <div className="h-56 p-3">
+        <div className="h-56 p-3 overflow-hidden">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={effortSeries} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e5e5e5" vertical={false} />
@@ -491,7 +523,12 @@ function AiStatsView({ scoped, allItems, year, caseMap, scopeLabel, calendar, on
 
 // ── 案件分析（案件を指定して指摘一覧を開いた場合） ──
 
-function FeedbackEditor({ caseInfo, onSaved }: { caseInfo: AiCase; onSaved: (feedback: string) => void }) {
+function FeedbackEditor({ caseInfo, onSaved, endpoint }: {
+  caseInfo: Pick<AiCase, 'id' | 'feedback'>;
+  onSaved: (feedback: string) => void;
+  /** 保存先 API（省略時は AIレビュー案件） */
+  endpoint?: string;
+}) {
   const [text, setText] = useState(caseInfo.feedback);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -499,7 +536,7 @@ function FeedbackEditor({ caseInfo, onSaved }: { caseInfo: AiCase; onSaved: (fee
   const save = () => {
     setSaving(true);
     setError(null);
-    fetch(`/api/quality/ai-cases/${caseInfo.id}/feedback`, {
+    fetch(endpoint ?? `/api/quality/ai-cases/${caseInfo.id}/feedback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ feedback: text }),
@@ -541,6 +578,7 @@ const SCORE_DIMENSIONS: { key: string; name: string }[] = [
   { key: '規格忠実度', name: '規格忠実度' },
   { key: 'テスト類型', name: 'テスト類型覆盖' },
   { key: '可執行性', name: '可執行性' },
+  { key: '日本語表現', name: '日本語表現' },
 ];
 
 function CaseAnalysis({ caseInfo, issues, shanghaiCount, onFeedbackSaved }: {
@@ -778,12 +816,228 @@ function IssueListView({ scoped, caseMap, caseId, onCaseChange, onSaved, onFeedb
   );
 }
 
+// ── AI設計書（AIテスト設計書成果物。1行＝1成果物） ──
+
+interface AiDesign {
+  id: string;
+  url: string;
+  title: string;
+  month: string;
+  effortSaved: number | null;
+  feedback: string;
+  createdTime: string;
+  caseNames: string[];
+}
+
+/** 一覧の取得（reloadKey が 0 より大きければキャッシュを無視） */
+function useQualityData<T>(path: string, reloadKey: number) {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setError(null);
+    fetch(`${path}${reloadKey > 0 ? '?refresh=1' : ''}`)
+      .then((r) => { if (!r.ok) throw new Error(); return r.json(); })
+      .then((d) => setData(d))
+      .catch(() => setError('読み込みに失敗しました'));
+  }, [path, reloadKey]);
+  return { data, setData, error };
+}
+
+function LoadState({ error }: { error: string | null }) {
+  return error ? (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-xs flex items-center gap-1.5"><AlertCircle size={14} />{error}</div>
+  ) : (
+    <div className="flex items-center justify-center py-20 text-neutral-400"><Loader2 size={20} className="animate-spin mr-2" />読み込み中...</div>
+  );
+}
+
+function NotionLink({ url }: { url: string }) {
+  if (!url) return null;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} title="Notionで開く" className="text-neutral-400 hover:text-neutral-800">
+      <ExternalLink size={12} />
+    </a>
+  );
+}
+
+function AiDesignView({ monthKey, reloadKey, calendar }: { monthKey: string; reloadKey: number; calendar: ReactNode }) {
+  const { data, setData, error } = useQualityData<{ items: AiDesign[] }>('/api/quality/ai-designs', reloadKey);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showCount, setShowCount] = useState(LOAD_SIZE);
+
+  // 月次カレンダーの選択（未選択＝全月）。案件月次が未入力の成果物は全月のときだけ表示する
+  const rows = useMemo(
+    () => (data?.items ?? []).filter((d) => !monthKey || d.month === monthKey),
+    [data, monthKey],
+  );
+  const effortTotal = Math.round(rows.reduce((s, d) => s + (d.effortSaved ?? 0), 0) * 100) / 100;
+
+  if (!data) return <LoadState error={error} />;
+
+  const onFeedbackSaved = (id: string, feedback: string) =>
+    setData((prev) => prev && { items: prev.items.map((d) => (d.id === id ? { ...d, feedback } : d)) });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col md:flex-row md:items-stretch gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="grid grid-cols-2 gap-3 h-full">
+            <SummaryCard center label="案件数" value={rows.length} />
+            <SummaryCard center label="工数改善" value={effortTotal} sub="人日" />
+          </div>
+        </div>
+        {calendar}
+      </div>
+
+      <TableBox title="成果物一覧">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+              <th className="text-center px-2 py-2 font-medium w-[70px]">月次</th>
+              <th className="text-left px-3 py-2 font-medium">成果物</th>
+              <th className="text-left px-3 py-2 font-medium">関連案件</th>
+              <th className="text-center px-2 py-2 font-medium w-20">工数改善</th>
+              <th className="w-8" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-50">
+            {rows.slice(0, showCount).map((d) => {
+              const open = expandedId === d.id;
+              return (
+                <Fragment key={d.id}>
+                  <tr onClick={() => setExpandedId(open ? null : d.id)} className="cursor-pointer hover:bg-neutral-50 align-top">
+                    <td className="text-center px-2 py-2 text-neutral-400">{d.month || '—'}</td>
+                    <td className="px-3 py-2 text-neutral-800">{d.title || '—'}</td>
+                    <td className="px-3 py-2 text-neutral-600">
+                      {d.caseNames.length ? d.caseNames.map((n, i) => <div key={i}>{n}</div>) : '—'}
+                    </td>
+                    <td className="text-center px-2 py-2 font-bold text-neutral-800">{d.effortSaved ?? '—'}</td>
+                    <td className="text-center px-2 py-2"><NotionLink url={d.url} /></td>
+                  </tr>
+                  {/* フィードバックは長くなるため一覧には出さず、行クリックで展開して表示・編集する */}
+                  {open && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-3 bg-neutral-50/60">
+                        <div className="text-[10px] text-neutral-400 mb-1">フィードバック</div>
+                        <FeedbackEditor
+                          key={d.id + d.feedback}
+                          caseInfo={d}
+                          endpoint={`/api/quality/ai-designs/${d.id}/feedback`}
+                          onSaved={(fb) => onFeedbackSaved(d.id, fb)}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+            {rows.length === 0 && <tr><td colSpan={5} className="text-center py-8 text-neutral-400">データなし</td></tr>}
+          </tbody>
+        </table>
+        {rows.length > showCount && (
+          <div className="text-center border-t border-neutral-100 py-1">
+            <button type="button" onClick={() => setShowCount((c) => c + LOAD_SIZE)} className="text-xs text-blue-600 hover:text-blue-800 hover:underline px-3 py-1.5">
+              もっと見る（残り {rows.length - showCount}件）
+            </button>
+          </div>
+        )}
+      </TableBox>
+    </div>
+  );
+}
+
+// ── AI資料（Skills／関連使用手順／関連調査。一覧のみ、行クリックで Notion を開く） ──
+
+interface AiDoc {
+  id: string;
+  url: string;
+  title: string;
+  createdTime: string;
+  lastEditedTime: string;
+}
+
+interface AiSkill extends AiDoc {
+  description: string;
+  history: string;
+}
+
+const openNotion = (url: string) => { if (url) window.open(url, '_blank', 'noopener,noreferrer'); };
+const dateOf = (iso: string) => (iso ? iso.slice(0, 10) : '—');
+
+function DocTable({ title, docs }: { title: string; docs: AiDoc[] }) {
+  return (
+    <TableBox title={`${title}（${docs.length} 件）`}>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+            <th className="text-left px-3 py-2 font-medium">名称</th>
+            <th className="text-center px-2 py-2 font-medium w-24">作成日</th>
+            <th className="text-center px-2 py-2 font-medium w-24">更新日</th>
+            <th className="w-8" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-50">
+          {docs.map((d) => (
+            <tr key={d.id} onClick={() => openNotion(d.url)} className="cursor-pointer hover:bg-neutral-50">
+              <td className="px-3 py-2 text-neutral-800">{d.title || '—'}</td>
+              <td className="text-center px-2 py-2 text-neutral-500">{dateOf(d.createdTime)}</td>
+              <td className="text-center px-2 py-2 text-neutral-500">{dateOf(d.lastEditedTime)}</td>
+              <td className="text-center px-2 py-2"><NotionLink url={d.url} /></td>
+            </tr>
+          ))}
+          {docs.length === 0 && <tr><td colSpan={4} className="text-center py-8 text-neutral-400">データなし</td></tr>}
+        </tbody>
+      </table>
+    </TableBox>
+  );
+}
+
+function AiDocsView({ reloadKey }: { reloadKey: number }) {
+  const { data, error } = useQualityData<{ skills: AiSkill[]; manuals: AiDoc[]; researches: AiDoc[] }>('/api/quality/ai-docs', reloadKey);
+  if (!data) return <LoadState error={error} />;
+  return (
+    <div className="space-y-4">
+      <TableBox title={`Skills（${data.skills.length} 件）`}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-500">
+              <th className="text-left px-3 py-2 font-medium w-56">名称</th>
+              <th className="text-left px-3 py-2 font-medium">説明</th>
+              <th className="text-left px-3 py-2 font-medium">更新履歴</th>
+              <th className="w-8" />
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-50">
+            {data.skills.map((s) => (
+              <tr key={s.id} onClick={() => openNotion(s.url)} className="cursor-pointer hover:bg-neutral-50 align-top">
+                <td className="px-3 py-2 text-neutral-800 font-medium">{s.title || '—'}</td>
+                <td className="px-3 py-2 text-neutral-600 whitespace-pre-wrap break-words">{s.description || '—'}</td>
+                <td className="px-3 py-2 text-neutral-600 whitespace-pre-wrap break-words">{s.history || '—'}</td>
+                <td className="text-center px-2 py-2"><NotionLink url={s.url} /></td>
+              </tr>
+            ))}
+            {data.skills.length === 0 && <tr><td colSpan={4} className="text-center py-8 text-neutral-400">データなし</td></tr>}
+          </tbody>
+        </table>
+      </TableBox>
+      <DocTable title="関連使用手順" docs={data.manuals} />
+      <DocTable title="関連調査" docs={data.researches} />
+    </div>
+  );
+}
+
 // ── Page ──
 // ルート：#/quality（統計）／#/quality/issues（指摘一覧）／#/quality/issues/<案件ページID>（案件で絞り込み）
 
 export default function QualityManagement({ onBack }: { onBack: () => void }) {
   const [subRoute, setSubRoute] = useSubRoute();
-  const [tab, setTab] = useState<(typeof TABS)[number]['id']>('ai-issues');
+  const [tabState, setTabState] = useState<(typeof TABS)[number]['id']>('ai-issues');
+  // 不具合流出確認は URL（#/quality/bugleak）で開く。データ統計の旧URLからの転送先
+  const tab = subRoute[0] === 'bugleak' ? 'bugleak' : tabState === 'bugleak' ? 'ai-issues' : tabState;
+  const setTab = (id: (typeof TABS)[number]['id']) => {
+    setTabState(id);
+    setSubRoute(id === 'bugleak' ? ['bugleak'] : []);
+  };
   const [items, setItems] = useState<AiIssue[]>([]);
   const [cases, setCases] = useState<AiCase[]>([]);
   const [shanghaiIssues, setShanghaiIssues] = useState<ShanghaiIssue[]>([]);
@@ -807,6 +1061,8 @@ export default function QualityManagement({ onBack }: { onBack: () => void }) {
   }, []);
 
   useEffect(() => { load(false); }, [load]);
+  // 再読込の回数。AI設計書・AI資料はこの値が変わったらキャッシュを無視して取り直す
+  const [reloadKey, setReloadKey] = useState(0);
 
   const caseMap = useMemo(() => new Map(cases.map((c) => [c.id, c])), [cases]);
   const shanghaiByCmdb = useMemo(() => {
@@ -849,7 +1105,7 @@ export default function QualityManagement({ onBack }: { onBack: () => void }) {
     <div className="max-w-6xl mx-auto px-4 py-6 space-y-2">
       <div className="flex items-start">
         <Breadcrumb items={breadcrumb} />
-        <button type="button" onClick={() => load(true)} className="ml-auto inline-flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-900">
+        <button type="button" onClick={() => { load(true); setReloadKey((k) => k + 1); }} className="ml-auto inline-flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-900">
           <RefreshCw size={12} />再読込
         </button>
       </div>
@@ -867,7 +1123,17 @@ export default function QualityManagement({ onBack }: { onBack: () => void }) {
           ))}
         </div>
       )}
-      {loading ? (
+      {!issuesOpen && tab === 'bugleak' ? (
+        <BugLeakPage key={reloadKey} />
+      ) : !issuesOpen && tab === 'ai-designs' ? (
+        <AiDesignView
+          monthKey={monthKey}
+          reloadKey={reloadKey}
+          calendar={<MonthCalendar year={filterYear} month={filterMonth} onSelect={(y, m) => { setFilterYear(y); setFilterMonth(m); }} />}
+        />
+      ) : !issuesOpen && tab === 'ai-docs' ? (
+        <AiDocsView reloadKey={reloadKey} />
+      ) : loading ? (
         <div className="flex items-center justify-center py-20 text-neutral-400"><Loader2 size={20} className="animate-spin mr-2" />読み込み中...</div>
       ) : error ? (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-600 text-xs flex items-center gap-1.5"><AlertCircle size={14} />{error}</div>
@@ -886,6 +1152,7 @@ export default function QualityManagement({ onBack }: { onBack: () => void }) {
           scoped={scoped}
           allItems={items}
           year={filterYear}
+          monthKey={monthKey}
           caseMap={caseMap}
           scopeLabel={scopeLabel}
           calendar={<MonthCalendar year={filterYear} month={filterMonth} onSelect={(y, m) => { setFilterYear(y); setFilterMonth(m); }} />}
