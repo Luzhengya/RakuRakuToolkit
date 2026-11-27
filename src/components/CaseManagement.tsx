@@ -9,13 +9,11 @@ import {
   FileText,
   FolderTree,
   Loader2,
-  MessageCircle,
   Pencil,
   Plus,
   Save,
   Search,
   Trash2,
-  TriangleAlert,
   User,
   X,
 } from 'lucide-react';
@@ -23,10 +21,10 @@ import {
   NoteBadges,
   NoteCategoryDialog,
   NoteHoverButtons,
-  PendingNoteRow,
   useNoteCounts,
 } from './shared/NoteWidgets';
 import type { EntityNote } from './shared/NoteWidgets';
+import AssigneeTodo from './AssigneeTodo';
 
 interface ChildCase {
   id: string;
@@ -1151,10 +1149,6 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
     return () => { cancelled = true; };
   }, [email, notesKey]);
 
-  const pendingQA = useMemo(() => pendingNotes.filter((n) => n.category === 'QA'), [pendingNotes]);
-  const pendingIssues = useMemo(() => pendingNotes.filter((n) => n.category === '指摘'), [pendingNotes]);
-  const pendingExplanations = useMemo(() => pendingNotes.filter((n) => n.category === '追加説明'), [pendingNotes]);
-
   const allMonths = useMemo(() => {
     const set = new Set<string>();
     for (const c of cases) if (c.parentMonth) set.add(c.parentMonth);
@@ -1232,11 +1226,9 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
             {allMonths.map((m) => <option key={m} value={m}>{formatMonth(m)}</option>)}
           </select>
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <StatCard label="担当案件数" value={filtered.length} />
           <StatCard label="期限間近" value={nearDeadlineCount} accent={nearDeadlineCount > 0 ? 'amber' : undefined} />
-          <StatCard label="QA確認待" value={pendingQA.length} accent={pendingQA.length > 0 ? 'green' : undefined} />
-          <StatCard label="指摘確認待" value={pendingIssues.length} accent={pendingIssues.length > 0 ? 'amber' : undefined} />
           <StatCard label="工数（見積/実績）" value={`${totals.estTotal} / ${totals.actTotal}`} />
         </div>
         <div className="flex flex-wrap gap-1.5 mt-3">
@@ -1249,65 +1241,14 @@ function AssigneePanel({ email, cases, memberOptions, noteCounts, onNoteCountCha
         </div>
       </div>
 
-      {/* 指摘セクション */}
-      <div className="bg-white border border-orange-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-orange-100 bg-orange-50/60 flex items-center gap-2">
-          <TriangleAlert size={13} className="text-orange-500" />
-          <span className="text-xs font-bold text-orange-700">指摘</span>
-          <span className="text-[10px] text-orange-500 ml-1">{pendingIssues.length} 件</span>
-        </div>
-        {notesLoading ? (
-          <div className="text-xs text-neutral-400 text-center py-4">読み込み中...</div>
-        ) : pendingIssues.length === 0 ? (
-          <div className="text-xs text-neutral-400 text-center py-4">未処理の指摘はありません</div>
-        ) : (
-          <div className="divide-y divide-neutral-100">
-            {pendingIssues.map((note) => (
-              <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* QAセクション */}
-      <div className="bg-white border border-emerald-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-emerald-100 bg-emerald-50/60 flex items-center gap-2">
-          <MessageCircle size={13} className="text-emerald-500" />
-          <span className="text-xs font-bold text-emerald-700">QA</span>
-          <span className="text-[10px] text-emerald-500 ml-1">{pendingQA.length} 件</span>
-        </div>
-        {notesLoading ? (
-          <div className="text-xs text-neutral-400 text-center py-4">読み込み中...</div>
-        ) : pendingQA.length === 0 ? (
-          <div className="text-xs text-neutral-400 text-center py-4">未処理のQAはありません</div>
-        ) : (
-          <div className="divide-y divide-neutral-100">
-            {pendingQA.map((note) => (
-              <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* 追加説明セクション */}
-      <div className="bg-white border border-blue-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-blue-100 bg-blue-50/60 flex items-center gap-2">
-          <FileText size={13} className="text-blue-500" />
-          <span className="text-xs font-bold text-blue-700">追加説明</span>
-          <span className="text-[10px] text-blue-500 ml-1">{pendingExplanations.length} 件</span>
-        </div>
-        {notesLoading ? (
-          <div className="text-xs text-neutral-400 text-center py-4">読み込み中...</div>
-        ) : pendingExplanations.length === 0 ? (
-          <div className="text-xs text-neutral-400 text-center py-4">未読の追加説明はありません</div>
-        ) : (
-          <div className="divide-y divide-neutral-100">
-            {pendingExplanations.map((note) => (
-              <PendingNoteRow key={note.id} note={note} memberOptions={memberOptions} onUpdated={() => setNotesKey((k) => k + 1)} />
-            ))}
-          </div>
-        )}
-      </div>
+      {/* ToDo（QA・指摘・追加説明・AI指摘。件数クリックで一覧ダイアログ） */}
+      <AssigneeTodo
+        email={email}
+        pendingNotes={pendingNotes}
+        notesLoading={notesLoading}
+        memberOptions={memberOptions}
+        onNotesUpdated={() => setNotesKey((k) => k + 1)}
+      />
 
       {myAiItems.length > 0 && (
         <div className="bg-white border border-violet-200 rounded-xl shadow-sm overflow-hidden">

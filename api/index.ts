@@ -4529,21 +4529,19 @@ app.get("/api/stats/ai-reviews", async (_req, res) => {
 
       const totalScore = props["総合得点"]?.number ?? 0;
       const grade = props["等級"]?.select?.name ?? "";
-      const totalCases = props["テストケース総数"]?.number ?? null;
+      const totalCases = props["テスト総件数"]?.number ?? null;
 
       const dimScores = {
         req: props["要件追溯"]?.number ?? null,
         spec: props["規格忠実度"]?.number ?? null,
-        type: props["テスト類型"]?.number ?? null,
+        type: props["テスト類型覆盖"]?.number ?? null,
         exec: props["可執行性"]?.number ?? null,
-        maint: props["保守性"]?.number ?? null,
       };
       const dimensions = [
         ...(dimScores.req != null ? [{ name: "要件追溯と範囲", weight: "30%", score: dimScores.req }] : []),
         ...(dimScores.spec != null ? [{ name: "規格忠実度", weight: "20%", score: dimScores.spec }] : []),
         ...(dimScores.type != null ? [{ name: "テスト類型覆盖", weight: "25%", score: dimScores.type }] : []),
         ...(dimScores.exec != null ? [{ name: "可執行性", weight: "15%", score: dimScores.exec }] : []),
-        ...(dimScores.maint != null ? [{ name: "保守性", weight: "10%", score: dimScores.maint }] : []),
       ];
 
       const score = totalScore > 0 || dimensions.length > 0
@@ -4602,6 +4600,225 @@ app.get("/api/stats/ai-reviews/:id/html", async (req, res) => {
   } catch (error) {
     console.error("Stats AI review HTML error:", error);
     return res.status(500).json({ error: "Failed to load review HTML" });
+  }
+});
+
+// ── 品質管理 > AI指摘分析（AI指摘明細 DB。案件は NOTION_AI_DATABASE_ID と関連付け） ──
+const AI_ISSUE_JUDGEMENTS = ["有効", "無効", "その他"];
+const AI_ISSUE_REASON_MAX = 2000; // Notion rich_text 1要素の上限
+let aiIssuesCache: { data: any; ts: number } | null = null;
+
+async function queryAllPages(databaseId: string): Promise<any[]> {
+  const db: any = await withNotionRetry("databases.retrieve", () =>
+    notion!.databases.retrieve({ database_id: databaseId }),
+  );
+  const dataSourceId = db?.data_sources?.[0]?.id as string | undefined;
+  if (!dataSourceId) throw new Error(`No data source found in ${databaseId}`);
+  const pages: any[] = [];
+  let cursor: string | undefined;
+  let hasMore = true;
+  while (hasMore) {
+    const r: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({ data_source_id: dataSourceId, start_cursor: cursor, page_size: 100 }),
+    );
+    pages.push(...(r.results ?? []));
+    hasMore = r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  return pages;
+}
+
+// 上海側指摘：案件管理で追加した指摘（ニーズ管理 DB の 分野=指摘、状態≠中止）。
+// 関連案件（案件管理の案件）の「案件名」先頭の CMDB 番号で、AI レビュー案件と突き合わせる
+async function loadShanghaiIssues() {
+  if (!notion || !process.env.NOTION_NEEDS_DATABASE_ID) return [];
+  const dataSourceId = await resolveNeedsDataSource();
+  const pages: any[] = [];
+  let cursor: string | undefined;
+  let hasMore = true;
+  while (hasMore) {
+    const r: any = await withNotionRetry("dataSources.query", () =>
+      (notion as any).dataSources.query({
+        data_source_id: dataSourceId,
+        start_cursor: cursor,
+        page_size: 100,
+        filter: { property: "分野", multi_select: { contains: "指摘" } },
+      }),
+    );
+    pages.push(...(r.results ?? []));
+    hasMore = !!r.has_more;
+    cursor = r.next_cursor ?? undefined;
+  }
+  const rows = pages
+    .map((page: any) => {
+      const p = page.properties ?? {};
+      return {
+        id: page.id as string,
+        url: page.url ?? "",
+        title: propertyToPlainText(p["ニーズ"]),
+        status: p["状態"]?.status?.name ?? "",
+        priority: p["優先度"]?.select?.name ?? "",
+        requester: propertyToPlainText(p["請求者"]),
+        createdTime: p["提出日"]?.created_time ?? page.created_time ?? "",
+        entityId: extractRelationIds(p["関連案件"])[0] ?? "",
+      };
+    })
+    .filter((n) => n.status !== "中止" && n.entityId);
+
+  // 関連案件ごとに案件名を1回だけ取得して CMDB 番号を引く
+  const cmdbByEntity = new Map<string, string>();
+  for (const entityId of new Set(rows.map((n) => n.entityId))) {
+    try {
+      const page: any = await withNotionRetry("pages.retrieve", () => notion!.pages.retrieve({ page_id: entityId }));
+      cmdbByEntity.set(entityId, extractCmdbNo(propertyToPlainText(page?.properties?.["案件名"])));
+    } catch (error) {
+      console.error("Quality shanghai case lookup error:", entityId, error);
+    }
+  }
+  return rows
+    .map(({ entityId, ...n }) => ({ ...n, cmdb: cmdbByEntity.get(entityId) ?? "" }))
+    .filter((n) => n.cmdb)
+    .sort((a, b) => (a.createdTime < b.createdTime ? -1 : a.createdTime > b.createdTime ? 1 : 0));
+}
+
+// GET /api/quality/ai-issues — 指摘一覧＋関連案件（?refresh=1 でキャッシュを無視）
+app.get("/api/quality/ai-issues", async (req, res) => {
+  const issueDbId = process.env.NOTION_AI_ISSUE_DATABASE_ID;
+  const caseDbId = process.env.NOTION_AI_DATABASE_ID;
+  if (!notion || !issueDbId || !caseDbId) {
+    return res.status(503).json({ error: "AI issue database not configured" });
+  }
+  if (req.query.refresh !== "1" && aiIssuesCache && Date.now() - aiIssuesCache.ts < AI_REVIEWS_CACHE_TTL) {
+    return res.json(aiIssuesCache.data);
+  }
+  try {
+    const [issuePages, casePages] = await Promise.all([queryAllPages(issueDbId), queryAllPages(caseDbId)]);
+    const cases = casePages.map((page: any) => {
+      const p = page.properties ?? {};
+      return {
+        id: page.id as string,
+        title: propertyToPlainText(p["名称"]),
+        month: propertyToPlainText(p["案件月次"]),
+        url: page.url ?? "",
+        totalScore: p["総合得点"]?.number ?? null,
+        grade: p["等級"]?.select?.name ?? "",
+        effortSaved: propertyToPlainText(p["工数改善（人日）"]),
+        totalCases: p["テスト総件数"]?.number ?? null,
+        dimScores: {
+          要件追溯: p["要件追溯"]?.number ?? null,
+          規格忠実度: p["規格忠実度"]?.number ?? null,
+          テスト類型: p["テスト類型覆盖"]?.number ?? null,
+          可執行性: p["可執行性"]?.number ?? null,
+        },
+        feedback: propertyToPlainText(p["フィードバック"]),
+      };
+    });
+    const items = issuePages.map((page: any) => {
+      const p = page.properties ?? {};
+      return {
+        id: page.id as string,
+        url: page.url ?? "",
+        caseId: (p["案件"]?.relation ?? [])[0]?.id ?? "",
+        no: propertyToPlainText(p["指摘番号"]),
+        level: propertyToPlainText(p["重要度"]),
+        dimension: propertyToPlainText(p["評価標準"]),
+        problem: propertyToPlainText(p["問題"]),
+        tc: propertyToPlainText(p["該当TC"]),
+        fix: propertyToPlainText(p["修正案"]),
+        other: propertyToPlainText(p["その他記載"]),
+        judgement: propertyToPlainText(p["人工判断"]),
+        reason: propertyToPlainText(p["判断理由"]),
+        // 担当者＝有効な指摘の対応者、管理者＝未判断の指摘の判断者（メールアドレス）
+        assignees: peopleToEmails(p["担当者"]).split(", ").filter(Boolean),
+        managers: peopleToEmails(p["管理者"]).split(", ").filter(Boolean),
+        handled: propertyToPlainText(p["対応状況"]) === "対応済",
+        createdTime: page.created_time ?? "",
+      };
+    });
+    items.sort((a, b) => (a.createdTime < b.createdTime ? -1 : a.createdTime > b.createdTime ? 1 : 0));
+    // 上海側指摘は取得に失敗しても AI 指摘の表示は止めない
+    const shanghaiIssues = await loadShanghaiIssues().catch((error) => {
+      console.error("Quality shanghai issues error:", error);
+      return [];
+    });
+    const data = { items, cases, shanghaiIssues };
+    aiIssuesCache = { data, ts: Date.now() };
+    return res.json(data);
+  } catch (error) {
+    console.error("Quality AI issues error:", error);
+    return res.status(500).json({ error: "Failed to load AI issues" });
+  }
+});
+
+// POST /api/quality/ai-issues/:id/update — 人工判断・判断理由のみ更新
+app.post("/api/quality/ai-issues/:id/update", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const judgement = String(req.body?.judgement ?? "").trim();
+  const reason = String(req.body?.reason ?? "").trim();
+  if (judgement && !AI_ISSUE_JUDGEMENTS.includes(judgement)) {
+    return res.status(400).json({ error: "invalid judgement" });
+  }
+  if (reason.length > AI_ISSUE_REASON_MAX) {
+    return res.status(400).json({ error: `reason must be ${AI_ISSUE_REASON_MAX} characters or less` });
+  }
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({
+        page_id: req.params.id,
+        properties: {
+          "人工判断": { select: judgement ? { name: judgement } : null },
+          "判断理由": { rich_text: reason ? [{ type: "text", text: { content: reason } }] : [] },
+        } as any,
+      }),
+    );
+    aiIssuesCache = null;
+    return res.json({ ok: true, judgement, reason });
+  } catch (error) {
+    console.error("Quality AI issue update error:", error);
+    return res.status(500).json({ error: "Failed to update AI issue" });
+  }
+});
+
+// POST /api/quality/ai-issues/:id/handled — 担当者の対応状況（対応済／未対応）を更新
+app.post("/api/quality/ai-issues/:id/handled", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const handled = req.body?.handled === true;
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({
+        page_id: req.params.id,
+        properties: { "対応状況": { select: { name: handled ? "対応済" : "未対応" } } } as any,
+      }),
+    );
+    aiIssuesCache = null;
+    return res.json({ ok: true, handled });
+  } catch (error) {
+    console.error("Quality AI issue handled error:", error);
+    return res.status(500).json({ error: "Failed to update handled status" });
+  }
+});
+
+// POST /api/quality/ai-cases/:id/feedback — 案件（AI・指摘/レビュー/課題）のフィードバックを更新
+app.post("/api/quality/ai-cases/:id/feedback", async (req, res) => {
+  if (!notion) return res.status(503).json({ error: "Notion API credentials not configured" });
+  const feedback = String(req.body?.feedback ?? "").trim();
+  if (feedback.length > AI_ISSUE_REASON_MAX) {
+    return res.status(400).json({ error: `feedback must be ${AI_ISSUE_REASON_MAX} characters or less` });
+  }
+  try {
+    await withNotionRetry("pages.update", () =>
+      notion!.pages.update({
+        page_id: req.params.id,
+        properties: {
+          "フィードバック": { rich_text: feedback ? [{ type: "text", text: { content: feedback } }] : [] },
+        } as any,
+      }),
+    );
+    aiIssuesCache = null;
+    return res.json({ ok: true, feedback });
+  } catch (error) {
+    console.error("Quality AI case feedback error:", error);
+    return res.status(500).json({ error: "Failed to update feedback" });
   }
 });
 
@@ -7534,7 +7751,7 @@ app.post("/api/notes/:id/toggle", async (req, res) => {
           if (people.length > 0) {
             const categories = (page.properties?.["分野"]?.multi_select ?? []).map((o: any) => o.name);
             const category = NOTE_CATEGORIES.find((c: string) => categories.includes(c)) ?? "追加説明";
-            const label = category === "指摘" ? "対応済み" : "閲覧済み";
+            const label = category === "指摘" ? "対応済み" : category === "QA" ? "解決済み" : "閲覧済み";
             const now = new Date().toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" });
             const richText: any[] = [
               { type: "mention", mention: { type: "user", user: { id: people[0].id } } },

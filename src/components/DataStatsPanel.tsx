@@ -400,7 +400,7 @@ function NeedsListPage() {
 const PAGE_SIZE = 10;
 
 // Month Calendar (TestCenter style)
-function MonthCalendar({ year, month, onSelect }: { year: number; month: number | null; onSelect: (y: number, m: number | null) => void }) {
+export function MonthCalendar({ year, month, onSelect }: { year: number; month: number | null; onSelect: (y: number, m: number | null) => void }) {
   const [calYear, setCalYear] = useState(year);
   return (
     <div className="bg-white border border-neutral-200 rounded-xl p-3 shadow-sm w-48">
@@ -989,13 +989,13 @@ const GRADE_COLORS: Record<string, { bg: string; text: string; border: string }>
   F: { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
 };
 
-function GradeBadge({ grade, size = 'md' }: { grade: string; size?: 'sm' | 'md' | 'lg' }) {
+export function GradeBadge({ grade, size = 'md' }: { grade: string; size?: 'sm' | 'md' | 'lg' }) {
   const c = GRADE_COLORS[grade] ?? GRADE_COLORS.C;
   const sz = size === 'lg' ? 'w-12 h-12 text-xl' : size === 'md' ? 'w-8 h-8 text-sm' : 'w-6 h-6 text-xs';
   return <span className={`inline-flex items-center justify-center rounded-lg font-bold ${sz} ${c.bg} ${c.text} border ${c.border}`}>{grade}</span>;
 }
 
-function RadarChart({ dimensions, size = 160 }: { dimensions: AiReviewDimension[]; size?: number }) {
+export function RadarChart({ dimensions, size = 160 }: { dimensions: AiReviewDimension[]; size?: number }) {
   const n = dimensions.length;
   if (n < 3) return null;
   const cx = size / 2, cy = size / 2, r = size * 0.38;

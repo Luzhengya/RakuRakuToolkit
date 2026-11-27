@@ -12,6 +12,7 @@ import {
   Bug,
   Send,
   ShieldCheck,
+  BadgeCheck,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -138,6 +139,14 @@ export const TOOLS: ToolDef[] = [
     category: '管理類',
     icon: ClipboardList,
     iconClass: 'text-indigo-600',
+  },
+  {
+    id: 'quality',
+    title: '品質管理',
+    description: 'AIレビュー指摘の人工判断・有効率など、テストの品質データを管理します。',
+    category: '管理類',
+    icon: BadgeCheck,
+    iconClass: 'text-rose-600',
   },
   {
     id: 'data-stats',

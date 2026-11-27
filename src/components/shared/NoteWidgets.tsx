@@ -830,6 +830,12 @@ export function PendingNoteRow({ note, memberOptions, onUpdated }: {
               閲覧済にする
             </button>
           )}
+          {note.category === 'QA' && (
+            <button onClick={handleToggle} disabled={toggling}
+              className="px-2 py-1 text-[10px] rounded bg-emerald-50 text-emerald-600 hover:bg-emerald-100 disabled:opacity-50">
+              解決済にする
+            </button>
+          )}
         </div>
       </div>
       {expanded && (
